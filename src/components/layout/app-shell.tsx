@@ -6,6 +6,7 @@ import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
   Bell,
   Briefcase,
+  FileText,
   Home,
   Menu,
   Plus,
@@ -35,6 +36,7 @@ import {
 
 const primaryNav = [
   { href: "/app", label: "Today", icon: Home },
+  { href: "/app/resumes/new", label: "New resume", icon: FileText },
   { href: "/app/radar", label: "Radar", icon: Radar },
   { href: "/app/opportunities", label: "Opportunities", icon: Briefcase },
   { href: "/app/evidence", label: "Career Evidence", icon: Vault },
@@ -176,11 +178,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="border-t border-border p-3">
         <Button
           className={cn("w-full", collapsed && "px-0")}
-          onClick={() => router.push("/app/opportunities/new")}
-          aria-label="New opportunity"
+          onClick={() => router.push("/app/resumes/new")}
+          aria-label="New resume"
         >
           <Plus className="h-4 w-4" />
-          {!collapsed ? "New opportunity" : null}
+          {!collapsed ? "New resume" : null}
         </Button>
       </div>
     </aside>

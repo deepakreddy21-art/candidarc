@@ -9,6 +9,7 @@ import {
   type ResumeVersionRecord,
   type WorkflowEventRecord,
   type WorkflowRunRecord,
+  newId,
 } from "./database/repositories";
 import { seedDemoAppsIntoMemory, getDemoExtras } from "./database/seed-demo-apps";
 import { ApplicationsService } from "./modules/applications/service";
@@ -34,10 +35,13 @@ import type {
   Resume,
   WorkflowStage,
 } from "@/types/domain";
-import { getSharedCatalog } from "./radar/catalog";
+import { getSharedCatalog, seedDemoCatalog } from "./radar/catalog";
 import { RadarService } from "./radar/service";
 import { registerRadarQueueHandlers } from "./radar/queues";
 import { CopilotService } from "./copilot/service";
+import { CustomerGenerateService } from "./modules/resumes/customer-generate";
+import { renderPdfAndDocx } from "./resumes/document-renderer";
+import { promises as fs } from "fs";
 
 export type RuntimeServices = {
   applications: ApplicationsService;
@@ -50,6 +54,7 @@ export type RuntimeServices = {
   files: FilesService;
   radar: RadarService;
   copilot: CopilotService;
+  customerResumes: CustomerGenerateService;
 };
 
 export type Runtime = {
@@ -263,7 +268,7 @@ async function buildRuntime(): Promise<Runtime> {
 
   const queue = await getQueueAdapter();
   const engine = new DbWorkflowEngine(repos.workflows, queue);
-  const pipeline = ResumePipeline.fromRepos(repos, engine);
+  const pipeline = ResumePipeline.fromRepos(repos, engine, queue);
 
   for (const q of WORKFLOW_QUEUES) {
     queue.registerHandler(q, async (job) => {
@@ -287,7 +292,64 @@ async function buildRuntime(): Promise<Runtime> {
   }
 
   queue.registerHandler("pdf-rendering", async (job) => {
-    logger.info({ jobId: job.id }, "pdf export job acknowledged (mock)");
+    const payload = job.payload as { tenantId?: string; applicationId?: string; applicationPublicId?: string; versionId?: string; versionPublicId?: string };
+    const tenantId = payload.tenantId;
+    const applicationPublicId = payload.applicationId ?? payload.applicationPublicId;
+    const versionPublicId = payload.versionId ?? payload.versionPublicId;
+    if (!tenantId || !applicationPublicId || !versionPublicId) {
+      throw new Error("Document rendering payload is incomplete");
+    }
+    const app = await repos.applications.getByPublicId(tenantId, applicationPublicId);
+    const version = await repos.resumes.getVersion(tenantId, versionPublicId);
+    if (!app || !version) throw new Error("Document rendering source not found");
+    const rendered = await renderPdfAndDocx({
+      resumeVersion: version,
+      candidateName: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : "Candidate",
+      role: app.role,
+      company: app.company,
+      tenantId,
+      applicationId: app.publicId,
+    });
+    const [pdfStat, docxStat] = await Promise.all([fs.stat(rendered.pdfPath), fs.stat(rendered.docxPath)]);
+    await Promise.all([
+      repos.files.create({
+        id: newId("sf"),
+        publicId: rendered.pdfFileId,
+        tenantId,
+        ownerUserId: app.ownerUserId,
+        purpose: "customer-resume-pdf",
+        storageKey: rendered.pdfPath,
+        mimeType: "application/pdf",
+        size: pdfStat.size,
+        scanStatus: "clean",
+        retentionState: "active",
+      }),
+      repos.files.create({
+        id: newId("sf"),
+        publicId: rendered.docxFileId,
+        tenantId,
+        ownerUserId: app.ownerUserId,
+        purpose: "customer-resume-docx",
+        storageKey: rendered.docxPath,
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size: docxStat.size,
+        scanStatus: "clean",
+        retentionState: "active",
+      }),
+    ]);
+    const finals = Array.isArray(app.metadata?.customerFinalVersions)
+      ? app.metadata.customerFinalVersions.filter((item): item is string => typeof item === "string")
+      : [];
+    await repos.applications.update(tenantId, app.publicId, {
+      status: "ready",
+      nextAction: "Download resume",
+      metadata: {
+        ...app.metadata,
+        customerFiles: rendered,
+        customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
+      },
+    });
+    logger.info({ jobId: job.id, applicationPublicId, versionPublicId }, "resume documents rendered");
   });
   queue.registerHandler("notifications", async () => undefined);
   queue.registerHandler("maintenance", async () => undefined);
@@ -295,9 +357,14 @@ async function buildRuntime(): Promise<Runtime> {
 
   const storage = getStorage();
   const applications = ApplicationsService.fromRepos(repos, engine);
+  const customerResumes = new CustomerGenerateService(repos, engine);
   const radarCatalog = getSharedCatalog();
-  if (env.APP_MODE === "demo") radarCatalog.seedDemoCatalog();
-  const radar = RadarService.create(applications);
+  // PRODUCTION: Never auto-seed. Catalog stays empty until jobs are ingested.
+  // DEMO: Seed demo catalog with fixtures.
+  if (env.APP_MODE === "demo") {
+    seedDemoCatalog();
+  }
+  const radar = RadarService.create(applications, repos, customerResumes);
   registerRadarQueueHandlers(queue, radar.catalog, radar.index);
   // Light indexing + alert evaluation on boot
   void queue.enqueue("job-indexing", "radar-reindex", { reason: "bootstrap" });
@@ -314,13 +381,16 @@ async function buildRuntime(): Promise<Runtime> {
     files: FilesService.fromRepos(repos, storage, queue),
     radar,
     copilot: new CopilotService(),
+    customerResumes,
   };
 
   if (mode === "memory" && env.QUEUE_BACKEND === "inprocess" && !queueDrainStarted) {
     queueDrainStarted = true;
     // InProcessQueueAdapter pumps every 50ms once started; start once for memory mode.
-    void queue.start();
-    logger.info("memory-mode in-process queue drain started");
+    void queue.start().then(async () => {
+      const recovered = await engine.recoverIncomplete();
+      logger.info({ recovered }, "memory-mode in-process queue drain started");
+    });
   }
 
   return {

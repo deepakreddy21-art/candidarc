@@ -21,7 +21,8 @@ async function main() {
 
   const runtime = await getRuntime();
   await runtime.queue.start();
-  logger.info({ mode: runtime.mode, workerKind: env.WORKER_KIND }, "CandidArc worker started — draining queues");
+  const recovered = await runtime.engine.recoverIncomplete();
+  logger.info({ mode: runtime.mode, workerKind: env.WORKER_KIND, recovered }, "CandidArc worker started — draining queues");
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "shutting down worker");

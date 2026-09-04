@@ -8,7 +8,7 @@ import {
   resumeSchema,
 } from "../ai/schemas";
 import { collectResearchSources } from "../ai/research-collector";
-import { listActiveMistakeMemory } from "../ai/mistake-memory";
+import { addMistakeMemoryRule, listActiveMistakeMemory } from "../ai/mistake-memory";
 import type {
   ApplicationRepository,
   AuditRepository,
@@ -25,6 +25,8 @@ import { logger } from "../observability/logger";
 import { assertAuditOrder } from "./stages";
 import type { DurableWorkflowEngine } from "./engine";
 import { runDeterministicFinalQa } from "./final-qa";
+import type { QueueAdapter } from "./queues";
+import { claimableTechnologies, extractTechQuestions, type TechQuestion } from "../resumes/tech-questions";
 
 export type ResumePipelineDeps = {
   engine: DurableWorkflowEngine;
@@ -35,6 +37,7 @@ export type ResumePipelineDeps = {
   usage: UsageRepository;
   evidence: EvidenceRepository;
   store: Repositories["store"];
+  queue?: QueueAdapter;
 };
 
 export function filterFindingsForNextGeneration<T extends { status: string }>(findings: T[]): T[] {
@@ -83,7 +86,7 @@ function withResumeProvenance(
 export class ResumePipeline {
   constructor(private readonly deps: ResumePipelineDeps) {}
 
-  static fromRepos(repos: Repositories, engine: DurableWorkflowEngine) {
+  static fromRepos(repos: Repositories, engine: DurableWorkflowEngine, queue?: QueueAdapter) {
     return new ResumePipeline({
       engine,
       applications: repos.applications,
@@ -93,53 +96,66 @@ export class ResumePipeline {
       usage: repos.usage,
       evidence: repos.evidence,
       store: repos.store,
+      queue,
     });
   }
 
   async handleStage(run: WorkflowRunRecord): Promise<void> {
-    if (run.status === "cancelled") return;
+    // Always re-read — stale queue jobs must not run against an advanced workflow.
+    const latest = (await this.deps.workflows.getById(run.id)) ?? run;
+    if (latest.status === "cancelled") return;
+    const runningCounterpart = run.stage.endsWith("_QUEUED")
+      ? run.stage.replace(/_QUEUED$/, "_RUNNING")
+      : run.stage;
+    if (latest.stage !== run.stage && latest.stage !== runningCounterpart) {
+      logger.info(
+        { workflowId: latest.publicId, expected: run.stage, actual: latest.stage },
+        "skipping stale queue job",
+      );
+      return;
+    }
 
-    switch (run.stage) {
+    switch (latest.stage) {
       case "RESEARCH_QUEUED":
       case "RESEARCH_RUNNING":
-        await this.runResearch(run);
+        await this.runResearch(latest);
         break;
       case "EVIDENCE_MATCHING_RUNNING":
-        await this.runEvidenceMatching(run);
+        await this.runEvidenceMatching(latest);
         break;
       case "V0_GENERATING":
-        await this.runResumeGeneration(run, 0, "Initial generation");
+        await this.runResumeGeneration(latest, 0, "Initial generation");
         break;
       case "HR_AUDIT_1_RUNNING":
-        await this.runAudit(run, "hr-audit-1", 0, 1);
+        await this.runAudit(latest, "hr-audit-1", 0, 1);
         break;
       case "V1_GENERATING":
-        await this.runResumeGeneration(run, 1, "HR Audit 1");
+        await this.runResumeGeneration(latest, 1, "HR Audit 1");
         break;
       case "EM_AUDIT_1_RUNNING":
-        await this.runAudit(run, "em-audit-1", 1, 2);
+        await this.runAudit(latest, "em-audit-1", 1, 2);
         break;
       case "V2_GENERATING":
-        await this.runResumeGeneration(run, 2, "EM Audit 1");
+        await this.runResumeGeneration(latest, 2, "EM Audit 1");
         break;
       case "HR_AUDIT_2_RUNNING":
-        await this.runAudit(run, "hr-audit-2", 2, 3);
+        await this.runAudit(latest, "hr-audit-2", 2, 3);
         break;
       case "V3_GENERATING":
-        await this.runResumeGeneration(run, 3, "HR Audit 2");
+        await this.runResumeGeneration(latest, 3, "HR Audit 2");
         break;
       case "EM_AUDIT_2_RUNNING":
-        await this.runAudit(run, "em-audit-2", 3, 4);
+        await this.runAudit(latest, "em-audit-2", 3, 4);
         break;
       case "V4_GENERATING":
         assertAuditOrder({ stage: "V4_GENERATING", reviewsVersion: 3, producesVersion: 4 });
-        await this.runResumeGeneration(run, 4, "EM Audit 2");
+        await this.runResumeGeneration(latest, 4, "EM Audit 2");
         break;
       case "FINAL_QA_RUNNING":
-        await this.runFinalQa(run);
+        await this.runFinalQa(latest);
         break;
       default:
-        logger.debug({ stage: run.stage }, "pipeline no-op stage");
+        logger.debug({ stage: latest.stage }, "pipeline no-op stage");
     }
   }
 
@@ -248,6 +264,15 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         collectedSources,
       }),
       schema: researchSchema,
+    });
+    const candidateEvidence = await this.deps.evidence.list(run.tenantId);
+    const techQuestions = extractTechQuestions({
+      jobDescription,
+      researchFindings: result.data.findings,
+      candidateTechnologies: candidateEvidence.flatMap((item) => item.technologies),
+    });
+    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+      metadata: { ...application.metadata, techQuestions, researchSourceCount: result.data.sources.length },
     });
     const collectedByUrl = new Map(collectedSources.map((source) => [source.url, source]));
     result.data.sources = result.data.sources
@@ -387,7 +412,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
   }
 
   private async runResumeGeneration(run: WorkflowRunRecord, versionNumber: number, triggeredBy: string) {
-    const idempotencyKey = `resume:${run.applicationPublicId}:v${versionNumber}:${run.idempotencyKey}`;
+    const cycleBase = typeof run.payload.cycleBase === "number" ? run.payload.cycleBase : 0;
+    const storedVersionNumber = cycleBase + versionNumber;
+    const idempotencyKey = `resume:${run.applicationPublicId}:v${storedVersionNumber}:${run.idempotencyKey}`;
     const existingVersion = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
     if (existingVersion) {
       const readyStage = `V${versionNumber}_READY` as WorkflowStage;
@@ -414,19 +441,25 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const evidence = await this.deps.evidence.list(run.tenantId);
     const currentResume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
     const previousVersions = currentResume ? await this.deps.resumes.listVersions(run.tenantId, currentResume.publicId) : [];
-    const previousVersion = previousVersions.find((version) => version.versionNumber === versionNumber - 1);
+    const previousVersion = previousVersions.find((version) => version.versionNumber === storedVersionNumber - 1);
     const auditRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
     const previousAudit = auditRuns.at(-1);
     const auditFindings = previousAudit ? await this.deps.audits.listFindings(run.tenantId, previousAudit.publicId) : [];
     const actionable = filterFindingsForNextGeneration(auditFindings);
     const mistakeMemory = listActiveMistakeMemory(this.deps.store, run.tenantId, run.applicationId);
-    const evidenceTechnologies = [...new Set(evidence.flatMap((item) => item.technologies))];
+    const attestedTechnologies = claimableTechnologies(
+      (application?.metadata?.techQuestions ?? []) as TechQuestion[],
+    );
+    const evidenceTechnologies = [...new Set([
+      ...evidence.flatMap((item) => item.technologies),
+      ...attestedTechnologies,
+    ])];
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
       user: JSON.stringify({
         applicationPublicId: run.applicationPublicId,
-        versionNumber,
+        versionNumber: storedVersionNumber,
         jobDescription: application?.metadata?.jobDescription,
         application: application?.metadata,
         researchFindings: research?.findings ?? [],
@@ -446,6 +479,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         previousVersion,
         acceptedOrEditedAuditFindings: actionable,
         mistakeMemory,
+        refinementInstruction: run.payload.refinementInstruction,
       }),
       schema: resumeSchema,
       metadata: {
@@ -476,18 +510,18 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
 
     const version = await this.deps.resumes.appendVersion({
       id: newId("rv"),
-      publicId: `rv-v${versionNumber}-${run.applicationPublicId}`,
+      publicId: newId(`rvv${storedVersionNumber}`),
       tenantId: run.tenantId,
       resumeId: resume.id,
-      versionNumber,
-      versionLabel: `V${versionNumber}`,
+      versionNumber: storedVersionNumber,
+      versionLabel: `V${storedVersionNumber}`,
       score: result.data.score,
       scoreBreakdown: result.data.scoreBreakdown,
       notes: result.data.notes,
       triggeredBy,
       sections: withResumeProvenance(
         result.data.sections as Array<Record<string, unknown>>,
-        versionNumber,
+        storedVersionNumber,
       ),
       idempotencyKey,
       promptVersion: prompt.version,
@@ -559,14 +593,17 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
     if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume required for audit", 422);
     const versions = await this.deps.resumes.listVersions(run.tenantId, resume.publicId);
-    const reviewedResume = versions.find((version) => version.versionNumber === reviewsVersion);
-    if (!reviewedResume) throw new AppError("RESUME_VERSION_NOT_FOUND", `V${reviewsVersion} required for audit`, 422);
+    const cycleBase = typeof run.payload.cycleBase === "number" ? run.payload.cycleBase : 0;
+    const storedReviewsVersion = cycleBase + reviewsVersion;
+    const storedProducesVersion = cycleBase + producesVersion;
+    const reviewedResume = versions.find((version) => version.versionNumber === storedReviewsVersion);
+    if (!reviewedResume) throw new AppError("RESUME_VERSION_NOT_FOUND", `Required resume version not found`, 422);
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
       user: JSON.stringify({
         applicationPublicId: run.applicationPublicId,
-        reviewsVersion,
+        reviewsVersion: storedReviewsVersion,
         jobDescription: application?.metadata?.jobDescription,
         resume: {
           versionNumber: reviewedResume.versionNumber,
@@ -590,7 +627,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     await this.recordProviderUsage(run, usageKey, result);
 
     const existingRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
-    const already = existingRuns.find((r) => r.lens === result.data.lens);
+    const already = existingRuns.find((r) => r.lens === result.data.lens && r.reviewsVersion === `V${storedReviewsVersion}`);
     if (!already) {
       const audit = await this.deps.audits.createRun({
         id: newId("ar"),
@@ -600,8 +637,8 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         applicationPublicId: run.applicationPublicId,
         lens: result.data.lens,
         label: promptId.replace("-", " ").toUpperCase(),
-        reviewsVersion: `V${reviewsVersion}`,
-        producesVersion: `V${producesVersion}`,
+        reviewsVersion: `V${storedReviewsVersion}`,
+        producesVersion: `V${storedProducesVersion}`,
         status: "in-progress",
         scoreBefore: result.data.scoreBefore,
         scoreAfter: result.data.scoreAfter,
@@ -639,6 +676,46 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       status: "auditing",
       nextAction: "Review findings",
     });
+
+    if (application?.metadata?.autoAdvanceAudits === true) {
+      const latestRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
+      const latestAudit = latestRuns.find(
+        (item) => item.lens === result.data.lens && item.reviewsVersion === `V${storedReviewsVersion}`,
+      );
+      if (!latestAudit) throw new AppError("AUDIT_NOT_FOUND", "Audit result was not persisted", 500);
+      const findings = await this.deps.audits.listFindings(run.tenantId, latestAudit.publicId);
+      await Promise.all(
+        findings
+          .filter((finding) => finding.status === "open")
+          .map((finding) => this.deps.audits.updateFindingDecision(run.tenantId, finding.publicId, "accepted")),
+      );
+      for (const finding of findings.filter(
+        (item) => item.severity === "critical" || item.severity === "major",
+      )) {
+        addMistakeMemoryRule(this.deps.store, {
+          tenantId: run.tenantId,
+          applicationId: run.applicationId,
+          originatingAudit: latestAudit.lens,
+          affectedVersion: latestAudit.reviewsVersion,
+          category: finding.section,
+          rule: finding.suggestedText,
+          severity: finding.severity,
+          status: "active",
+          userOverride: false,
+          appliedIn: [`V${storedProducesVersion}`],
+        });
+      }
+      const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
+      await this.deps.engine.transition(run.id, nextStage, {
+        message: "Customer audit applied automatically",
+      });
+      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+        stage: nextStage,
+        workflowStage: nextStage,
+        status: "resume",
+        nextAction: "Creating tailored resume",
+      });
+    }
   }
 
   private async runFinalQa(run: WorkflowRunRecord) {
@@ -691,5 +768,16 @@ This is a supplement to deterministic checks. Do not claim deterministic or visu
       status: "ready",
       nextAction: "Export resume",
     });
+    await this.deps.queue?.enqueue(
+      "pdf-rendering",
+      "customer-resume.render",
+      {
+        tenantId: run.tenantId,
+        applicationId: run.applicationPublicId,
+        versionId: latest.publicId,
+        workflowId: run.publicId,
+      },
+      { idempotencyKey: `customer-render:${run.applicationPublicId}:${latest.publicId}` },
+    );
   }
 }

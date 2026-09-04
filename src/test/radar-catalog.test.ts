@@ -1,6 +1,6 @@
 /** @vitest-environment node */
 import { beforeEach, describe, expect, it } from "vitest";
-import { getSharedCatalog, resetSharedCatalogForTests } from "../../server/radar/catalog";
+import { getSharedCatalog, resetSharedCatalogForTests, seedDemoCatalog } from "../../server/radar/catalog";
 import { RadarService } from "../../server/radar/service";
 import { ensureDemoUser, DEMO_USER } from "../../server/auth/demo-auth";
 import { createEmptyMemoryStore } from "../../server/database/repositories";
@@ -20,6 +20,8 @@ function ctx(userId: string, tenantId: string): AuthContext {
 describe("radar catalog seed & search", () => {
   beforeEach(() => {
     resetSharedCatalogForTests();
+    // Explicitly seed for demo tests
+    seedDemoCatalog();
   });
 
   it("seeds Cisco as REPOSTED with labeled LinkedIn demo sighting", () => {
@@ -51,7 +53,10 @@ describe("radar catalog seed & search", () => {
 });
 
 describe("radar tenant isolation", () => {
-  beforeEach(() => resetSharedCatalogForTests());
+  beforeEach(() => {
+    resetSharedCatalogForTests();
+    seedDemoCatalog();
+  });
 
   it("saved and hidden jobs are user-specific", async () => {
     const store = createEmptyMemoryStore();
@@ -72,8 +77,8 @@ describe("radar tenant isolation", () => {
     expect([...catalog.savedJobs.values()].some((s) => s.userId === "usr_other")).toBe(false);
 
     service.hide(authA, job.publicId);
-    const searchA = service.search(authA, { limit: 100 });
-    const searchB = service.search(authB, { limit: 100 });
+    const searchA = await service.search(authA, { limit: 100 });
+    const searchB = await service.search(authB, { limit: 100 });
     expect(searchA.results.find((r) => r.job.id === job.id)).toBeFalsy();
     expect(searchB.results.find((r) => r.job.id === job.id)).toBeTruthy();
   });
@@ -100,7 +105,10 @@ describe("radar tenant isolation", () => {
 });
 
 describe("radar alerts", () => {
-  beforeEach(() => resetSharedCatalogForTests());
+  beforeEach(() => {
+    resetSharedCatalogForTests();
+    seedDemoCatalog();
+  });
 
   it("does not duplicate alert deliveries for the same job", async () => {
     const store = createEmptyMemoryStore();

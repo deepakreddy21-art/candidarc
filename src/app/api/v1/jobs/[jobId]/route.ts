@@ -14,7 +14,7 @@ export async function GET(request: Request, { params }: Params) {
     requestId = ctx.requestId;
     requireUser(ctx);
     const runtime = await getRuntime();
-    const result = runtime.services.radar.getJob(ctx, jobId);
+    const result = await runtime.services.radar.getJob(ctx, jobId);
     const job = toRadarJobView(runtime.services.radar.catalog, {
       job: result.job,
       match: result.match,

@@ -285,6 +285,12 @@ export interface MatchBreakdown {
   explanation: string[];
   matchedSkills: string[];
   missingSkills: string[];
+  /** Human-readable match label (Strong match | Good match | Stretch opportunity | Not recommended) */
+  matchLabel?: string;
+  /** UI tone for the label (success | accent | warning | neutral) */
+  matchTone?: "success" | "accent" | "warning" | "neutral";
+  /** Evidence-backed reasons citing skills that exist on profile */
+  matchReasons?: string[];
 }
 
 export interface JobMatch {

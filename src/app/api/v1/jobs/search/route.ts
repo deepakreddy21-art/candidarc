@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     const runtime = await getRuntime();
     const url = new URL(request.url);
     const query = parseJobSearchParams(url);
-    const result = runtime.services.radar.search(ctx, query);
+    const result = await runtime.services.radar.search(ctx, query);
     return jsonOk(toSearchApiResponse(runtime.services.radar.catalog, result));
   } catch (err) {
     return jsonError(err, requestId || undefined);

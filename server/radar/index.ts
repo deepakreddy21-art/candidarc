@@ -1,8 +1,13 @@
 export * from "./types";
 export * from "./freshness";
 export * from "./repost";
-export { CanonicalJobCatalog, getSharedCatalog, resetSharedCatalogForTests, SEED_CANDIDATE_PROFILE } from "./catalog";
+export { CanonicalJobCatalog, getSharedCatalog, resetSharedCatalogForTests, seedDemoCatalog, SEED_CANDIDATE_PROFILE } from "./catalog";
 export { RadarSearchIndex } from "./search-index";
 export { RadarService } from "./service";
 export { registerRadarQueueHandlers, RADAR_QUEUE_NAMES } from "./queues";
 export { listProviders, getProvider, getEnabledProviders } from "./providers/registry";
+export { loadCandidateProfileForMatch, isProfileEmpty, EMPTY_PROFILE } from "./profile";
+export { getMatchLabel, getMatchReasons, enhanceMatchBreakdown, MATCH_THRESHOLDS } from "./match-labels";
+export { parseNaturalLanguageQuery } from "./nl-search";
+export { generateOpportunityBrief } from "./opportunity-brief";
+export * from "./persistence";

@@ -7,6 +7,7 @@ import {
   researchSchema,
   resumeSchema,
 } from "./schemas";
+import { validateEvidenceIds, validateResumeTechnologies } from "./evidence-guard";
 import {
   AiProviderError,
   type GenerationProvider,
@@ -386,6 +387,10 @@ export class MockGenerationProvider implements GenerationProvider {
       if (!loose.success) {
         throw new AiProviderError("INVALID_MODEL_OUTPUT", "Mock fixture failed schema validation", true, loose.error.flatten());
       }
+      if (promptId === "resume-generation") {
+        validateEvidenceIds(loose.data, request.metadata?.allowedEvidenceIds);
+        validateResumeTechnologies(loose.data, request.metadata?.allowedTechnologies);
+      }
       const rawText = JSON.stringify(loose.data);
       return {
         data: loose.data,
@@ -397,6 +402,10 @@ export class MockGenerationProvider implements GenerationProvider {
       };
     }
 
+    if (promptId === "resume-generation") {
+      validateEvidenceIds(parsed.data, request.metadata?.allowedEvidenceIds);
+      validateResumeTechnologies(parsed.data, request.metadata?.allowedTechnologies);
+    }
     const rawText = JSON.stringify(parsed.data);
     return {
       data: parsed.data,

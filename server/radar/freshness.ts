@@ -219,3 +219,92 @@ export function excludeOriginallyOlderThan<
     return d.getTime() >= cutoff;
   });
 }
+
+/**
+ * Format a composite freshness statement that is honest about what we know.
+ *
+ * Rules:
+ * - Never present firstDiscoveredAt as original posting date
+ * - DATE_ONLY never shows minute/hour precision
+ * - Unknown original date: explicit "original posting date unknown"
+ * - Builds composite: "Reposted X ago · originally posted Y" or
+ *   "First discovered by CandidArc X ago · original posting date unknown"
+ */
+export function formatCompositeFreshness(
+  job: Pick<
+    CanonicalJob,
+    | "classification"
+    | "originalPostedAt"
+    | "originalPostedPrecision"
+    | "firstDiscoveredAt"
+    | "repostedAt"
+    | "repostCount"
+  >,
+  now: Date = new Date(),
+): string {
+  const parts: string[] = [];
+
+  // Handle reposts
+  if (job.classification === "REPOSTED" && job.repostedAt) {
+    const repostAge = formatFreshnessLabel(
+      new Date(job.repostedAt),
+      "EXACT_TIMESTAMP",
+      now,
+      "reposted",
+    );
+    parts.push(repostAge);
+
+    // Add original age if known
+    if (job.originalPostedAt) {
+      const originalAge = formatFreshnessLabel(
+        new Date(job.originalPostedAt),
+        job.originalPostedPrecision,
+        now,
+        "originally_posted",
+      );
+      parts.push(`originally ${originalAge.replace(/^Posted /, "")}`);
+    } else {
+      parts.push("original posting date unknown");
+    }
+  } else if (job.classification === "REFRESHED") {
+    const discoveredAge = formatFreshnessLabel(
+      new Date(job.firstDiscoveredAt),
+      "EXACT_TIMESTAMP",
+      now,
+      "discovered",
+    );
+    parts.push(`Listing refreshed · ${discoveredAge}`);
+  } else if (job.classification === "REOPENED") {
+    const discoveredAge = formatFreshnessLabel(
+      new Date(job.firstDiscoveredAt),
+      "EXACT_TIMESTAMP",
+      now,
+      "discovered",
+    );
+    parts.push(`Reopened · ${discoveredAge}`);
+  } else {
+    // NEW or unknown classification
+    if (job.originalPostedAt) {
+      // We know the original posting date
+      const originalAge = formatFreshnessLabel(
+        new Date(job.originalPostedAt),
+        job.originalPostedPrecision,
+        now,
+        "originally_posted",
+      );
+      parts.push(originalAge);
+    } else {
+      // We only know when WE discovered it - be honest about this
+      const discoveredAge = formatFreshnessLabel(
+        new Date(job.firstDiscoveredAt),
+        "EXACT_TIMESTAMP",
+        now,
+        "discovered",
+      );
+      parts.push(discoveredAge);
+      parts.push("original posting date unknown");
+    }
+  }
+
+  return parts.join(" · ");
+}

@@ -12,13 +12,14 @@ import {
   RefreshCw,
   RotateCcw,
   Sparkles,
+  ExternalLink,
+  FileText,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ProgressBar } from "@/components/ui/feedback";
 import { cn, formatRelative } from "@/lib/utils";
-import type { JobClassification, RadarJob, VerificationState } from "@/types/radar";
+import type { JobClassification, RadarJob, VerificationState, MatchLabel } from "@/types/radar";
 
 const classificationMeta: Record<
   JobClassification,
@@ -62,12 +63,21 @@ export function JobClassificationBadge({ classification }: { classification: Job
   );
 }
 
+/** Match label badge colors */
+const matchLabelMeta: Record<MatchLabel, { tone: "success" | "accent" | "warning" | "neutral" }> = {
+  "Strong match": { tone: "success" },
+  "Good match": { tone: "accent" },
+  "Stretch opportunity": { tone: "warning" },
+  "Not recommended": { tone: "neutral" },
+};
+
 export function JobCard({
   job,
   selected,
   onSelect,
   onSave,
   onHide,
+  onTailorResume,
   dense,
 }: {
   job: RadarJob;
@@ -75,9 +85,12 @@ export function JobCard({
   onSelect?: (id: string) => void;
   onSave?: (job: RadarJob) => void;
   onHide?: (job: RadarJob) => void;
+  onTailorResume?: (job: RadarJob) => void;
   dense?: boolean;
 }) {
   const meta = classificationMeta[job.classification];
+  const matchLabel = job.matchLabel as MatchLabel | undefined;
+  const matchTone = matchLabel ? matchLabelMeta[matchLabel]?.tone ?? "neutral" : "neutral";
 
   return (
     <Card
@@ -184,12 +197,13 @@ export function JobCard({
                 <p>
                   Originally{" "}
                   {job.originalPostedPrecision === "DATE_ONLY" ||
-                  job.originalPostedPrecision === "RELATIVE_DAYS"
-                    ? `posted ~${formatRelative(job.originalPostedAt).replace(" ago", "")} ago`
+                  job.originalPostedPrecision === "RELATIVE_DAYS" ||
+                  job.originalPostedPrecision === "UNKNOWN"
+                    ? `posted on ${new Date(job.originalPostedAt).toLocaleDateString()} (date only)`
                     : `posted ${formatRelative(job.originalPostedAt)}`}
                 </p>
               ) : (
-                <p>Original posting date unavailable</p>
+                <p>Original posting date unknown</p>
               )}
               {job.lastVerifiedAt ? (
                 <p>
@@ -197,18 +211,36 @@ export function JobCard({
                   {formatRelative(job.lastVerifiedAt)}
                 </p>
               ) : null}
-              <p>Discovered {formatRelative(job.firstSeenAt)}</p>
+              <p>First discovered by CandidArc {formatRelative(job.firstSeenAt)}</p>
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <div>
-                <p className="text-[11px] text-foreground-muted">Profile match</p>
-                <p className="text-sm font-semibold tabular-nums">{job.matchScore}%</p>
+            {/* Match label — never show uncalibrated percentages as the primary signal */}
+            <div className="mt-4">
+              <div className="flex items-center gap-2">
+                <Badge tone={matchTone} className="text-xs">
+                  {matchLabel ?? (
+                    job.matchScore >= 75
+                      ? "Strong match"
+                      : job.matchScore >= 55
+                        ? "Good match"
+                        : job.matchScore >= 35
+                          ? "Stretch opportunity"
+                          : "Not recommended"
+                  )}
+                </Badge>
+                {job.matchReasons && job.matchReasons.length > 0 && (
+                  <span className="truncate text-xs text-foreground-muted">
+                    {job.matchReasons[0]}
+                  </span>
+                )}
               </div>
-              <div>
-                <p className="text-[11px] text-foreground-muted">Evidence coverage</p>
-                <ProgressBar value={job.evidenceCoverage} className="mt-1.5" tone="cyan" />
-              </div>
+              {job.matchReasons && job.matchReasons.length > 1 && !dense && (
+                <ul className="mt-2 space-y-0.5 text-xs text-foreground-muted">
+                  {job.matchReasons.slice(1, 3).map((reason, i) => (
+                    <li key={i}>• {reason}</li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             {job.technologies.length ? (
@@ -217,13 +249,39 @@ export function JobCard({
               </p>
             ) : null}
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              {onTailorResume && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTailorResume(job);
+                  }}
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  Tailor resume
+                </Button>
+              )}
+              {job.applicationUrl && (
+                <Button variant="outline" size="sm" asChild>
+                  <a
+                    href={job.applicationUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Open listing
+                  </a>
+                </Button>
+              )}
               <Link
                 href={`/app/radar/jobs/${job.id}`}
                 className="text-sm font-medium text-accent hover:underline"
                 onClick={(e) => e.stopPropagation()}
               >
-                Open details
+                Details
               </Link>
               <span className="text-foreground-muted">·</span>
               <span className="text-xs text-foreground-muted">{job.primarySource.name}</span>

@@ -19,8 +19,7 @@ import {
 } from "@/data/radar-seed";
 import { api, allowDemoFallback, ApiError } from "@/services/api";
 
-const delay = (ms = 160) => new Promise((r) => setTimeout(r, ms));
-
+// NOTE: Removed artificial delay - no longer needed
 const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
@@ -68,11 +67,124 @@ function toQuery(params: RadarSearchParams): string {
   return q ? `?${q}` : "";
 }
 
+/**
+ * Map API response to RadarJob.
+ * PRODUCTION: Only uses API fields, no seed fallback.
+ * DEMO: May fill missing fields from seed for display.
+ */
 function mapJob(raw: Partial<RadarJob> & { id?: string; publicId?: string }): RadarJob {
   const id = raw.publicId ?? raw.id ?? "";
+
+  // In production, do NOT fall back to seed data
+  if (!allowDemoFallback()) {
+    return {
+      id,
+      publicId: id,
+      title: raw.title ?? "Unknown",
+      company: raw.company ?? "Unknown",
+      companyMark: raw.companyMark ?? raw.company?.slice(0, 2).toUpperCase() ?? "??",
+      location: raw.location ?? "Unknown",
+      remotePolicy: raw.remotePolicy ?? "unspecified",
+      employmentType: raw.employmentType ?? "Full-time",
+      seniority: raw.seniority,
+      department: raw.department,
+      compensation: raw.compensation,
+      technologies: raw.technologies ?? [],
+      classification: raw.classification ?? "UNKNOWN",
+      verificationState: raw.verificationState ?? "LIKELY_OPEN",
+      companyDirect: raw.companyDirect ?? false,
+      timestampEstimated: raw.timestampEstimated ?? false,
+      possibleDuplicate: raw.possibleDuplicate ?? false,
+      originalPostedAt: raw.originalPostedAt,
+      originalPostedPrecision: raw.originalPostedPrecision ?? "UNKNOWN",
+      sourcePostedAt: raw.sourcePostedAt,
+      repostedAt: raw.repostedAt,
+      firstSeenAt: raw.firstSeenAt ?? new Date().toISOString(),
+      lastVerifiedAt: raw.lastVerifiedAt,
+      repostCount: raw.repostCount ?? 0,
+      matchScore: raw.matchScore ?? 0,
+      evidenceCoverage: raw.evidenceCoverage ?? 0,
+      matchBreakdown: raw.matchBreakdown ?? {
+        overall: raw.matchScore ?? 0,
+        skills: 0,
+        evidence: 0,
+        experience: 0,
+        seniority: 0,
+        location: 0,
+        compensation: 0,
+        eligibility: 0,
+        careerDirection: 0,
+      },
+      matchLabel: raw.matchLabel,
+      matchTone: raw.matchTone,
+      matchReasons: raw.matchReasons ?? [],
+      primarySource: raw.primarySource ?? {
+        id: "unknown",
+        name: "Unknown",
+        kind: "public_api",
+        companyDirect: false,
+      },
+      sources: raw.sources ?? [],
+      sightings: raw.sightings ?? [],
+      applicationUrl: raw.applicationUrl,
+      companyCareersUrl: raw.companyCareersUrl,
+      description: raw.description ?? "",
+      responsibilities: raw.responsibilities ?? [],
+      requirements: raw.requirements ?? [],
+      preferred: raw.preferred ?? [],
+      hiringSignals: raw.hiringSignals ?? [],
+      freshnessExplanation: raw.freshnessExplanation ?? "Posting freshness unknown",
+      repostExplanation: raw.repostExplanation,
+      saved: raw.saved,
+      hidden: raw.hidden,
+      demoData: raw.demoData,
+    };
+  }
+
+  // Demo mode: fill from seed for display
   const seed = radarJobs.find((j) => j.id === id || j.publicId === id);
   return {
-    ...(seed ?? radarJobs[0]),
+    ...(seed ?? {
+      id,
+      publicId: id,
+      title: "Unknown",
+      company: "Unknown",
+      companyMark: "??",
+      location: "Unknown",
+      remotePolicy: "unspecified" as const,
+      employmentType: "Full-time",
+      technologies: [],
+      classification: "UNKNOWN" as const,
+      verificationState: "LIKELY_OPEN" as const,
+      companyDirect: false,
+      timestampEstimated: false,
+      possibleDuplicate: false,
+      originalPostedPrecision: "UNKNOWN" as const,
+      firstSeenAt: new Date().toISOString(),
+      repostCount: 0,
+      matchScore: 0,
+      evidenceCoverage: 0,
+      matchBreakdown: {
+        overall: 0,
+        skills: 0,
+        evidence: 0,
+        experience: 0,
+        seniority: 0,
+        location: 0,
+        compensation: 0,
+        eligibility: 0,
+        careerDirection: 0,
+      },
+      primarySource: { id: "unknown", name: "Unknown", kind: "public_api" as const, companyDirect: false },
+      sources: [],
+      sightings: [],
+      description: "",
+      responsibilities: [],
+      requirements: [],
+      preferred: [],
+      hiringSignals: [],
+      freshnessExplanation: "Unknown",
+    }),
     ...raw,
     id,
     publicId: id,
@@ -94,12 +206,18 @@ function mapJob(raw: Partial<RadarJob> & { id?: string; publicId?: string }): Ra
       eligibility: 0,
       careerDirection: 0,
     },
+    matchLabel: raw.matchLabel,
+    matchTone: raw.matchTone,
+    matchReasons: raw.matchReasons ?? [],
   };
 }
 
+/**
+ * Mock API for demo mode.
+ * NOTE: Delays removed - they were artificial and unnecessary.
+ */
 const mock = {
   async searchJobs(params: RadarSearchParams = {}): Promise<RadarSearchResult> {
-    await delay();
     const { mutableJobs, hiddenIds, savedIds } = getMutableRadarState();
     const filtered = filterRadarJobs(
       mutableJobs.filter((j) => !hiddenIds.has(j.id)),
@@ -113,32 +231,26 @@ const mock = {
     };
   },
   async getJob(id: string): Promise<RadarJob | undefined> {
-    await delay();
     const { mutableJobs, savedIds, hiddenIds } = getMutableRadarState();
     const job = mutableJobs.find((j) => j.id === id || j.publicId === id);
     if (!job) return undefined;
     return { ...job, saved: savedIds.has(job.id), hidden: hiddenIds.has(job.id) };
   },
   async getJobHistory(id: string): Promise<RadarHistoryEvent[]> {
-    await delay();
     return structuredClone(radarHistoryByJobId[id] ?? []);
   },
   async saveJob(id: string): Promise<void> {
-    await delay(80);
     getMutableRadarState().savedIds.add(id);
   },
   async unsaveJob(id: string): Promise<void> {
-    await delay(80);
     getMutableRadarState().savedIds.delete(id);
   },
   async hideJob(id: string): Promise<void> {
-    await delay(80);
     const state = getMutableRadarState();
     state.hiddenIds.add(id);
     state.savedIds.delete(id);
   },
   async createApplicationFromJob(id: string): Promise<Application> {
-    await delay(320);
     const job = await mock.getJob(id);
     if (!job) throw new Error("Job not found");
     return api.createApplication({
@@ -150,11 +262,9 @@ const mock = {
     });
   },
   async listSavedSearches(): Promise<SavedSearch[]> {
-    await delay();
     return structuredClone(getMutableRadarState().mutableSaved);
   },
   async saveSearch(input: { name: string; query: RadarSearchParams }): Promise<SavedSearch> {
-    await delay(200);
     const item: SavedSearch = {
       id: `ss-${Date.now()}`,
       name: input.name,
@@ -168,11 +278,9 @@ const mock = {
     return structuredClone(item);
   },
   async listAlerts(): Promise<JobAlert[]> {
-    await delay();
     return structuredClone(getMutableRadarState().mutableAlerts);
   },
   async createAlert(input: Omit<JobAlert, "id" | "createdAt">): Promise<JobAlert> {
-    await delay(200);
     const item: JobAlert = {
       ...input,
       id: `alert-${Date.now()}`,
@@ -183,11 +291,9 @@ const mock = {
     return structuredClone(item);
   },
   async getSourceCoverage(): Promise<SourceCoverageSummary> {
-    await delay();
     return structuredClone(radarSourceCoverage);
   },
   async getHomeSummary(): Promise<RadarHomeSummary> {
-    await delay();
     return getRadarHomeSummary(getMutableRadarState().mutableJobs);
   },
 };
@@ -297,5 +403,78 @@ export const radarApi = {
       return getRadarHomeSummary(search.jobs);
     }
     return mock.getHomeSummary();
+  },
+
+  /**
+   * Tailor a resume for a specific job.
+   * Returns workflowId for navigation to /app/resumes/{workflowId}.
+   */
+  async tailorResume(jobId: string): Promise<{ workflowId: string; applicationId: string }> {
+    const res = await apiFetch<{ workflowId: string; applicationId: string }>(
+      `/jobs/${jobId}/tailor-resume`,
+      { method: "POST", body: "{}" },
+    );
+    if (res.ok) return res.data;
+    throw new ApiError("Could not tailor resume for this job", res.status ?? 500);
+  },
+
+  /**
+   * Parse natural language search query into structured filters.
+   */
+  async parseSearch(query: string): Promise<{
+    query: RadarSearchParams;
+    parsedFilters: Record<string, string>;
+    confidence: number;
+  }> {
+    const res = await apiFetch<{
+      query: RadarSearchParams;
+      parsedFilters: Record<string, string>;
+      confidence: number;
+    }>("/jobs/parse-search", {
+      method: "POST",
+      body: JSON.stringify({ query }),
+    });
+    if (res.ok) return res.data;
+    // Fall back to keyword-only
+    return { query: { q: query }, parsedFilters: {}, confidence: 0.1 };
+  },
+
+  /**
+   * Get opportunity brief for a job.
+   */
+  async getBrief(jobId: string): Promise<{
+    summary: string;
+    companyOverview?: string;
+    roleHighlights: string[];
+    skillsAlignment: string[];
+    concerns: string[];
+    resumeReadinessLabel: "ready" | "needs_work" | "significant_gaps";
+    cached: boolean;
+  }> {
+    const res = await apiFetch<{
+      summary: string;
+      companyOverview?: string;
+      roleHighlights: string[];
+      skillsAlignment: string[];
+      concerns: string[];
+      resumeReadinessLabel: "ready" | "needs_work" | "significant_gaps";
+      cached: boolean;
+    }>(`/jobs/${jobId}/brief`);
+    if (res.ok) return res.data;
+    throw new ApiError("Could not load opportunity brief", res.status ?? 500);
+  },
+
+  /**
+   * Record a user interaction with a job.
+   */
+  async recordInteraction(
+    jobId: string,
+    interactionType: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<void> {
+    await apiFetch(`/jobs/${jobId}/interactions`, {
+      method: "POST",
+      body: JSON.stringify({ interactionType, metadata }),
+    });
   },
 };

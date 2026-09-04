@@ -403,6 +403,8 @@ export interface WorkflowRepository {
   appendEvent(event: Omit<WorkflowEventRecord, "id" | "publicId" | "seq" | "createdAt"> & { seq?: number }): Promise<WorkflowEventRecord>;
   listEvents(tenantId: string, workflowPublicId: string, sinceSeq?: number): Promise<WorkflowEventRecord[]>;
   listByApplication(tenantId: string, applicationPublicId: string): Promise<WorkflowRunRecord[]>;
+  /** Non-terminal runs that should be re-enqueued after a worker/process restart. */
+  listIncomplete(limit?: number): Promise<WorkflowRunRecord[]>;
 }
 
 export interface UsageRepository {
@@ -860,6 +862,13 @@ export class MemoryRepositories implements Repositories {
         return [...store.workflowRuns.values()].filter(
           (r) => r.tenantId === tenantId && r.applicationPublicId === applicationPublicId,
         );
+      },
+      async listIncomplete(limit = 200) {
+        const active = new Set(["queued", "running", "retrying"]);
+        return [...store.workflowRuns.values()]
+          .filter((r) => active.has(r.status) && !["FINAL_READY", "FAILED", "CANCELLED", "FINAL_QA_FAILED"].includes(r.stage))
+          .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+          .slice(0, limit);
       },
     };
 

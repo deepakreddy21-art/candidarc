@@ -22,7 +22,7 @@ export default function RadarJobDetailPage() {
   const [history, setHistory] = useState<RadarHistoryEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [tailoring, setTailoring] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,7 +88,8 @@ export default function RadarJobDetailPage() {
         <div className="space-y-5">
           <JobDetailPanel
             job={job}
-            creating={creating}
+            history={history}
+            tailoring={tailoring}
             onSave={async () => {
               if (job.saved) {
                 await radarApi.unsaveJob(job.id);
@@ -105,16 +106,16 @@ export default function RadarJobDetailPage() {
               toast.success("Job hidden");
               router.push("/app/radar/search");
             }}
-            onCreateApplication={async () => {
-              setCreating(true);
+            onTailorResume={async () => {
+              setTailoring(true);
               try {
-                const app = await radarApi.createOpportunity(job.id);
-                toast.success("Application workspace created");
-                router.push(`/app/opportunities/${app.id}`);
+                const result = await radarApi.tailorResume(job.id);
+                toast.success("Resume tailoring started");
+                router.push(`/app/resumes/${result.workflowId}`);
               } catch {
-                toast.error("Could not create application");
+                toast.error("Could not start resume tailoring");
               } finally {
-                setCreating(false);
+                setTailoring(false);
               }
             }}
           />

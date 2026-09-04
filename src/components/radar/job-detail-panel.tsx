@@ -8,30 +8,56 @@ import {
   EyeOff,
   Bookmark,
   BookmarkCheck,
+  FileText,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MatchBreakdownPanel } from "@/components/radar/match-breakdown";
 import { JobClassificationBadge } from "@/components/radar/job-card";
 import { formatRelative } from "@/lib/utils";
-import type { RadarJob } from "@/types/radar";
+import type { RadarJob, MatchLabel, RadarHistoryEvent } from "@/types/radar";
+
+/** Match label badge colors */
+const matchLabelMeta: Record<MatchLabel, { tone: "success" | "accent" | "warning" | "neutral" }> = {
+  "Strong match": { tone: "success" },
+  "Good match": { tone: "accent" },
+  "Stretch opportunity": { tone: "warning" },
+  "Not recommended": { tone: "neutral" },
+};
 
 export function JobDetailPanel({
   job,
+  history,
+  brief,
   onSave,
   onHide,
-  onCreateApplication,
-  creating,
+  onTailorResume,
+  tailoring,
   compact,
 }: {
   job: RadarJob;
+  history?: RadarHistoryEvent[];
+  brief?: {
+    summary: string;
+    companyOverview?: string;
+    roleHighlights: string[];
+    skillsAlignment: string[];
+    concerns: string[];
+    resumeReadinessLabel: "ready" | "needs_work" | "significant_gaps";
+  };
   onSave?: () => void;
   onHide?: () => void;
-  onCreateApplication?: () => void;
-  creating?: boolean;
+  onTailorResume?: () => void;
+  tailoring?: boolean;
   compact?: boolean;
 }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const matchLabel = job.matchLabel as MatchLabel | undefined;
+  const matchTone = matchLabel ? matchLabelMeta[matchLabel]?.tone ?? "neutral" : "neutral";
   return (
     <div className="space-y-4">
       <Card>
@@ -105,11 +131,111 @@ export function JobDetailPanel({
             </p>
           ) : null}
 
+          {/* Match label section */}
+          {matchLabel && (
+            <div className="rounded-xl border border-border bg-canvas p-3">
+              <div className="flex items-center gap-2">
+                <Badge tone={matchTone} className="text-sm">
+                  {matchLabel}
+                </Badge>
+              </div>
+              {job.matchReasons && job.matchReasons.length > 0 && (
+                <ul className="mt-2 space-y-1 text-sm text-foreground-secondary">
+                  {job.matchReasons.map((reason, i) => (
+                    <li key={i}>• {reason}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Opportunity Brief section (lazy loaded) */}
+          {brief && (
+            <div className="rounded-xl border border-border bg-canvas p-4 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-foreground-muted">
+                Opportunity Brief
+              </p>
+              <p className="text-sm text-foreground-secondary">{brief.summary}</p>
+              {brief.companyOverview && (
+                <p className="text-sm text-foreground-muted">{brief.companyOverview}</p>
+              )}
+              {brief.roleHighlights.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-foreground-muted">Highlights</p>
+                  <ul className="mt-1 space-y-0.5 text-sm text-foreground-secondary">
+                    {brief.roleHighlights.map((h, i) => (
+                      <li key={i}>• {h}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {brief.skillsAlignment.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-foreground-muted">Skills Alignment</p>
+                  <ul className="mt-1 space-y-0.5 text-sm text-foreground-secondary">
+                    {brief.skillsAlignment.map((s, i) => (
+                      <li key={i}>• {s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {brief.concerns.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-warning">Concerns</p>
+                  <ul className="mt-1 space-y-0.5 text-sm text-foreground-muted">
+                    {brief.concerns.map((c, i) => (
+                      <li key={i}>• {c}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <Badge
+                tone={
+                  brief.resumeReadinessLabel === "ready"
+                    ? "success"
+                    : brief.resumeReadinessLabel === "needs_work"
+                      ? "warning"
+                      : "neutral"
+                }
+              >
+                Resume readiness: {brief.resumeReadinessLabel.replace("_", " ")}
+              </Badge>
+            </div>
+          )}
+
+          {/* Posting History (collapsed by default) */}
+          {history && history.length > 0 && (
+            <div className="rounded-xl border border-border bg-canvas p-3">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between text-xs font-semibold uppercase tracking-wider text-foreground-muted"
+                onClick={() => setHistoryOpen(!historyOpen)}
+              >
+                <span>Posting History ({history.length})</span>
+                {historyOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+              {historyOpen && (
+                <ul className="mt-3 space-y-2 text-sm">
+                  {history.map((event) => (
+                    <li key={event.id} className="flex gap-2">
+                      <span className="text-foreground-muted shrink-0">
+                        {formatRelative(event.at)}
+                      </span>
+                      <span className="text-foreground-secondary">{event.detail}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2">
-            <Button onClick={onCreateApplication} disabled={creating}>
-              <Briefcase className="h-4 w-4" />
-              {creating ? "Creating…" : "Build an application for this role"}
-            </Button>
+            {onTailorResume && (
+              <Button onClick={onTailorResume} disabled={tailoring}>
+                <FileText className="h-4 w-4" />
+                {tailoring ? "Creating…" : "Tailor resume"}
+              </Button>
+            )}
             {onSave ? (
               <Button variant="secondary" onClick={onSave}>
                 {job.saved ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
@@ -126,11 +252,19 @@ export function JobDetailPanel({
               <Button variant="outline" asChild>
                 <a href={job.applicationUrl} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
-                  Open listing
+                  Open official listing
                 </a>
               </Button>
             ) : null}
           </div>
+
+          {/* Third-party source warning */}
+          {!job.companyDirect && job.primarySource && (
+            <p className="text-xs text-foreground-muted">
+              ⚠️ This listing is from {job.primarySource.name}, a third-party source.
+              Verify on the company&apos;s official careers page before applying.
+            </p>
+          )}
         </CardContent>
       </Card>
 

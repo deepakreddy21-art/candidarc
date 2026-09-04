@@ -16,8 +16,9 @@ describe("Radar UI", () => {
     );
     expect(screen.getByText(job.company)).toBeInTheDocument();
     expect(screen.getByText(job.title)).toBeInTheDocument();
-    expect(screen.getAllByText(/Reposted/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/First discovered by CandidArc/i)).toBeInTheDocument();
     expect(screen.getByText(/Company direct/i)).toBeInTheDocument();
+    expect(screen.queryByText(/%$/)).not.toBeInTheDocument();
   });
 
   it("exposes freshness presets and basis controls", () => {

@@ -47,18 +47,26 @@ const features = [
 ];
 
 export default function LandingPage() {
-  const reduce = useReducedMotion();
+  const reduceMotion = useReducedMotion();
+  const [mounted, setMounted] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [score, setScore] = useState(68);
+  // Avoid SSR/client mismatches from prefers-reduced-motion and motion initial styles.
+  const reduce = !mounted || !!reduceMotion;
 
   useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
     if (reduce) {
       setScore(91);
       return;
     }
     const id = window.setTimeout(() => setScore(91), 700);
     return () => window.clearTimeout(id);
-  }, [reduce]);
+  }, [mounted, reduce]);
 
   return (
     <div className="min-h-dvh bg-background text-foreground">

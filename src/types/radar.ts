@@ -80,6 +80,16 @@ export type AlertCadence =
 
 export type AlertChannel = "in_app" | "email" | "push";
 
+/** Human-readable match label */
+export type MatchLabel =
+  | "Strong match"
+  | "Good match"
+  | "Stretch opportunity"
+  | "Not recommended";
+
+/** Match label UI tone */
+export type MatchTone = "success" | "accent" | "warning" | "neutral";
+
 export interface MatchBreakdown {
   overall: number;
   skills: number;
@@ -163,6 +173,12 @@ export interface RadarJob {
   matchScore: number;
   evidenceCoverage: number;
   matchBreakdown: MatchBreakdown;
+  /** Human-readable match label */
+  matchLabel?: MatchLabel;
+  /** UI tone for match label */
+  matchTone?: MatchTone;
+  /** Evidence-backed match reasons citing profile skills */
+  matchReasons?: string[];
   primarySource: RadarJobSourceRef;
   sources: RadarJobSourceRef[];
   sightings: RadarJobSighting[];
@@ -186,7 +202,9 @@ export interface RadarSearchParams {
   location?: string;
   company?: string;
   excludeCompanies?: string;
+  excludedCompanies?: string;
   remote?: RemotePolicy | "any";
+  remotePolicy?: RemotePolicy | "any";
   employmentType?: string;
   seniority?: string;
   freshnessPreset?: FreshnessPreset;
@@ -201,7 +219,10 @@ export interface RadarSearchParams {
   companyDirectOnly?: boolean;
   verifiedOpenOnly?: boolean;
   hidePossibleDuplicates?: boolean;
+  includeReposts?: boolean;
   matchScoreMin?: number;
+  compensationMin?: number;
+  savedOnly?: boolean;
   sort?: JobSort;
   cursor?: string;
   limit?: number;

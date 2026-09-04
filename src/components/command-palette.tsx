@@ -22,6 +22,7 @@ import { useUiStore } from "@/stores/ui";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 const commands = [
+  { id: "new-resume", label: "New resume", href: "/app/resumes/new", icon: FileText },
   { id: "new-opp", label: "New opportunity", href: "/app/opportunities/new", icon: Plus },
   { id: "active", label: "Open Cisco opportunity", href: "/app/opportunities/app-cisco", icon: Briefcase },
   { id: "radar", label: "Open Radar", href: "/app/radar", icon: Radar },

@@ -29,6 +29,8 @@ export interface DurableWorkflowEngine {
   retry(tenantId: string, workflowPublicId: string): Promise<WorkflowRunRecord>;
   getStatus(tenantId: string, workflowPublicId: string): Promise<WorkflowRunRecord | null>;
   listEvents(tenantId: string, workflowPublicId: string, sinceSeq?: number): Promise<WorkflowEventRecord[]>;
+  /** Re-enqueue durable runs after a worker or process restart. */
+  recoverIncomplete(): Promise<number>;
 }
 
 function computeBackoffMs(attempt: number): number {
@@ -64,7 +66,7 @@ export class DbWorkflowEngine implements DurableWorkflowEngine {
       inputVersion: input.inputVersion,
       maxAttempts: input.maxAttempts ?? 5,
       traceId: createTraceId(),
-      payload: input.payload ?? {},
+      payload: { ...(input.payload ?? {}), applicationPublicId: input.applicationPublicId },
       startedAt: nowIso(),
     });
 
@@ -136,7 +138,16 @@ export class DbWorkflowEngine implements DurableWorkflowEngine {
     });
 
     if (!isTerminalStage(toStage) && (status === "queued" || status === "running")) {
-      await this.enqueueStage(updated);
+      // The active queue job that advanced *_QUEUED → *_RUNNING must not enqueue a duplicate.
+      const fromFamily = run.stage.replace(/_QUEUED$/, "").replace(/_RUNNING$/, "").replace(/_GENERATING$/, "");
+      const toFamily = toStage.replace(/_QUEUED$/, "").replace(/_RUNNING$/, "").replace(/_GENERATING$/, "");
+      const sameFamilyQueuedToRunning =
+        run.stage.endsWith("_QUEUED") &&
+        (toStage.endsWith("_RUNNING") || toStage.endsWith("_GENERATING")) &&
+        fromFamily === toFamily;
+      if (!sameFamilyQueuedToRunning) {
+        await this.enqueueStage(updated);
+      }
     }
 
     return updated;
@@ -233,10 +244,27 @@ export class DbWorkflowEngine implements DurableWorkflowEngine {
     return this.workflows.listEvents(tenantId, workflowPublicId, sinceSeq);
   }
 
+  async recoverIncomplete(): Promise<number> {
+    const incomplete = await this.workflows.listIncomplete();
+    for (const run of incomplete) {
+      const applicationPublicId =
+        run.applicationPublicId ||
+        (typeof run.payload?.applicationPublicId === "string" ? run.payload.applicationPublicId : "");
+      await this.enqueueStage({ ...run, applicationPublicId });
+    }
+    if (incomplete.length) {
+      logger.info({ recovered: incomplete.length }, "re-enqueued incomplete workflows after restart");
+    }
+    return incomplete.length;
+  }
+
   /** Enqueue only — never run long AI work on the HTTP path. */
   private async enqueueStage(run: WorkflowRunRecord) {
     const queueName = queueForStage(run.stage);
     if (!queueName) return;
+    const applicationPublicId =
+      run.applicationPublicId ||
+      (typeof run.payload?.applicationPublicId === "string" ? run.payload.applicationPublicId : "");
 
     await this.queue.enqueue(
       queueName as QueueName,
@@ -246,7 +274,7 @@ export class DbWorkflowEngine implements DurableWorkflowEngine {
         workflowPublicId: run.publicId,
         tenantId: run.tenantId,
         applicationId: run.applicationId,
-        applicationPublicId: run.applicationPublicId,
+        applicationPublicId,
         stage: run.stage,
         attempt: run.attempt,
         payload: run.payload,

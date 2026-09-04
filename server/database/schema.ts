@@ -1236,6 +1236,222 @@ export const idempotencyKeys = pgTable(
   ],
 );
 
+/* -------------------------------------------------------------------------- */
+/* Radar — Job catalog and user interactions (Phase 3)                        */
+/* -------------------------------------------------------------------------- */
+
+export const radarTimestampPrecisionEnum = pgEnum("radar_timestamp_precision", [
+  "EXACT_TIMESTAMP",
+  "DATE_ONLY",
+  "RELATIVE_HOURS",
+  "RELATIVE_DAYS",
+  "ESTIMATED",
+  "FIRST_SEEN_ONLY",
+  "UNKNOWN",
+]);
+
+export const radarJobClassificationEnum = pgEnum("radar_job_classification", [
+  "NEW",
+  "REPOSTED",
+  "REFRESHED",
+  "REOPENED",
+  "DUPLICATE",
+  "POSSIBLE_DUPLICATE",
+  "UNCHANGED",
+  "EXPIRED",
+  "UNKNOWN",
+]);
+
+export const radarVerificationStateEnum = pgEnum("radar_verification_state", [
+  "VERIFIED_OPEN",
+  "LIKELY_OPEN",
+  "STALE",
+  "LIKELY_CLOSED",
+  "CLOSED",
+  "VERIFICATION_FAILED",
+]);
+
+export const radarLicenseStatusEnum = pgEnum("radar_license_status", [
+  "public",
+  "licensed",
+  "partner",
+  "demo_fixture",
+  "disabled",
+  "pending_review",
+  "revoked",
+]);
+
+export const radarAccessMethodEnum = pgEnum("radar_access_method", [
+  "public_api",
+  "partner_api",
+  "licensed_feed",
+  "ats_board_api",
+  "structured_data",
+  "xml_feed",
+  "sitemap",
+  "user_provided",
+  "approved_integration",
+  "disabled_pending_license",
+]);
+
+export const radarJobStatusEnum = pgEnum("radar_job_status", ["open", "closed", "expired", "unknown"]);
+
+export const radarCompanies = pgTable(
+  "radar_companies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    publicId: publicId(),
+    name: text("name").notNull(),
+    normalizedName: text("normalized_name").notNull(),
+    domain: text("domain"),
+    careersUrl: text("careers_url"),
+    aliases: jsonb("aliases").$type<string[]>().default([]),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_companies_public_id_uidx").on(t.publicId),
+    index("radar_companies_normalized_name_idx").on(t.normalizedName),
+  ],
+);
+
+export const radarJobSources = pgTable(
+  "radar_job_sources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    publicId: publicId(),
+    providerId: text("provider_id").notNull(),
+    displayName: text("display_name").notNull(),
+    accessMethod: radarAccessMethodEnum("access_method").notNull(),
+    baseUrl: text("base_url"),
+    enabled: boolean("enabled").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_job_sources_public_id_uidx").on(t.publicId),
+    uniqueIndex("radar_job_sources_provider_id_uidx").on(t.providerId),
+  ],
+);
+
+export const radarCanonicalJobs = pgTable(
+  "radar_canonical_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    publicId: publicId(),
+    companyId: uuid("company_id").notNull().references(() => radarCompanies.id),
+    companyName: text("company_name").notNull(),
+    title: text("title").notNull(),
+    normalizedTitle: text("normalized_title").notNull(),
+    department: text("department"),
+    team: text("team"),
+    employmentType: text("employment_type"),
+    seniority: text("seniority"),
+    description: text("description").notNull().default(""),
+    requirements: text("requirements"),
+    preferredQualifications: text("preferred_qualifications"),
+    responsibilities: text("responsibilities"),
+    compensation: jsonb("compensation"),
+    locations: jsonb("locations").$type<string[]>().default([]),
+    remotePolicy: text("remote_policy").notNull().default("unknown"),
+    visaSponsorship: boolean("visa_sponsorship"),
+    degreeRequired: boolean("degree_required"),
+    securityClearanceRequired: boolean("security_clearance_required"),
+    techStack: jsonb("tech_stack").$type<string[]>().default([]),
+    canonicalApplicationUrl: text("canonical_application_url"),
+    employerRequisitionId: text("employer_requisition_id"),
+    originalPostedAt: ts("original_posted_at"),
+    originalPostedPrecision: radarTimestampPrecisionEnum("original_posted_precision").notNull().default("UNKNOWN"),
+    firstDiscoveredAt: ts("first_discovered_at").notNull().defaultNow(),
+    lastVerifiedAt: ts("last_verified_at"),
+    lastVerifiedPrecision: radarTimestampPrecisionEnum("last_verified_precision").notNull().default("UNKNOWN"),
+    repostedAt: ts("reposted_at"),
+    closedAt: ts("closed_at"),
+    reopenedAt: ts("reopened_at"),
+    status: radarJobStatusEnum("status").notNull().default("open"),
+    verificationState: radarVerificationStateEnum("verification_state").notNull().default("LIKELY_OPEN"),
+    classification: radarJobClassificationEnum("classification").notNull().default("NEW"),
+    classificationConfidence: numeric("classification_confidence", { precision: 5, scale: 4 }).notNull().default("0"),
+    confidence: numeric("confidence", { precision: 5, scale: 4 }).notNull().default("0"),
+    primarySourceId: uuid("primary_source_id").references(() => radarJobSources.id),
+    repostCount: integer("repost_count").notNull().default(0),
+    companyDirect: boolean("company_direct").notNull().default(false),
+    demoData: boolean("demo_data").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_canonical_jobs_public_id_uidx").on(t.publicId),
+    index("radar_canonical_jobs_company_id_idx").on(t.companyId),
+    index("radar_canonical_jobs_classification_idx").on(t.classification),
+    index("radar_canonical_jobs_original_posted_at_idx").on(t.originalPostedAt),
+    index("radar_canonical_jobs_first_discovered_at_idx").on(t.firstDiscoveredAt),
+    index("radar_canonical_jobs_status_idx").on(t.status),
+  ],
+);
+
+export const radarProviderCheckpoints = pgTable(
+  "radar_provider_checkpoints",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    providerId: text("provider_id").notNull().unique(),
+    lastFetchedAt: ts("last_fetched_at").notNull().defaultNow(),
+    lastCursor: text("last_cursor"),
+    lastJobCount: integer("last_job_count"),
+    metadata: jsonb("metadata"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("radar_provider_checkpoints_provider_uidx").on(t.providerId)],
+);
+
+export const radarOpportunityBriefs = pgTable(
+  "radar_opportunity_briefs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    brief: jsonb("brief").notNull(),
+    generatedAt: ts("generated_at").notNull().defaultNow(),
+    expiresAt: ts("expires_at").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_opportunity_briefs_tenant_user_job_uidx").on(t.tenantId, t.userId, t.canonicalJobId),
+    index("radar_opportunity_briefs_tenant_idx").on(t.tenantId),
+  ],
+);
+
+export const radarJobInteractions = pgTable(
+  "radar_job_interactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    interactionType: text("interaction_type").notNull(),
+    metadata: jsonb("metadata"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("radar_job_interactions_tenant_user_idx").on(t.tenantId, t.userId),
+    index("radar_job_interactions_job_idx").on(t.canonicalJobId),
+  ],
+);
+
 /** Convenience re-export for Drizzle clients */
 export const schema = {
   users,
@@ -1274,6 +1490,13 @@ export const schema = {
   auditLogs,
   outboxMessages,
   idempotencyKeys,
+  // Radar tables
+  radarCompanies,
+  radarJobSources,
+  radarCanonicalJobs,
+  radarProviderCheckpoints,
+  radarOpportunityBriefs,
+  radarJobInteractions,
 };
 
 export type User = typeof users.$inferSelect;

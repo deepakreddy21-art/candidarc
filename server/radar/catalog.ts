@@ -721,7 +721,10 @@ export class CanonicalJobCatalog {
     opts?: { tenantId?: string; userId?: string; candidateProfile?: CandidateProfileForMatch },
   ): JobSearchResult {
     const started = Date.now();
-    const profile = opts?.candidateProfile ?? SEED_CANDIDATE_PROFILE;
+    const profile = opts?.candidateProfile ?? {
+      skills: [],
+      remoteOk: true,
+    };
     let jobs = [...this.canonicalJobs.values()].filter((j) => j.status === "open");
 
     // Hidden filter
@@ -1363,12 +1366,26 @@ export class CanonicalJobCatalog {
 
 let sharedCatalog: CanonicalJobCatalog | null = null;
 
+/**
+ * Get the shared catalog instance.
+ * PRODUCTION: Does NOT auto-seed. Catalog will be empty until jobs are ingested.
+ * DEMO: Seeds demo catalog only when APP_MODE=demo.
+ */
 export function getSharedCatalog(): CanonicalJobCatalog {
   if (!sharedCatalog) {
     sharedCatalog = new CanonicalJobCatalog();
-    sharedCatalog.seedDemoCatalog();
+    // NOTE: Seeding is now handled explicitly in bootstrap.ts based on APP_MODE
+    // Do NOT call seedDemoCatalog() unconditionally here
   }
   return sharedCatalog;
+}
+
+/**
+ * Seed demo catalog data. Call this explicitly when APP_MODE=demo.
+ * Never call in production.
+ */
+export function seedDemoCatalog(): void {
+  getSharedCatalog().seedDemoCatalog();
 }
 
 export function resetSharedCatalogForTests(): void {

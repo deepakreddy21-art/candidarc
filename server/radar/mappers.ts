@@ -1,4 +1,4 @@
-import { formatFreshnessLabel, resolveFreshnessTimestamp } from "./freshness";
+import { formatFreshnessLabel, resolveFreshnessTimestamp, formatCompositeFreshness } from "./freshness";
 import type { CanonicalJobCatalog } from "./catalog";
 import type {
   CanonicalJob,
@@ -9,6 +9,7 @@ import type {
   MatchBreakdown,
   SourceCoverage,
 } from "./types";
+import { getMatchLabel } from "./match-labels";
 
 /** UI-facing Radar job card / detail shape (matches src/types/radar.ts). */
 export type RadarJobView = {
@@ -73,6 +74,12 @@ export type RadarJobView = {
   preferred: string[];
   hiringSignals: string[];
   freshnessExplanation: string;
+  /** Human-readable match label (Strong match | Good match | Stretch opportunity | Not recommended) */
+  matchLabel?: string;
+  /** UI tone for the label (success | accent | warning | neutral) */
+  matchTone?: "success" | "accent" | "warning" | "neutral";
+  /** Evidence-backed reasons citing skills from profile */
+  matchReasons?: string[];
   repostExplanation?: string;
   saved?: boolean;
   hidden?: boolean;
@@ -132,6 +139,9 @@ export function toRadarJobView(
             "originally_posted",
           )
         : undefined;
+
+  // Match label from breakdown
+  const matchLabelInfo = match ? getMatchLabel(match.overall) : null;
 
   let repostExplanation: string | undefined;
   if (job.classification === "REPOSTED") {
@@ -221,6 +231,10 @@ export function toRadarJobView(
     saved: "saved" in item ? item.saved : false,
     hidden: "hidden" in item ? item.hidden : false,
     demoData: job.demoData,
+    // Match labels
+    matchLabel: matchLabelInfo?.label ?? match?.matchLabel,
+    matchTone: matchLabelInfo?.tone ?? match?.matchTone,
+    matchReasons: match?.matchReasons ?? (match?.explanation?.length ? match.explanation : undefined),
   };
 }
 

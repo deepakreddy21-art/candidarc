@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getDb } from "./client";
 import * as s from "./schema";
 import {
@@ -88,6 +88,23 @@ export class PostgresRepositories extends MemoryRepositories {
         listByApplication: async (tenantId: string, applicationPublicId: string) => {
           const app = (await db.select().from(s.applications).where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.publicId, applicationPublicId))).limit(1))[0];
           return app ? (await db.select().from(s.workflowRuns).where(eq(s.workflowRuns.applicationId, app.id)).orderBy(asc(s.workflowRuns.createdAt))).map(mapWorkflowNonNull) : [];
+        },
+        listIncomplete: async (limit = 200) => {
+          const rows = await db
+            .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
+            .from(s.workflowRuns)
+            .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
+            .where(inArray(s.workflowRuns.status, ["queued", "running", "retrying"]))
+            .orderBy(asc(s.workflowRuns.updatedAt))
+            .limit(limit);
+          return rows
+            .map(({ run, applicationPublicId }) => {
+              const mapped = mapWorkflow(run);
+              if (!mapped) return null;
+              if (["FINAL_READY", "FAILED", "CANCELLED", "FINAL_QA_FAILED"].includes(mapped.stage)) return null;
+              return { ...mapped, applicationPublicId: applicationPublicId || String(mapped.payload?.applicationPublicId ?? "") };
+            })
+            .filter((row): row is WorkflowRunRecord => Boolean(row));
         },
       },
     });
