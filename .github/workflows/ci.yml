@@ -36,6 +36,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm test
 
   integration:
@@ -56,6 +57,9 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgres://candidarc:candidarc@localhost:5432/candidarc_test
+      CANDIDARC_DATA_MODE: postgres
+      APP_MODE: demo
+      AI_MODE: mock
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -63,6 +67,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run db:migrate
       - run: npm run test:integration
 
   e2e:
@@ -79,6 +84,8 @@ jobs:
         env:
           APP_MODE: demo
           NEXT_PUBLIC_APP_MODE: demo
+          AI_MODE: mock
+          CANDIDARC_DATA_MODE: memory
 
   build:
     runs-on: ubuntu-latest

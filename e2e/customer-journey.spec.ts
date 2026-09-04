@@ -25,8 +25,12 @@ test.describe("primary customer journey", () => {
       await page.goto("/app/resumes/new");
     }
 
-    await expect(page.getByRole("navigation")).toContainText(/Home|Find Jobs|My Applications|Career Profile|Settings/);
-    await expect(page.getByRole("navigation")).not.toContainText(/Resume Studio|Application Copilot|Interview/);
+    await expect(page.getByRole("navigation", { name: "Primary" })).toContainText(
+      /Home|Find Jobs|My Applications|Career Profile|Settings/,
+    );
+    await expect(page.getByRole("navigation", { name: "Primary" })).not.toContainText(
+      /Resume Studio|Application Copilot|Interview/,
+    );
 
     const jd = `Senior Platform Engineer
 Company: Acme Robotics
