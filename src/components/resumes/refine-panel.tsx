@@ -28,7 +28,7 @@ export function RefinePanel({ workflowId }: { workflowId: string }) {
     if (!instruction.trim()) return toast.error("Describe what you would like to improve");
     setSubmitting(true);
     try {
-      const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ?? "");
+      const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "");
       const response = await fetch(`/api/v1/resumes/workflows/${workflowId}/refine`, {
         method: "POST",
         credentials: "include",

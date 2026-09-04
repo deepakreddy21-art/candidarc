@@ -56,7 +56,7 @@ export function ResumeReady({ data }: { data: ReadyData }) {
     setEnhancing(true);
     try {
       const csrf = decodeURIComponent(
-        globalThis.document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ?? "",
+        globalThis.document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "",
       );
       const response = await fetch(`/api/v1/resumes/workflows/${data.workflowId}/enhance`, {
         method: "POST",

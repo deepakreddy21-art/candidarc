@@ -42,7 +42,9 @@ Requirements: 5+ years experience, strong ownership, measurable impact.`;
     await textarea.fill(jd);
     await page.getByRole("button", { name: /create|generate|tailor/i }).first().click();
 
-    await expect(page.getByText(/Understanding the role|Tailoring your experience|Preparing your documents|Creating your tailored resume/i).first()).toBeVisible({
+    await expect(
+      page.getByText(/Understanding role|Tailoring experience|Preparing documents|Working on your resume/i).first(),
+    ).toBeVisible({
       timeout: 30_000,
     });
     await expect(page.locator("body")).not.toContainText(/HR_AUDIT|EM_AUDIT|V0_GENERATING/);

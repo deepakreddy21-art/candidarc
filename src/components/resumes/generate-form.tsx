@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input, Label, Textarea } from "@/components/ui/input";
 
 function csrfToken() {
-  return decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ?? "");
+  return decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "");
 }
 
 export function GenerateForm() {

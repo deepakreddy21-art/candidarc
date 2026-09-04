@@ -26,8 +26,13 @@ async function main() {
       const applied = await sql`select 1 from candidarc_migrations where name = ${file}`;
       if (applied.length) continue;
       const source = await readFile(resolve(directory, file), "utf8");
+      // Migration files may include their own BEGIN/COMMIT; strip them so we can
+      // apply each file atomically with the migrations ledger insert.
+      const cleaned = source
+        .replace(/^\s*BEGIN\s*;\s*$/gim, "")
+        .replace(/^\s*COMMIT\s*;\s*$/gim, "");
       await sql.begin(async (tx) => {
-        await tx.unsafe(source);
+        await tx.unsafe(cleaned);
         await tx`insert into candidarc_migrations (name) values (${file})`;
       });
       console.log(`Applied ${file}`);

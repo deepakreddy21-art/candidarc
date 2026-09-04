@@ -93,7 +93,10 @@ BEGIN
     setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B') ||
     setweight(to_tsvector('english', COALESCE(NEW.requirements, '')), 'C') ||
     setweight(to_tsvector('english', COALESCE(NEW.responsibilities, '')), 'C') ||
-    setweight(to_tsvector('english', COALESCE(array_to_string(NEW.tech_stack::text[], ' '), '')), 'B');
+    setweight(to_tsvector('english', COALESCE((
+      SELECT string_agg(elem, ' ')
+      FROM jsonb_array_elements_text(COALESCE(NEW.tech_stack, '[]'::jsonb)) AS elem
+    ), '')), 'B');
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

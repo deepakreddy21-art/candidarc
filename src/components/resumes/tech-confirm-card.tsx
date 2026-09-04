@@ -49,7 +49,7 @@ export function TechConfirmCard({ workflowId, questions }: { workflowId: string;
   async function save() {
     setSaving(true);
     try {
-      const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ?? "");
+      const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "");
       const response = await fetch(`/api/v1/resumes/workflows/${workflowId}/tech-answers`, {
         method: "POST",
         credentials: "include",

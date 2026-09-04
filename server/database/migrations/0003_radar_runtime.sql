@@ -19,7 +19,10 @@ BEGIN
     setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B') ||
     setweight(to_tsvector('english', COALESCE(NEW.requirements, '')), 'C') ||
     setweight(to_tsvector('english', COALESCE(NEW.responsibilities, '')), 'C') ||
-    setweight(to_tsvector('english', COALESCE(array_to_string(NEW.tech_stack::text[], ' '), '')), 'B');
+    setweight(to_tsvector('english', COALESCE((
+      SELECT string_agg(elem, ' ')
+      FROM jsonb_array_elements_text(COALESCE(NEW.tech_stack, '[]'::jsonb)) AS elem
+    ), '')), 'B');
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -38,7 +41,10 @@ UPDATE canonical_jobs SET search_vector =
   setweight(to_tsvector('english', COALESCE(description, '')), 'B') ||
   setweight(to_tsvector('english', COALESCE(requirements, '')), 'C') ||
   setweight(to_tsvector('english', COALESCE(responsibilities, '')), 'C') ||
-  setweight(to_tsvector('english', COALESCE(array_to_string(tech_stack::text[], ' '), '')), 'B');
+  setweight(to_tsvector('english', COALESCE((
+    SELECT string_agg(elem, ' ')
+    FROM jsonb_array_elements_text(COALESCE(tech_stack, '[]'::jsonb)) AS elem
+  ), '')), 'B');
 
 -- Opportunity briefs table (if not in 0001_radar.sql)
 CREATE TABLE IF NOT EXISTS opportunity_briefs (

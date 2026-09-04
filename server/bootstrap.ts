@@ -304,7 +304,29 @@ async function buildRuntime(): Promise<Runtime> {
     repos = demo.repos;
     store = demo.store;
     seedDemoAppsIntoMemory(store, { tenantId: demo.tenantId, userId: demo.userId });
-  }
+    const ownedEvidence = await repos.evidence.list(demo.tenantId, { ownerUserId: demo.userId });
+    if (!ownedEvidence.length) {
+      await repos.evidence.create({
+        id: newId("ev"),
+        publicId: "ev-demo-career-notes",
+        tenantId: demo.tenantId,
+        ownerUserId: demo.userId,
+        candidateProfileId: null,
+        title: "Career notes",
+        organization: "Personal",
+        situation: "Building production systems across platform and AI workloads.",
+        task: "Deliver reliable services with measurable outcomes.",
+        actions: ["Owned API platforms", "Improved latency and reliability", "Mentored engineers"],
+        result: "Shipped durable platform improvements with clear ownership.",
+        technologies: ["Python", "TypeScript", "AWS", "Kubernetes"],
+        confidence: "high",
+        verificationStatus: "user_attested",
+        privacyLevel: "share-safe",
+        excludedFromApplicationIds: [],
+        matchedApplicationIds: [],
+        payload: { source: "demo-seed" },
+      });
+    }
 
   const queue = await getQueueAdapter();
   const engine = new DbWorkflowEngine(repos.workflows, queue);
