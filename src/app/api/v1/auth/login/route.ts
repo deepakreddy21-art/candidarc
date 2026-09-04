@@ -3,8 +3,10 @@ import { getRuntime } from "@server/bootstrap";
 import { buildAuthContext } from "@server/http/context";
 import { jsonOk, jsonError, parseJsonBody } from "@server/http/response";
 import { verifyPassword } from "@server/auth/password";
-import { createSession, hashToken } from "@server/auth/session";
+import { createSession, hashToken, parseSessionCookie, verifySession } from "@server/auth/session";
 import { AppError } from "@server/domain/types";
+import { ensureCsrfCookie } from "@server/http/csrf";
+import { assertRateLimit } from "@server/http/rate-limit";
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -14,6 +16,7 @@ const loginSchema = z.object({
 export async function POST(request: Request) {
   let requestId = "";
   try {
+    await assertRateLimit(request, "auth:login");
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
     const body = await parseJsonBody(request, loginSchema);
@@ -30,6 +33,9 @@ export async function POST(request: Request) {
 
     const memberships = await runtime.repos.users.listMemberships(user.id);
     const tenantId = memberships[0]?.tenantId;
+
+    const previous = await verifySession(parseSessionCookie(request.headers.get("cookie")));
+    if (previous) await runtime.repos.sessions.revoke(previous.sid);
 
     const { token, sessionId, expiresAt, cookie } = await createSession({
       userId: user.id,
@@ -51,7 +57,8 @@ export async function POST(request: Request) {
       },
       tenantId: memberships[0]?.tenant.publicId ?? null,
     });
-    response.headers.set("Set-Cookie", cookie);
+    response.headers.append("Set-Cookie", cookie);
+    ensureCsrfCookie(response);
     return response;
   } catch (err) {
     return jsonError(err, requestId || undefined);

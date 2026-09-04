@@ -69,7 +69,7 @@ export const archiveApplicationRequestSchema = z.object({
 /* -------------------------------------------------------------------------- */
 
 export const startResearchRequestSchema = z.object({
-  depth: z.enum(["standard", "deep-team", "deep-plus-interview"]).default("standard"),
+  depth: z.enum(["standard", "deep-team", "priority"]).default("standard"),
   idempotencyKey: z.string().min(8).max(128).optional(),
 });
 

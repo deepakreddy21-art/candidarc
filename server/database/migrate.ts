@@ -1,4 +1,7 @@
 import { config } from "dotenv";
+import { readdir, readFile } from "fs/promises";
+import { resolve } from "path";
+import postgres from "postgres";
 config();
 
 async function main() {
@@ -11,8 +14,27 @@ async function main() {
   if (!env.DATABASE_URL) {
     throw new Error("DATABASE_URL required for migrate");
   }
-  console.log("Postgres migrate: run drizzle-kit migrate or apply SQL from drizzle/ when ready.");
-  console.log("(Phase 2 stub — schema is generated via npm run db:generate)");
+  const sql = postgres(env.DATABASE_URL, { max: 1 });
+  try {
+    await sql`create table if not exists candidarc_migrations (
+      name text primary key,
+      applied_at timestamptz not null default now()
+    )`;
+    const directory = resolve(process.cwd(), "server/database/migrations");
+    const files = (await readdir(directory)).filter((file) => file.endsWith(".sql")).sort();
+    for (const file of files) {
+      const applied = await sql`select 1 from candidarc_migrations where name = ${file}`;
+      if (applied.length) continue;
+      const source = await readFile(resolve(directory, file), "utf8");
+      await sql.begin(async (tx) => {
+        await tx.unsafe(source);
+        await tx`insert into candidarc_migrations (name) values (${file})`;
+      });
+      console.log(`Applied ${file}`);
+    }
+  } finally {
+    await sql.end();
+  }
 }
 
 main().catch((err) => {

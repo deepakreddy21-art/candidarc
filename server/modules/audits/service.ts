@@ -60,11 +60,14 @@ export class AuditsService {
     const latest = runs[runs.length - 1];
     if (!latest) throw new AppError("AUDIT_NOT_FOUND", "No audit run to continue from", 404);
 
-    // Require all findings decided (not open)
-    // Findings are stored separately; treat incomplete review if any open remain for this run
-    const openAllowed = false;
-    if (openAllowed) {
-      /* placeholder for future open-finding gate */
+    const findings = await this.audits.listFindings(tenantId, latest.publicId);
+    const open = findings.filter((finding) => finding.status === "open");
+    if (open.length) {
+      throw new AppError(
+        "AUDIT_FINDINGS_OPEN",
+        `Resolve all audit findings before continuing (${open.length} open)`,
+        409,
+      );
     }
 
     const next = NEXT_GENERATION[latest.lens];

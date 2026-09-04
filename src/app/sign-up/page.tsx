@@ -20,14 +20,27 @@ export default function SignUpPage() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !email.trim() || password.length < 8) {
-      toast.error("Add your name, email, and a password with at least 8 characters");
+    if (!name.trim() || !email.trim() || password.length < 10) {
+      toast.error("Add your name, email, and a password with at least 10 characters");
       return;
     }
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 500));
-    toast.success("Account created");
-    router.push("/onboarding");
+    try {
+      const response = await fetch("/api/v1/auth/signup", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password }),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: { message?: string } };
+      if (!response.ok) throw new Error(result.error?.message ?? "Could not create account");
+      toast.success("Account created");
+      router.push("/onboarding");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create account");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (

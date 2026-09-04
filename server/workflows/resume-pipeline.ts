@@ -3,13 +3,13 @@ import { getPrompt } from "../ai/prompt-registry";
 import {
   mockAuditSchema,
   mockEvidenceMatchSchema,
-  mockFinalQaSchema,
   mockResearchSchema,
   mockResumeSchema,
 } from "../ai/mock-provider";
 import type {
   ApplicationRepository,
   AuditRepository,
+  EvidenceRepository,
   ResearchRepository,
   Repositories,
   ResumeRepository,
@@ -21,6 +21,7 @@ import { AppError, type WorkflowStage } from "../domain/types";
 import { logger } from "../observability/logger";
 import { assertAuditOrder } from "./stages";
 import type { DurableWorkflowEngine } from "./engine";
+import { runDeterministicFinalQa } from "./final-qa";
 
 export type ResumePipelineDeps = {
   engine: DurableWorkflowEngine;
@@ -29,6 +30,8 @@ export type ResumePipelineDeps = {
   resumes: ResumeRepository;
   audits: AuditRepository;
   usage: UsageRepository;
+  evidence: EvidenceRepository;
+  store: Repositories["store"];
 };
 
 /**
@@ -46,6 +49,8 @@ export class ResumePipeline {
       resumes: repos.resumes,
       audits: repos.audits,
       usage: repos.usage,
+      evidence: repos.evidence,
+      store: repos.store,
     });
   }
 
@@ -130,6 +135,31 @@ export class ResumePipeline {
     }
   }
 
+  private async recordProviderUsage(
+    run: WorkflowRunRecord,
+    key: string,
+    result: { model: { provider: string; model: string }; prompt: { version: string }; usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number }; latencyMs: number },
+  ) {
+    await this.deps.usage.append({
+      tenantId: run.tenantId,
+      kind: "input_tokens",
+      units: String(result.usage.inputTokens + result.usage.outputTokens),
+      costCents: String(result.usage.estimatedCostCents),
+      workflowRunId: run.id,
+      idempotencyKey: `${key}:provider-usage`,
+      status: "committed",
+      metadata: {
+        provider: result.model.provider,
+        model: result.model.model,
+        promptVersion: result.prompt.version,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        latencyMs: result.latencyMs,
+        estimatedCostCents: result.usage.estimatedCostCents,
+      },
+    });
+  }
+
   private async runResearch(run: WorkflowRunRecord) {
     if (run.stage === "RESEARCH_QUEUED") {
       await this.deps.engine.transition(run.id, "RESEARCH_RUNNING", { message: "Research started" });
@@ -146,6 +176,7 @@ export class ResumePipeline {
       user: JSON.stringify({ applicationPublicId: run.applicationPublicId }),
       schema: mockResearchSchema,
     });
+    await this.recordProviderUsage(run, usageKey, result);
 
     const existing = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     if (existing && existing.status === "completed") {
@@ -159,6 +190,9 @@ export class ResumePipeline {
         researchConfidence: result.data.overallConfidence,
         status: "evidence",
         nextAction: "Match evidence",
+      });
+      await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_RUNNING", {
+        message: "Evidence matching started automatically",
       });
       return;
     }
@@ -203,11 +237,14 @@ export class ResumePipeline {
       },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-      stage: "RESEARCH_COMPLETED",
-      workflowStage: "RESEARCH_COMPLETED",
+      stage: "EVIDENCE_MATCHING_RUNNING",
+      workflowStage: "EVIDENCE_MATCHING_RUNNING",
       researchConfidence: result.data.overallConfidence,
       status: "evidence",
       nextAction: "Match evidence",
+    });
+    await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_RUNNING", {
+      message: "Evidence matching started automatically",
     });
   }
 
@@ -221,6 +258,7 @@ export class ResumePipeline {
       user: JSON.stringify({ applicationPublicId: run.applicationPublicId }),
       schema: mockEvidenceMatchSchema,
     });
+    await this.recordProviderUsage(run, usageKey, result);
 
     await this.commit(usageKey, String(result.usage.estimatedCostCents));
     await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_COMPLETED", {
@@ -228,11 +266,14 @@ export class ResumePipeline {
       patch: { provider: result.model.provider, model: result.model.model, promptVersion: prompt.version },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-      stage: "EVIDENCE_MATCHING_COMPLETED",
-      workflowStage: "EVIDENCE_MATCHING_COMPLETED",
+      stage: "V0_GENERATING",
+      workflowStage: "V0_GENERATING",
       evidenceCoverage: result.data.evidenceCoverage,
       status: "resume",
       nextAction: "Generate V0",
+    });
+    await this.deps.engine.transition(run.id, "V0_GENERATING", {
+      message: "Resume V0 generation started automatically",
     });
   }
 
@@ -245,18 +286,61 @@ export class ResumePipeline {
         message: `V${versionNumber} already exists (idempotent)`,
         outputVersion: String(versionNumber),
       });
+      const nextRunning = [
+        "HR_AUDIT_1_RUNNING",
+        "EM_AUDIT_1_RUNNING",
+        "HR_AUDIT_2_RUNNING",
+        "EM_AUDIT_2_RUNNING",
+        "FINAL_QA_RUNNING",
+      ][versionNumber] as WorkflowStage;
+      await this.deps.engine.transition(run.id, nextRunning, { message: "Continuing pipeline automatically" });
       return;
     }
 
     const usageKey = await this.reserve(run, "resume_generation", 1);
     const provider = getGenerationProvider();
     const prompt = getPrompt("resume-generation");
+    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
+    const evidence = await this.deps.evidence.list(run.tenantId);
+    const currentResume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
+    const previousVersions = currentResume ? await this.deps.resumes.listVersions(run.tenantId, currentResume.publicId) : [];
+    const previousVersion = previousVersions.find((version) => version.versionNumber === versionNumber - 1);
+    const auditRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
+    const previousAudit = auditRuns.at(-1);
+    const auditFindings = previousAudit ? await this.deps.audits.listFindings(run.tenantId, previousAudit.publicId) : [];
+    const mistakeMemory = "mistakeMemoryRules" in this.deps.store
+      ? [...((this.deps.store as Repositories["store"] & { mistakeMemoryRules: Map<string, { tenantId: string; applicationId: string; status: string }> }).mistakeMemoryRules?.values?.() ?? [])]
+          .filter((rule) => rule.tenantId === run.tenantId && rule.applicationId === run.applicationId && rule.status === "active")
+      : [];
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
-      user: JSON.stringify({ applicationPublicId: run.applicationPublicId, versionNumber }),
+      user: JSON.stringify({
+        applicationPublicId: run.applicationPublicId,
+        versionNumber,
+        jobDescription: application?.metadata?.jobDescription,
+        application: application?.metadata,
+        researchFindings: research?.findings ?? [],
+        evidence: evidence.map((item) => ({ id: item.publicId, ...item.payload })),
+        previousVersion,
+        auditFindings,
+        mistakeMemory,
+      }),
       schema: mockResumeSchema,
+      metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
     });
+    await this.recordProviderUsage(run, usageKey, result);
+
+    const actionable = auditFindings.filter((finding) => finding.status === "accepted" || finding.status === "edited");
+    if (versionNumber > 0 && previousVersion && actionable.length === 0) {
+      result.data.sections = previousVersion.sections as typeof result.data.sections;
+    } else if (actionable.length) {
+      result.data.sections = [
+        ...result.data.sections,
+        { type: "audit-decisions", title: "Applied audit decisions", content: actionable.map((finding) => finding.editedText ?? finding.suggestedText) },
+      ];
+    }
 
     let resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
     if (!resume) {
@@ -317,6 +401,22 @@ export class ResumePipeline {
       status: versionNumber >= 4 ? "final-qa" : "auditing",
       nextAction: versionNumber >= 4 ? "Run Final QA" : `Start next audit`,
     });
+
+    const nextRunning = [
+      "HR_AUDIT_1_RUNNING",
+      "EM_AUDIT_1_RUNNING",
+      "HR_AUDIT_2_RUNNING",
+      "EM_AUDIT_2_RUNNING",
+      "FINAL_QA_RUNNING",
+    ][versionNumber] as WorkflowStage;
+    await this.deps.engine.transition(run.id, nextRunning, {
+      message: versionNumber >= 4 ? "Final QA started automatically" : "Next audit started automatically",
+    });
+    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+      stage: nextRunning,
+      workflowStage: nextRunning,
+      nextAction: versionNumber >= 4 ? "Running Final QA" : "Running audit",
+    });
   }
 
   private async runAudit(
@@ -340,6 +440,7 @@ export class ResumePipeline {
       user: JSON.stringify({ applicationPublicId: run.applicationPublicId, reviewsVersion }),
       schema: mockAuditSchema,
     });
+    await this.recordProviderUsage(run, usageKey, result);
 
     const existingRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
     const already = existingRuns.find((r) => r.lens === result.data.lens);
@@ -394,27 +495,27 @@ export class ResumePipeline {
   }
 
   private async runFinalQa(run: WorkflowRunRecord) {
-    const usageKey = await this.reserve(run, "audit", 1);
-    const provider = getGenerationProvider();
-    const prompt = getPrompt("final-qa");
-    const result = await provider.generateStructured({
-      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: prompt.system,
-      user: JSON.stringify({ applicationPublicId: run.applicationPublicId }),
-      schema: mockFinalQaSchema,
+    const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
+    if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume required for Final QA", 422);
+    const versions = await this.deps.resumes.listVersions(run.tenantId, resume.publicId);
+    const latest = versions.at(-1);
+    if (!latest) throw new AppError("RESUME_VERSION_NOT_FOUND", "Resume version required for Final QA", 422);
+    const auditRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
+    const findings = (await Promise.all(auditRuns.map((audit) => this.deps.audits.listFindings(run.tenantId, audit.publicId)))).flat();
+    const result = runDeterministicFinalQa({
+      sections: latest.sections,
+      unresolvedCriticalFindings: findings.filter((finding) => finding.severity === "critical" && finding.status === "open").length,
     });
 
-    await this.commit(usageKey, String(result.usage.estimatedCostCents));
-
-    if (!result.data.passed) {
+    if (!result.passed) {
       await this.deps.engine.transition(run.id, "FINAL_QA_FAILED", { message: "Final QA failed" });
-      throw new AppError("FINAL_QA_FAILED", "Final QA checks failed", 422, result.data.checks);
+      throw new AppError("FINAL_QA_FAILED", "Final QA checks failed", 422, result.checks);
     }
 
     await this.deps.engine.transition(run.id, "FINAL_READY", {
       message: "Final QA passed",
       status: "completed",
-      patch: { promptVersion: prompt.version },
+      patch: { payload: { ...run.payload, finalQa: result } },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       stage: "FINAL_READY",

@@ -66,6 +66,7 @@ export type ApplicationRecord = {
   jobDescriptionPublicId?: string;
   resumePublicId?: string;
   ownerUserId: Id;
+  metadata?: Record<string, unknown>;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -316,6 +317,8 @@ export interface UserRepository {
   findByPublicId(publicId: string): Promise<UserRecord | null>;
   create(user: Omit<UserRecord, "id" | "createdAt" | "updatedAt" | "deletedAt"> & { id?: string }): Promise<UserRecord>;
   listMemberships(userId: string): Promise<Array<MembershipRecord & { tenant: TenantRecord }>>;
+  createTenant(tenant: Omit<TenantRecord, "id" | "createdAt" | "updatedAt"> & { id?: string }): Promise<TenantRecord>;
+  createMembership(membership: Omit<MembershipRecord, "id" | "createdAt"> & { id?: string }): Promise<MembershipRecord>;
 }
 
 export interface SessionRepository {
@@ -355,6 +358,7 @@ export interface ResumeRepository {
 
 export interface AuditRepository {
   listRuns(tenantId: string, applicationPublicId: string): Promise<AuditRunRecord[]>;
+  listFindings(tenantId: string, auditRunPublicId: string): Promise<AuditFindingRecord[]>;
   getFinding(tenantId: string, findingPublicId: string): Promise<AuditFindingRecord | null>;
   updateFindingDecision(
     tenantId: string,
@@ -472,6 +476,25 @@ export class MemoryRepositories implements Repositories {
             if (!tenant) throw new AppError("TENANT_NOT_FOUND", "Tenant missing for membership", 500);
             return { ...m, tenant };
           });
+      },
+      async createTenant(input) {
+        const record: TenantRecord = {
+          ...input,
+          id: input.id ?? newId("ten"),
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        };
+        store.tenants.set(record.id, record);
+        return record;
+      },
+      async createMembership(input) {
+        const record: MembershipRecord = {
+          ...input,
+          id: input.id ?? newId("mem"),
+          createdAt: nowIso(),
+        };
+        store.memberships.push(record);
+        return record;
       },
     };
 
@@ -692,6 +715,11 @@ export class MemoryRepositories implements Repositories {
       async listRuns(tenantId, applicationPublicId) {
         return [...store.auditRuns.values()].filter(
           (r) => r.tenantId === tenantId && r.applicationPublicId === applicationPublicId,
+        );
+      },
+      async listFindings(tenantId, auditRunPublicId) {
+        return [...store.auditFindings.values()].filter(
+          (finding) => finding.tenantId === tenantId && finding.auditRunPublicId === auditRunPublicId,
         );
       },
       async getFinding(tenantId, findingPublicId) {

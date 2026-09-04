@@ -17,7 +17,7 @@ const demoAnswers: ReusableAnswer[] = [
     userId: "demo",
     intent: "full_name",
     label: "Full name",
-    answer: "Deepak Reddy Kilaru",
+    answer: "Candidate legal name",
     confidence: "VERIFIED",
     source: "profile",
     sensitive: false,

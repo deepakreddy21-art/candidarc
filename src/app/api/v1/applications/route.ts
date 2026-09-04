@@ -4,6 +4,7 @@ import { jsonOk, jsonError, parseJsonBody } from "@server/http/response";
 import { requireUser } from "@server/auth/guards";
 import { createApplicationInputSchema } from "@server/domain/types";
 import { listApplicationsQuerySchema } from "@server/contracts/api";
+import { withMutationGuards } from "@server/http/csrf";
 
 export async function GET(request: Request) {
   let requestId = "";
@@ -26,19 +27,21 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   let requestId = "";
   try {
-    const ctx = await buildAuthContext(request);
-    requestId = ctx.requestId;
-    requireUser(ctx);
-    const body = await parseJsonBody(request, createApplicationInputSchema);
-    const runtime = await getRuntime();
-    const result = await runtime.services.applications.create(ctx, body);
-    return jsonOk(
-      {
-        application: mapApplicationToUi(result.application),
-        workflowId: result.workflow.publicId,
-      },
-      { status: 201 },
-    );
+    return await withMutationGuards(request, async () => {
+      const ctx = await buildAuthContext(request);
+      requestId = ctx.requestId;
+      requireUser(ctx);
+      const body = await parseJsonBody(request, createApplicationInputSchema);
+      const runtime = await getRuntime();
+      const result = await runtime.services.applications.create(ctx, body);
+      return jsonOk(
+        {
+          application: mapApplicationToUi(result.application),
+          workflowId: result.workflow.publicId,
+        },
+        { status: 201 },
+      );
+    });
   } catch (err) {
     return jsonError(err, requestId || undefined);
   }

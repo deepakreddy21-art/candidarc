@@ -46,36 +46,15 @@ let profile = structuredClone(seedCandidate);
 
 const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
 
-const allowDemoFallback = () =>
-  process.env.NEXT_PUBLIC_DEMO_MODE === "true" ||
-  process.env.NEXT_PUBLIC_USE_MOCK_API === "true" ||
-  process.env.NODE_ENV !== "production";
+export const allowDemoFallback = () =>
+  process.env.NEXT_PUBLIC_APP_MODE === "demo" ||
+  process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
 
-let sessionReady: Promise<boolean> | null = null;
-
-async function ensureSession(): Promise<boolean> {
-  if (typeof window === "undefined") return false;
-  if (!sessionReady) {
-    sessionReady = (async () => {
-      try {
-        const me = await fetch("/api/v1/auth/me", { credentials: "include" });
-        if (me.ok) return true;
-        const login = await fetch("/api/v1/auth/login", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: "deepak@candidarc.dev",
-            password: "CandidArc!Demo1",
-          }),
-        });
-        return login.ok;
-      } catch {
-        return false;
-      }
-    })();
+export class ApiError extends Error {
+  constructor(message: string, public readonly status?: number) {
+    super(message);
+    this.name = "ApiError";
   }
-  return sessionReady;
 }
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
@@ -83,25 +62,30 @@ type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; statu
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
   try {
-    await ensureSession();
+    const csrf = typeof document === "undefined"
+      ? undefined
+      : document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
     const res = await fetch(`/api/v1${path}`, {
       ...init,
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
+        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
         ...(init?.headers ?? {}),
       },
     });
     if (!res.ok) {
-      // Fall back when demo mode / non-production, or on auth/network-style failures
-      if (!allowDemoFallback() && res.status >= 500) {
-        return { ok: false, network: false, status: res.status };
-      }
+      const body = await res.json().catch(() => null) as { error?: { message?: string }; message?: string } | null;
+      if (!allowDemoFallback()) throw new ApiError(body?.error?.message ?? body?.message ?? `Request failed (${res.status})`, res.status);
       return { ok: false, network: false, status: res.status };
     }
     const data = (await res.json()) as T;
     return { ok: true, data };
-  } catch {
+  } catch (error) {
+    if (!allowDemoFallback()) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(error instanceof Error ? error.message : "Network request failed");
+    }
     return { ok: false, network: true };
   }
 }
@@ -144,8 +128,8 @@ const mock = {
       interviewStatus: "not-started",
       researchConfidence: 12,
       ownerProfileId: profile.id,
-      jobDescriptionId: input.jobDescriptionId ?? "jd-cisco",
-      resumeId: "resume-cisco",
+      jobDescriptionId: input.jobDescriptionId ?? `jd-${Date.now()}`,
+      resumeId: `resume-${Date.now()}`,
       nextAction: "Finish role research",
       archived: false,
       roleFamily: input.roleFamily ?? "AI/ML Engineering",
@@ -183,9 +167,7 @@ const mock = {
   async setResumeVersion(applicationId: string, versionId: string): Promise<Resume> {
     await delay();
     resumes = resumes.map((r) =>
-      r.applicationId === applicationId || (applicationId === "app-cisco" && r.id === "resume-cisco")
-        ? { ...r, currentVersionId: versionId }
-        : r,
+      r.applicationId === applicationId ? { ...r, currentVersionId: versionId } : r,
     );
     const resume = resumes.find((r) => r.applicationId === applicationId) ?? resumes[0];
     return structuredClone(resume);

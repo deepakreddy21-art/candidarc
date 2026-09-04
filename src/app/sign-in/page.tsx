@@ -14,8 +14,8 @@ import { cn } from "@/lib/utils";
 
 export default function SignInPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("deepak@candidarc.dev");
-  const [password, setPassword] = useState("CandidArc!Demo1");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
@@ -81,6 +81,11 @@ export default function SignInPage() {
                 {loading ? "Signing in…" : "Sign in"}
               </Button>
             </form>
+            {process.env.NEXT_PUBLIC_APP_MODE === "demo" ? (
+              <p className="mt-3 text-center text-xs text-foreground-secondary">
+                Demo account: deepak@candidarc.dev / CandidArc!Demo1
+              </p>
+            ) : null}
             <p className="mt-5 text-center text-sm text-foreground-secondary">
               New here?{" "}
               <Link href="/sign-up" className="font-medium text-accent hover:underline">

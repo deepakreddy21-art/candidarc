@@ -328,6 +328,7 @@ export const applications = pgTable(
     candidateProfileId: uuid("candidate_profile_id").references(() => candidateProfiles.id, {
       onDelete: "set null",
     }),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     version: version(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

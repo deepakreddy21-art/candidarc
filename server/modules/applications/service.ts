@@ -52,6 +52,15 @@ export class ApplicationsService {
       roleFamily: input.roleFamily ?? "General",
       nextAction: "Start research",
       ownerUserId: user.id,
+      metadata: {
+        jobUrl: input.jobUrl,
+        jobDescription: input.jobDescription ?? input.jobDescriptionText,
+        researchDepth: input.researchDepth ?? "standard",
+        candidateProfileId: input.candidateProfileId,
+        excludedEvidenceIds: input.excludedEvidenceIds ?? [],
+        resumeLength: input.resumeLength ?? "one-page",
+        experienceLevel: input.experienceLevel,
+      },
     });
 
     const idempotencyKey = input.idempotencyKey ?? `app-create:${app.publicId}`;
@@ -64,8 +73,8 @@ export class ApplicationsService {
       message: "Application created — research queued",
       payload: {
         jobUrl: input.jobUrl,
-        jobDescriptionText: input.jobDescriptionText ? "[redacted length]" : undefined,
-        researchDepth: input.researchDepth,
+        jobDescription: input.jobDescription ?? input.jobDescriptionText,
+        researchDepth: input.researchDepth ?? "standard",
       },
     });
 

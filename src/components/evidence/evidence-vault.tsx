@@ -16,7 +16,6 @@ import {
 import { EmptyState, Skeleton } from "@/components/ui/feedback";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { SectionHeader, StatusBadge } from "@/components/layout/page-header";
-import { Switch } from "@/components/ui/tabs";
 import { api } from "@/services/api";
 import { cn, formatRelative } from "@/lib/utils";
 import type { Confidence, EvidenceItem, PrivacyLevel, VerificationStatus } from "@/types/domain";
@@ -269,7 +268,6 @@ export function EvidenceCard({
               <div className="flex flex-wrap gap-1.5">
                 <StatusBadge status={item.verificationStatus} />
                 <Badge tone={item.confidence === "high" ? "success" : "warning"}>{item.confidence}</Badge>
-                {item.interviewStoryReady ? <Badge tone="cyan">Interview ready</Badge> : null}
               </div>
               <p className="text-xs text-foreground-muted">Updated {formatRelative(item.lastUpdated)}</p>
             </CardContent>
@@ -415,7 +413,6 @@ function EvidenceFormDialog({
   const [result, setResult] = useState("");
   const [technologies, setTechnologies] = useState("");
   const [privacyLevel, setPrivacyLevel] = useState<PrivacyLevel>("share-safe");
-  const [interviewReady, setInterviewReady] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -428,7 +425,6 @@ function EvidenceFormDialog({
     setResult(initial?.result ?? "");
     setTechnologies(initial?.technologies.join(", ") ?? "");
     setPrivacyLevel(initial?.privacyLevel ?? "share-safe");
-    setInterviewReady(initial?.interviewStoryReady ?? false);
   }, [open, initial]);
 
   async function submit(e: React.FormEvent) {
@@ -474,7 +470,7 @@ function EvidenceFormDialog({
           .map((t) => t.trim())
           .filter(Boolean),
         privacyLevel,
-        interviewStoryReady: interviewReady,
+        interviewStoryReady: false,
         lastUpdated: new Date().toISOString(),
       });
     } finally {
@@ -525,10 +521,6 @@ function EvidenceFormDialog({
               ))}
             </select>
           </Field>
-          <div className="flex items-center justify-between rounded-xl border border-border bg-canvas px-3 py-2">
-            <Label htmlFor="ev-interview">Interview story ready</Label>
-            <Switch id="ev-interview" checked={interviewReady} onCheckedChange={setInterviewReady} />
-          </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
               Cancel

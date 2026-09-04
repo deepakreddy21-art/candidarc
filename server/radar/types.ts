@@ -426,6 +426,6 @@ export interface CreateApplicationFromJobPayload {
   roleFamily?: string;
   canonicalJobId: string;
   sightingId?: string;
-  researchDepth?: "standard" | "deep-team" | "deep-plus-interview";
+  researchDepth?: "standard" | "deep-team" | "priority";
   idempotencyKey?: string;
 }

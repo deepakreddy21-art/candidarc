@@ -5,12 +5,23 @@ config({ path: resolve(process.cwd(), ".env") });
 config({ path: resolve(process.cwd(), ".env.local") });
 
 async function main() {
+  const { getEnv } = await import("../config/env");
+  const { BullMqQueueAdapter, setQueueAdapter } = await import("../workflows/queues");
+  const env = getEnv();
+  if (env.QUEUE_BACKEND === "redis" && env.WORKER_KIND !== "all") {
+    const groups = {
+      general: ["research", "evidence-matching", "resume-generation", "resume-audit", "notifications", "maintenance", "job-matching", "job-alerting", "job-expiration"],
+      ingestion: ["source-discovery", "ats-ingestion", "job-normalization", "job-deduplication", "job-verification", "job-indexing"],
+      document: ["document-parsing", "pdf-rendering"],
+    } as const;
+    setQueueAdapter(new BullMqQueueAdapter(new Set(groups[env.WORKER_KIND])));
+  }
   const { getRuntime } = await import("../bootstrap");
   const { logger } = await import("../observability/logger");
 
   const runtime = await getRuntime();
   await runtime.queue.start();
-  logger.info({ mode: runtime.mode }, "CandidArc worker started — draining queues");
+  logger.info({ mode: runtime.mode, workerKind: env.WORKER_KIND }, "CandidArc worker started — draining queues");
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "shutting down worker");

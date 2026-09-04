@@ -108,7 +108,7 @@ export class RadarService {
       jobUrl: payload.jobUrl,
       jobDescriptionText: payload.jobDescriptionText,
       roleFamily: payload.roleFamily,
-      researchDepth: payload.researchDepth ?? "standard",
+      researchDepth: payload.researchDepth === "deep-team" ? "deep-team" : "standard",
       idempotencyKey: payload.idempotencyKey,
     };
     const result = await this.applications.create(ctx, input);

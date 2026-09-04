@@ -17,68 +17,42 @@ import {
   radarJobs,
   radarSourceCoverage,
 } from "@/data/radar-seed";
-import { api } from "@/services/api";
+import { api, allowDemoFallback, ApiError } from "@/services/api";
 
 const delay = (ms = 160) => new Promise((r) => setTimeout(r, ms));
 
 const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
-
-const allowDemoFallback = () =>
-  process.env.NEXT_PUBLIC_DEMO_MODE === "true" ||
-  process.env.NEXT_PUBLIC_USE_MOCK_API === "true" ||
-  process.env.NODE_ENV !== "production";
-
-let sessionReady: Promise<boolean> | null = null;
-
-async function ensureSession(): Promise<boolean> {
-  if (typeof window === "undefined") return false;
-  if (!sessionReady) {
-    sessionReady = (async () => {
-      try {
-        const me = await fetch("/api/v1/auth/me", { credentials: "include" });
-        if (me.ok) return true;
-        const login = await fetch("/api/v1/auth/login", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: "deepak@candidarc.dev",
-            password: "CandidArc!Demo1",
-          }),
-        });
-        return login.ok;
-      } catch {
-        return false;
-      }
-    })();
-  }
-  return sessionReady;
-}
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
   try {
-    await ensureSession();
+    const csrf = typeof document === "undefined"
+      ? undefined
+      : document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
     const res = await fetch(`/api/v1${path}`, {
       ...init,
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
+        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
         ...(init?.headers ?? {}),
       },
     });
     if (!res.ok) {
-      if (!allowDemoFallback() && res.status >= 500) {
-        return { ok: false, network: false, status: res.status };
-      }
+      const body = await res.json().catch(() => null) as { error?: { message?: string } } | null;
+      if (!allowDemoFallback()) throw new ApiError(body?.error?.message ?? `Request failed (${res.status})`, res.status);
       return { ok: false, network: false, status: res.status };
     }
     if (res.status === 204) return { ok: true, data: undefined as T };
     const data = (await res.json()) as T;
     return { ok: true, data };
-  } catch {
+  } catch (error) {
+    if (!allowDemoFallback()) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(error instanceof Error ? error.message : "Network request failed");
+    }
     return { ok: false, network: true };
   }
 }

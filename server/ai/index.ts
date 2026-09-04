@@ -1,6 +1,6 @@
 import { getEnv } from "../config/env";
-import { logger } from "../observability/logger";
 import { MockGenerationProvider } from "./mock-provider";
+import { OpenAIProvider } from "./openai-provider";
 import type { EmbeddingProvider, GenerationProvider, SpeechProvider } from "./types";
 import { AiProviderError } from "./types";
 
@@ -11,14 +11,14 @@ export function getGenerationProvider(): GenerationProvider {
   const env = getEnv();
   if (env.AI_PROVIDER === "openai") {
     if (!env.OPENAI_API_KEY) {
-      logger.warn("AI_PROVIDER=openai but OPENAI_API_KEY missing; falling back to mock");
-      generationProvider = new MockGenerationProvider();
+      throw new AiProviderError("OPENAI_API_KEY_MISSING", "OPENAI_API_KEY is required for the OpenAI provider", false);
     } else {
-      // Real OpenAI adapter is deferred; keep mock for Phase 2 vertical slice stability.
-      logger.info("OpenAI provider selected but adapter not wired yet; using mock");
-      generationProvider = new MockGenerationProvider();
+      generationProvider = new OpenAIProvider();
     }
   } else {
+    if (env.APP_MODE === "production") {
+      throw new AiProviderError("MOCK_PROVIDER_FORBIDDEN", "Mock AI is forbidden in production", false);
+    }
     generationProvider = new MockGenerationProvider();
   }
   return generationProvider;

@@ -1,7 +1,5 @@
-import { ensureDemoUser } from "./auth/demo-auth";
 import { getEnv } from "./config/env";
 import {
-  MemoryRepositories,
   type ApplicationRecord,
   type AuditFindingRecord,
   type AuditRunRecord,
@@ -23,7 +21,7 @@ import { UsageService } from "./modules/usage/service";
 import { FilesService } from "./modules/files/service";
 import { getStorage } from "./storage";
 import { DbWorkflowEngine } from "./workflows/engine";
-import { InProcessQueueAdapter, type QueueAdapter } from "./workflows/queues";
+import { getQueueAdapter, type QueueAdapter } from "./workflows/queues";
 import { ResumePipeline } from "./workflows/resume-pipeline";
 import { logger } from "./observability/logger";
 import type { WorkflowStage as BackendStage } from "./domain/types";
@@ -243,14 +241,29 @@ async function buildRuntime(): Promise<Runtime> {
   const env = getEnv();
   const mode = env.CANDIDARC_DATA_MODE;
 
-  const { repos, store, userId, tenantId } = await ensureDemoUser();
-  const memoryRepos = repos instanceof MemoryRepositories ? repos : new MemoryRepositories(store);
+  if (env.APP_MODE === "production" && mode === "memory") {
+    throw new Error("Production runtime cannot use memory repositories");
+  }
+  let repos: Repositories;
+  let store: Repositories["store"];
+  if (mode === "postgres") {
+    const { PostgresRepositories } = await import("./database/postgres-repos");
+    repos = new PostgresRepositories();
+    store = repos.store;
+  } else {
+    if (env.APP_MODE !== "demo") {
+      throw new Error("Memory repositories are only available when APP_MODE=demo");
+    }
+    const { ensureDemoUser } = await import("./auth/demo-auth");
+    const demo = await ensureDemoUser();
+    repos = demo.repos;
+    store = demo.store;
+    seedDemoAppsIntoMemory(store, { tenantId: demo.tenantId, userId: demo.userId });
+  }
 
-  seedDemoAppsIntoMemory(store, { tenantId, userId });
-
-  const queue = new InProcessQueueAdapter();
-  const engine = new DbWorkflowEngine(memoryRepos.workflows, queue);
-  const pipeline = ResumePipeline.fromRepos(memoryRepos, engine);
+  const queue = await getQueueAdapter();
+  const engine = new DbWorkflowEngine(repos.workflows, queue);
+  const pipeline = ResumePipeline.fromRepos(repos, engine);
 
   for (const q of WORKFLOW_QUEUES) {
     queue.registerHandler(q, async (job) => {
@@ -261,9 +274,9 @@ async function buildRuntime(): Promise<Runtime> {
       };
       let run: WorkflowRunRecord | null = null;
       if (payload.workflowRunId) {
-        run = await memoryRepos.workflows.getById(payload.workflowRunId);
+        run = await repos.workflows.getById(payload.workflowRunId);
       } else if (payload.tenantId && payload.workflowPublicId) {
-        run = await memoryRepos.workflows.getByPublicId(payload.tenantId, payload.workflowPublicId);
+        run = await repos.workflows.getByPublicId(payload.tenantId, payload.workflowPublicId);
       }
       if (!run) {
         logger.warn({ jobId: job.id, queue: q }, "workflow job missing run");
@@ -281,9 +294,9 @@ async function buildRuntime(): Promise<Runtime> {
   queue.registerHandler("document-parsing", async () => undefined);
 
   const storage = getStorage();
-  const applications = ApplicationsService.fromRepos(memoryRepos, engine);
+  const applications = ApplicationsService.fromRepos(repos, engine);
   const radarCatalog = getSharedCatalog();
-  radarCatalog.seedDemoCatalog();
+  if (env.APP_MODE === "demo") radarCatalog.seedDemoCatalog();
   const radar = RadarService.create(applications);
   registerRadarQueueHandlers(queue, radar.catalog, radar.index);
   // Light indexing + alert evaluation on boot
@@ -292,18 +305,18 @@ async function buildRuntime(): Promise<Runtime> {
 
   const services: RuntimeServices = {
     applications,
-    research: ResearchService.fromRepos(memoryRepos, engine),
-    evidence: EvidenceService.fromRepos(memoryRepos),
-    resumes: ResumesService.fromRepos(memoryRepos, engine, queue),
-    audits: AuditsService.fromRepos(memoryRepos, engine),
-    workflows: WorkflowsService.fromRepos(memoryRepos, engine),
-    usage: UsageService.fromRepos(memoryRepos),
-    files: FilesService.fromRepos(memoryRepos, storage, queue),
+    research: ResearchService.fromRepos(repos, engine),
+    evidence: EvidenceService.fromRepos(repos),
+    resumes: ResumesService.fromRepos(repos, engine, queue),
+    audits: AuditsService.fromRepos(repos, engine),
+    workflows: WorkflowsService.fromRepos(repos, engine),
+    usage: UsageService.fromRepos(repos),
+    files: FilesService.fromRepos(repos, storage, queue),
     radar,
     copilot: new CopilotService(),
   };
 
-  if (mode === "memory" && !queueDrainStarted) {
+  if (mode === "memory" && env.QUEUE_BACKEND === "inprocess" && !queueDrainStarted) {
     queueDrainStarted = true;
     // InProcessQueueAdapter pumps every 50ms once started; start once for memory mode.
     void queue.start();
@@ -312,7 +325,7 @@ async function buildRuntime(): Promise<Runtime> {
 
   return {
     mode,
-    repos: memoryRepos,
+    repos,
     queue,
     engine,
     pipeline,

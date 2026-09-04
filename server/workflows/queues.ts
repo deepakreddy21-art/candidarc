@@ -1,6 +1,9 @@
 import { QUEUE_NAMES, type QueueName } from "../domain/types";
 import { getEnv } from "../config/env";
 import { logger } from "../observability/logger";
+import { createHash } from "crypto";
+import { Queue, Worker, type Job } from "bullmq";
+import IORedis from "ioredis";
 
 export type QueueJob<T = unknown> = {
   id: string;
@@ -171,69 +174,116 @@ export class InProcessQueueAdapter implements QueueAdapter {
   }
 }
 
-/**
- * Redis-backed adapter stub. Falls back to in-process when Redis is unavailable.
- */
-export class RedisQueueAdapter implements QueueAdapter {
-  private fallback: InProcessQueueAdapter;
-  private redisOk = false;
+function deterministicJobId(queue: QueueName, key: string): string {
+  return `${queue}-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+}
 
-  constructor(fallback = new InProcessQueueAdapter()) {
-    this.fallback = fallback;
+export class BullMqQueueAdapter implements QueueAdapter {
+  private readonly connection: IORedis;
+  private readonly queues = new Map<QueueName, Queue>();
+  private readonly handlers = new Map<QueueName, QueueHandler>();
+  private readonly workers: Worker[] = [];
+  private dlq: Queue | null = null;
+
+  constructor(private readonly consumeQueues: ReadonlySet<QueueName> = new Set(QUEUE_NAMES)) {
+    this.connection = new IORedis(getEnv().REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true });
   }
 
-  async connect(): Promise<void> {
-    const env = getEnv();
-    try {
-      const { default: Redis } = await import("ioredis");
-      const client = new Redis(env.REDIS_URL, {
-        maxRetriesPerRequest: 1,
-        lazyConnect: true,
-        connectTimeout: 1500,
+  private queue(name: QueueName): Queue {
+    const existing = this.queues.get(name);
+    if (existing) return existing;
+    const queue = new Queue(`candidarc-${name}`, { connection: this.connection });
+    this.queues.set(name, queue);
+    return queue;
+  }
+
+  async enqueue<T>(queue: QueueName, name: string, payload: T, opts?: EnqueueOptions): Promise<QueueJob<T>> {
+    const cfg = DEFAULT_QUEUE_CONFIG[queue];
+    const size = Buffer.byteLength(JSON.stringify(payload));
+    if (size > cfg.maxPayloadBytes) throw new Error(`Queue payload too large for ${queue}`);
+    const id = opts?.idempotencyKey
+      ? deterministicJobId(queue, opts.idempotencyKey)
+      : deterministicJobId(queue, `${name}:${Date.now()}:${Math.random()}`);
+    const maxAttempts = opts?.maxAttempts ?? cfg.maxAttempts;
+    await this.queue(queue).add(name, payload, {
+      jobId: id,
+      delay: opts?.delayMs,
+      attempts: maxAttempts,
+      backoff: { type: "exponential", delay: 500 },
+      removeOnComplete: 1000,
+      removeOnFail: false,
+    });
+    return { id, queue, name, payload, attempt: 0, maxAttempts, availableAt: Date.now() + (opts?.delayMs ?? 0), createdAt: Date.now(), idempotencyKey: opts?.idempotencyKey };
+  }
+
+  registerHandler<T>(queue: QueueName, handler: QueueHandler<T>): void {
+    this.handlers.set(queue, handler as QueueHandler);
+  }
+
+  async start(): Promise<void> {
+    if (this.workers.length) return;
+    for (const [name, handler] of this.handlers) {
+      if (!this.consumeQueues.has(name)) continue;
+      const cfg = DEFAULT_QUEUE_CONFIG[name];
+      const worker = new Worker(
+        `candidarc-${name}`,
+        async (job: Job) => {
+          const wrapped: QueueJob = {
+            id: job.id ?? deterministicJobId(name, String(job.timestamp)),
+            queue: name,
+            name: job.name,
+            payload: job.data,
+            attempt: job.attemptsMade,
+            maxAttempts: job.opts.attempts ?? cfg.maxAttempts,
+            availableAt: job.timestamp + (job.delay ?? 0),
+            createdAt: job.timestamp,
+          };
+          await Promise.race([
+            handler(wrapped),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Queue job timeout after ${cfg.timeoutMs}ms`)), cfg.timeoutMs)),
+          ]);
+        },
+        { connection: this.connection, concurrency: cfg.concurrency, limiter: { max: cfg.rateLimitPerMinute, duration: 60_000 } },
+      );
+      worker.on("failed", (job, error) => {
+        if (job && job.attemptsMade >= (job.opts.attempts ?? cfg.maxAttempts)) {
+          this.dlq ??= new Queue("candidarc-dlq", { connection: this.connection });
+          void this.dlq.add(job.name, { queue: name, payload: job.data, error: error.message, sourceJobId: job.id });
+          logger.error({ queue: name, jobId: job.id, err: error }, "job moved to dead letter queue");
+        }
       });
-      await client.connect();
-      await client.ping();
-      await client.quit();
-      this.redisOk = true;
-      logger.info("Redis reachable; RedisQueueAdapter still delegates to in-process in Phase 2");
-    } catch (err) {
-      this.redisOk = false;
-      logger.warn({ err }, "Redis unavailable; using InProcessQueueAdapter");
+      this.workers.push(worker);
     }
+    logger.info({ queues: [...this.consumeQueues] }, "BullMQ workers started");
   }
 
-  get usingRedis() {
-    return this.redisOk;
-  }
-
-  enqueue<T>(queue: QueueName, name: string, payload: T, opts?: EnqueueOptions) {
-    return this.fallback.enqueue(queue, name, payload, opts);
-  }
-
-  registerHandler<T>(queue: QueueName, handler: QueueHandler<T>) {
-    this.fallback.registerHandler(queue, handler);
-  }
-
-  start() {
-    return this.fallback.start();
-  }
-
-  stop() {
-    return this.fallback.stop();
+  async stop(): Promise<void> {
+    await Promise.all(this.workers.splice(0).map((worker) => worker.close()));
+    await Promise.all([...this.queues.values()].map((queue) => queue.close()));
+    if (this.dlq) await this.dlq.close();
+    if (this.connection.status !== "end") await this.connection.quit();
   }
 }
+
+/** @deprecated Use BullMqQueueAdapter. */
+export const RedisQueueAdapter = BullMqQueueAdapter;
 
 let sharedQueue: QueueAdapter | null = null;
 
 export async function getQueueAdapter(): Promise<QueueAdapter> {
   if (sharedQueue) return sharedQueue;
-  const adapter = new RedisQueueAdapter();
-  await adapter.connect();
-  sharedQueue = adapter;
+  const env = getEnv();
+  sharedQueue = env.QUEUE_BACKEND === "redis"
+    ? new BullMqQueueAdapter()
+    : new InProcessQueueAdapter();
   return sharedQueue;
 }
 
 export function setQueueAdapter(adapter: QueueAdapter) {
   sharedQueue = adapter;
+}
+
+export function resetQueueAdapterForTests() {
+  sharedQueue = null;
 }
 

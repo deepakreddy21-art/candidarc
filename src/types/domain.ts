@@ -3,7 +3,7 @@ export type VerificationStatus = "verified" | "inferred" | "unverified" | "dispu
 export type PrivacyLevel = "public" | "share-safe" | "private" | "do-not-use";
 export type ExperienceLevel = "student" | "early-career" | "experienced" | "career-transition";
 export type ResumeLength = "one-page" | "two-page";
-export type ResearchDepth = "standard" | "deep-team" | "deep-plus-interview";
+export type ResearchDepth = "standard" | "deep-team" | "priority";
 export type ApplicationStatus =
   | "draft"
   | "researching"

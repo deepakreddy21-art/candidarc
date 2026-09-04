@@ -151,7 +151,7 @@ export function NewApplicationFlow() {
           {step === 1 ? (
             <div className="grid gap-3">
               {[
-                { id: "master", title: "Master career profile", desc: "Deepak Reddy Kilaru · AI Software Engineer" },
+                { id: "master", title: "Master career profile", desc: "Primary Career Truth profile" },
                 { id: "existing", title: "Existing resume", desc: "Cisco CX AI draft lineage" },
                 { id: "persona", title: "Target persona", desc: "CX AI Software Engineer focus" },
               ].map((opt) => (
