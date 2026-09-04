@@ -15,7 +15,6 @@ import { getEnv } from "../config/env";
 import { getProviderForRole } from "../ai";
 import type { CanonicalJobCatalog } from "./catalog";
 import type { CanonicalJob, CandidateProfileForMatch } from "./types";
-import { getMatchLabel } from "./match-labels";
 import type { OpportunityBrief } from "./service";
 
 /**
@@ -103,7 +102,6 @@ const briefSchema = z.object({
 async function generateWithAI(
   job: CanonicalJob,
   profile: CandidateProfileForMatch,
-  catalog: CanonicalJobCatalog,
 ): Promise<OpportunityBrief | null> {
   const env = getEnv();
 
@@ -179,8 +177,9 @@ export async function generateOpportunityBrief(
   profile: CandidateProfileForMatch,
   catalog: CanonicalJobCatalog,
 ): Promise<OpportunityBrief> {
+  void catalog;
   // Try AI generation first
-  const aiResult = await generateWithAI(job, profile, catalog);
+  const aiResult = await generateWithAI(job, profile);
   if (aiResult) {
     return aiResult;
   }

@@ -3,6 +3,7 @@ import {
   type ApplicationRecord,
   type AuditFindingRecord,
   type AuditRunRecord,
+  type CandidateProfileRecord,
   type EvidenceRecord,
   type Repositories,
   type ResumeRecord,
@@ -31,11 +32,14 @@ import type {
   ApplicationStatus,
   Audit,
   AuditFinding,
+  CandidateProfile,
   EvidenceItem,
   Resume,
   WorkflowStage,
 } from "@/types/domain";
-import { getSharedCatalog, seedDemoCatalog } from "./radar/catalog";
+import { ProfileService } from "./modules/profile/service";
+import { ResumeImportService } from "./modules/resumes/import-service";
+import { seedDemoCatalog } from "./radar/catalog";
 import { RadarService } from "./radar/service";
 import { registerRadarQueueHandlers } from "./radar/queues";
 import { CopilotService } from "./copilot/service";
@@ -52,6 +56,8 @@ export type RuntimeServices = {
   workflows: WorkflowsService;
   usage: UsageService;
   files: FilesService;
+  profile: ProfileService;
+  resumeImport: ResumeImportService;
   radar: RadarService;
   copilot: CopilotService;
   customerResumes: CustomerGenerateService;
@@ -139,6 +145,36 @@ export function mapApplicationToUi(app: ApplicationRecord): Application {
     nextAction: app.nextAction,
     archived: app.archived,
     roleFamily: app.roleFamily,
+  };
+}
+
+export function mapProfileToUi(p: CandidateProfileRecord): CandidateProfile {
+  return {
+    id: p.publicId,
+    fullName: p.fullName,
+    preferredName: p.preferredName ?? "",
+    email: p.email ?? "",
+    phone: p.phone ?? "",
+    location: p.location ?? "",
+    linkedIn: p.linkedIn ?? undefined,
+    github: p.github ?? undefined,
+    portfolio: p.portfolio ?? undefined,
+    headline: p.headline ?? "",
+    summary: p.summary ?? "",
+    experienceLevel: (p.experienceLevel as CandidateProfile["experienceLevel"]) ?? "experienced",
+    yearsExperience: p.yearsExperience ?? 0,
+    targetRoleFamilies: p.targetRoleFamilies ?? [],
+    preferredResumeLength: (p.preferredResumeLength as CandidateProfile["preferredResumeLength"]) ?? "one-page",
+    careerGoal: p.careerGoal ?? "",
+    avatarInitials: p.avatarInitials ?? "??",
+    remoteOk: p.remoteOk,
+    preferredLocations: p.preferredLocations ?? [],
+    workAuthorization: p.workAuthorization ?? undefined,
+    requiresSponsorship: p.requiresSponsorship ?? undefined,
+    onboardingStep: p.onboardingStep,
+    onboardingCompletedAt: p.onboardingCompletedAt,
+    modelImprovementOptIn: p.modelImprovementOptIn,
+    resumeImportStatus: p.resumeImportStatus,
   };
 }
 
@@ -252,8 +288,11 @@ async function buildRuntime(): Promise<Runtime> {
   let repos: Repositories;
   let store: Repositories["store"];
   if (mode === "postgres") {
-    const { PostgresRepositories } = await import("./database/postgres-repos");
+    const { PostgresRepositories, isMemoryBackedRepository } = await import("./database/postgres-repos");
     repos = new PostgresRepositories();
+    if (isMemoryBackedRepository(repos)) {
+      throw new Error("Postgres mode cannot use memory-backed repositories");
+    }
     store = repos.store;
   } else {
     if (env.APP_MODE !== "demo") {
@@ -351,14 +390,28 @@ async function buildRuntime(): Promise<Runtime> {
     });
     logger.info({ jobId: job.id, applicationPublicId, versionPublicId }, "resume documents rendered");
   });
-  queue.registerHandler("notifications", async () => undefined);
-  queue.registerHandler("maintenance", async () => undefined);
-  queue.registerHandler("document-parsing", async () => undefined);
 
   const storage = getStorage();
+  queue.registerHandler("notifications", async () => undefined);
+  queue.registerHandler("maintenance", async (job) => {
+    const payload = job.payload as { tenantId?: string; filePublicId?: string };
+    if (job.name === "files.malware_scan" && payload.tenantId && payload.filePublicId) {
+      const importService = ResumeImportService.fromRepos(repos, storage, queue);
+      await importService.runMalwareScan(payload.tenantId, payload.filePublicId);
+    }
+  });
+  queue.registerHandler("document-parsing", async (job) => {
+    const payload = job.payload as { tenantId?: string; filePublicId?: string };
+    if (job.name === "resume.extract" && payload.tenantId && payload.filePublicId) {
+      const importService = ResumeImportService.fromRepos(repos, storage, queue);
+      await importService.runExtraction(payload.tenantId, payload.filePublicId);
+    }
+  });
+
+  const profile = ProfileService.fromRepos(repos);
+  const resumeImport = ResumeImportService.fromRepos(repos, storage, queue);
   const applications = ApplicationsService.fromRepos(repos, engine);
   const customerResumes = new CustomerGenerateService(repos, engine);
-  const radarCatalog = getSharedCatalog();
   // PRODUCTION: Never auto-seed. Catalog stays empty until jobs are ingested.
   // DEMO: Seed demo catalog with fixtures.
   if (env.APP_MODE === "demo") {
@@ -379,6 +432,8 @@ async function buildRuntime(): Promise<Runtime> {
     workflows: WorkflowsService.fromRepos(repos, engine),
     usage: UsageService.fromRepos(repos),
     files: FilesService.fromRepos(repos, storage, queue),
+    profile,
+    resumeImport,
     radar,
     copilot: new CopilotService(),
     customerResumes,

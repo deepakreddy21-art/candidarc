@@ -225,6 +225,70 @@ export const cancelWorkflowRequestSchema = z.object({
 });
 
 /* -------------------------------------------------------------------------- */
+/* Profile & onboarding                                                       */
+/* -------------------------------------------------------------------------- */
+
+export const experienceLevelSchema = z.enum(["student", "early-career", "experienced", "career-transition"]);
+export const resumeLengthSchema = z.enum(["one-page", "two-page"]);
+
+export const profileResponseSchema = z.object({
+  id: z.string(),
+  fullName: z.string(),
+  preferredName: z.string().optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  location: z.string().optional(),
+  linkedIn: z.string().optional(),
+  github: z.string().optional(),
+  portfolio: z.string().optional(),
+  headline: z.string().optional(),
+  summary: z.string().optional(),
+  experienceLevel: experienceLevelSchema.optional(),
+  yearsExperience: z.number().optional(),
+  targetRoleFamilies: z.array(z.string()),
+  preferredResumeLength: resumeLengthSchema.optional(),
+  careerGoal: z.string().optional(),
+  avatarInitials: z.string(),
+  remoteOk: z.boolean(),
+  preferredLocations: z.array(z.string()),
+  workAuthorization: z.string().optional(),
+  requiresSponsorship: z.boolean().optional(),
+  onboardingStep: z.number(),
+  onboardingCompletedAt: z.string().nullable(),
+  modelImprovementOptIn: z.boolean(),
+  resumeImportStatus: z.string().nullable().optional(),
+});
+
+export const updateProfileRequestSchema = z.object({
+  fullName: z.string().min(1).max(160).optional(),
+  preferredName: z.string().max(80).optional(),
+  email: z.string().email().max(160).optional(),
+  phone: z.string().max(40).optional(),
+  location: z.string().max(160).optional(),
+  linkedIn: z.string().max(200).optional(),
+  github: z.string().max(200).optional(),
+  portfolio: z.string().max(200).optional(),
+  headline: z.string().max(200).optional(),
+  summary: z.string().max(4000).optional(),
+  experienceLevel: experienceLevelSchema.optional(),
+  yearsExperience: z.number().int().min(0).max(60).optional(),
+  targetRoleFamilies: z.array(z.string().max(120)).max(20).optional(),
+  preferredResumeLength: resumeLengthSchema.optional(),
+  careerGoal: z.string().max(500).optional(),
+  remoteOk: z.boolean().optional(),
+  preferredLocations: z.array(z.string().max(160)).max(20).optional(),
+  workAuthorization: z.string().max(120).optional(),
+  requiresSponsorship: z.boolean().optional(),
+  modelImprovementOptIn: z.boolean().optional(),
+});
+
+export const updateOnboardingRequestSchema = z.object({
+  step: z.number().int().min(0).max(20).optional(),
+  completed: z.boolean().optional(),
+  data: z.record(z.unknown()).optional(),
+});
+
+/* -------------------------------------------------------------------------- */
 /* Shared helpers                                                             */
 /* -------------------------------------------------------------------------- */
 

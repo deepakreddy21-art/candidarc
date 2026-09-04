@@ -80,7 +80,7 @@ export class AuditsService {
         (item.status === "accepted" || item.status === "edited") &&
         (item.severity === "critical" || item.severity === "major"),
     )) {
-      addMistakeMemoryRule(this.store, {
+      await addMistakeMemoryRule(this.store, {
         tenantId,
         applicationId: app.id,
         originatingAudit: latest.lens,

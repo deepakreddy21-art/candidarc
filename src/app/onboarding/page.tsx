@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Logo } from "@/components/brand/logo";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -13,6 +13,8 @@ import { Switch } from "@/components/ui/tabs";
 import { useOnboardingStore } from "@/stores/ui";
 import { product } from "@/config/product";
 import { cn } from "@/lib/utils";
+import { api, ApiError } from "@/services/api";
+import type { ResumeImportExtraction } from "@/types/domain";
 
 const steps = [
   { title: "Welcome and career goal", optional: false },
@@ -30,19 +32,91 @@ export default function OnboardingPage() {
   const router = useRouter();
   const { step, data, setStep, patch, reset } = useOnboardingStore();
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [extraction, setExtraction] = useState<ResumeImportExtraction | null>(null);
 
   const progress = ((step + 1) / steps.length) * 100;
   const current = steps[step] ?? steps[0];
 
+  const persist = useCallback(
+    async (nextData: Record<string, unknown>, nextStep?: number) => {
+      setSaving(true);
+      try {
+        const result = await api.updateOnboardingProgress({
+          step: nextStep ?? step,
+          data: nextData,
+        });
+        if (typeof nextStep === "number") setStep(nextStep);
+        patch(nextData);
+        return result;
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : "Could not save progress");
+        throw err;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [patch, setStep, step],
+  );
+
   function autosave(next: Record<string, unknown>) {
     patch(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => toast.message("Progress saved"), 350);
+    saveTimer.current = setTimeout(() => {
+      void persist({ ...data, ...next }).catch(() => undefined);
+    }, 500);
   }
 
-  useEffect(() => () => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-  }, []);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const saved = await api.getOnboardingProgress();
+        if (saved.step > 0) setStep(saved.step);
+        patch({
+          careerGoal: saved.data.careerGoal,
+          fullName: saved.data.fullName,
+          email: saved.data.email,
+          phone: saved.data.phone,
+          location: saved.data.location,
+          github: saved.data.github,
+          portfolio: saved.data.portfolio,
+          targetRoles: saved.data.targetRoleFamilies,
+          resumeLength: saved.data.preferredResumeLength,
+          experienceLevel: saved.data.experienceLevel,
+          modelImprovement: saved.data.modelImprovementOptIn,
+        });
+        const importState = await api.getResumeImportStatus();
+        setImportStatus(importState.status);
+        setExtraction(importState.extraction);
+      } catch {
+        /* unauthenticated users can still browse onboarding */
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, [patch, setStep]);
+
+  useEffect(() => {
+    if (step !== 2 || !importStatus || ["ready_for_review", "confirmed", "failed"].includes(importStatus)) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void api.getResumeImportStatus().then((state) => {
+        setImportStatus(state.status);
+        setExtraction(state.extraction);
+        if (state.status === "ready_for_review") toast.message("Resume parsed — review extracted details");
+        if (state.status === "failed") toast.error(state.extraction?.error ?? "Resume parsing failed");
+      });
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [importStatus, step]);
 
   const summary = useMemo(
     () => ({
@@ -55,7 +129,7 @@ export default function OnboardingPage() {
     [data],
   );
 
-  function next() {
+  async function next() {
     if (step === 0 && !String(data.careerGoal ?? "").trim()) {
       toast.error("Share a short career goal to continue");
       return;
@@ -68,10 +142,20 @@ export default function OnboardingPage() {
       toast.error("Choose at least one target role family");
       return;
     }
+    try {
+      await persist(data, step >= steps.length - 1 ? step : step + 1);
+    } catch {
+      return;
+    }
     if (step >= steps.length - 1) {
-      toast.success("Onboarding complete");
-      reset();
-      router.push("/app");
+      try {
+        await api.updateOnboardingProgress({ step, completed: true, data });
+        toast.success("Onboarding complete");
+        reset();
+        router.push("/app");
+      } catch (err) {
+        toast.error(err instanceof ApiError ? err.message : "Could not complete onboarding");
+      }
       return;
     }
     setStep(step + 1);
@@ -79,8 +163,29 @@ export default function OnboardingPage() {
 
   function skip() {
     if (!current.optional) return;
-    toast.message("Skipped optional step");
-    setStep(step + 1);
+    void persist(data, step + 1)
+      .then(() => {
+        toast.message("Skipped optional step");
+        setStep(step + 1);
+      })
+      .catch(() => undefined);
+  }
+
+  async function handleResumeUpload(file: File) {
+    setUploading(true);
+    try {
+      const result = await api.uploadResume(file);
+      setImportStatus(result.importStatus);
+      toast.message("Resume uploaded — scanning and parsing");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  if (loading) {
+    return <p className="p-8 text-sm text-foreground-muted">Loading onboarding…</p>;
   }
 
   return (
@@ -91,6 +196,7 @@ export default function OnboardingPage() {
         </Link>
         <p className="text-sm text-foreground-muted">
           Step {step + 1} of {steps.length}
+          {saving ? " · saving…" : ""}
         </p>
       </div>
 
@@ -117,32 +223,68 @@ export default function OnboardingPage() {
 
             {step === 1 ? (
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field
-                  label="Full name"
-                  value={String(data.fullName ?? "")}
-                  onChange={(fullName) => autosave({ fullName })}
-                />
+                <Field label="Full name" value={String(data.fullName ?? "")} onChange={(fullName) => autosave({ fullName })} />
                 <Field label="Email" value={String(data.email ?? "")} onChange={(email) => autosave({ email })} />
                 <Field label="Location" value={String(data.location ?? "")} onChange={(location) => autosave({ location })} />
                 <Field label="Phone" value={String(data.phone ?? "")} onChange={(phone) => autosave({ phone })} />
                 <Field label="GitHub" value={String(data.github ?? "")} onChange={(github) => autosave({ github })} />
-                <Field
-                  label="Portfolio"
-                  value={String(data.portfolio ?? "")}
-                  onChange={(portfolio) => autosave({ portfolio })}
-                />
+                <Field label="Portfolio" value={String(data.portfolio ?? "")} onChange={(portfolio) => autosave({ portfolio })} />
               </div>
             ) : null}
 
             {step === 2 ? (
               <div className="space-y-4">
-                <Button type="button" variant="secondary" onClick={() => toast.success("Resume upload queued")}>
-                  Upload resume
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void handleResumeUpload(file);
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {uploading ? "Uploading…" : "Upload resume (PDF or DOCX)"}
                 </Button>
+                {importStatus ? (
+                  <p className="text-sm text-foreground-secondary">Import status: {importStatus.replace(/_/g, " ")}</p>
+                ) : null}
+                {extraction && extraction.skills?.length ? (
+                  <div className="rounded-xl border border-border bg-canvas p-4 text-sm">
+                    <p className="font-medium">Extracted for review</p>
+                    <p className="mt-2 text-foreground-muted">
+                      Skills: {extraction.skills.slice(0, 12).join(", ")}
+                      {extraction.skills.length > 12 ? "…" : ""}
+                    </p>
+                    {importStatus === "ready_for_review" ? (
+                      <Button
+                        type="button"
+                        className="mt-3"
+                        variant="outline"
+                        onClick={async () => {
+                          try {
+                            await api.confirmResumeImport();
+                            setImportStatus("confirmed");
+                            toast.success("Resume import confirmed");
+                          } catch (err) {
+                            toast.error(err instanceof ApiError ? err.message : "Confirmation failed");
+                          }
+                        }}
+                      >
+                        Confirm extracted profile details
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <Button type="button" variant="outline" disabled aria-disabled>
                   Import LinkedIn (coming soon)
                 </Button>
-                <p className="text-xs text-foreground-muted">LinkedIn import is adapter-ready and disabled in this demo.</p>
               </div>
             ) : null}
 
@@ -234,33 +376,27 @@ export default function OnboardingPage() {
 
             {step === 6 ? (
               <div className="space-y-3 rounded-xl bg-canvas p-4 text-sm">
-                <p>
-                  <span className="text-foreground-muted">Name:</span> {summary.name}
-                </p>
-                <p>
-                  <span className="text-foreground-muted">Goal:</span> {summary.goal}
-                </p>
+                <p><span className="text-foreground-muted">Name:</span> {summary.name}</p>
+                <p><span className="text-foreground-muted">Goal:</span> {summary.goal}</p>
                 <p>
                   <span className="text-foreground-muted">Roles:</span>{" "}
                   {summary.roles.length ? summary.roles.join(", ") : "None selected"}
                 </p>
-                <p>
-                  <span className="text-foreground-muted">Profile:</span> {summary.level} · {summary.length}
-                </p>
+                <p><span className="text-foreground-muted">Profile:</span> {summary.level} · {summary.length}</p>
               </div>
             ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
-              <Button type="button" variant="ghost" disabled={step === 0} onClick={() => setStep(Math.max(0, step - 1))}>
+              <Button type="button" variant="ghost" disabled={step === 0 || saving} onClick={() => setStep(Math.max(0, step - 1))}>
                 Back
               </Button>
               <div className="flex flex-wrap gap-2">
                 {current.optional ? (
-                  <Button type="button" variant="secondary" onClick={skip}>
+                  <Button type="button" variant="secondary" disabled={saving} onClick={skip}>
                     Skip
                   </Button>
                 ) : null}
-                <Button type="button" onClick={next}>
+                <Button type="button" disabled={saving} onClick={() => void next()}>
                   {step === steps.length - 1 ? "Enter app" : "Continue"}
                 </Button>
               </div>

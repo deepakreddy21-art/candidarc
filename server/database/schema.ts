@@ -254,6 +254,16 @@ export const candidateProfiles = pgTable(
     preferredResumeLength: text("preferred_resume_length"),
     careerGoal: text("career_goal"),
     avatarInitials: text("avatar_initials"),
+    remoteOk: boolean("remote_ok").notNull().default(true),
+    preferredLocations: jsonb("preferred_locations").$type<string[]>().default([]),
+    workAuthorization: text("work_authorization"),
+    requiresSponsorship: boolean("requires_sponsorship"),
+    onboardingStep: integer("onboarding_step").notNull().default(0),
+    onboardingCompletedAt: ts("onboarding_completed_at"),
+    modelImprovementOptIn: boolean("model_improvement_opt_in").notNull().default(false),
+    sourceResumeFilePublicId: text("source_resume_file_public_id"),
+    resumeImportStatus: text("resume_import_status"),
+    resumeImportExtraction: jsonb("resume_import_extraction").$type<Record<string, unknown>>(),
     version: version(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -262,6 +272,7 @@ export const candidateProfiles = pgTable(
   (t) => [
     uniqueIndex("candidate_profiles_public_id_uidx").on(t.publicId),
     index("candidate_profiles_tenant_idx").on(t.tenantId),
+    index("candidate_profiles_user_tenant_idx").on(t.tenantId, t.userId),
   ],
 );
 
@@ -471,6 +482,7 @@ export const evidenceItems = pgTable(
     resumeUsageHistory: jsonb("resume_usage_history").$type<string[]>().default([]),
     interviewStoryReady: boolean("interview_story_ready").notNull().default(false),
     tags: jsonb("tags").$type<string[]>().default([]),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
     version: version(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -617,6 +629,7 @@ export const resumeVersions = pgTable(
     scoreBreakdown: jsonb("score_breakdown").$type<Record<string, number>>().default({}),
     triggeredBy: text("triggered_by"),
     promptVersion: text("prompt_version"),
+    idempotencyKey: text("idempotency_key"),
     workflowRunId: uuid("workflow_run_id"),
     /** Soft metadata only — content fields must not be mutated after create. */
     locked: boolean("locked").notNull().default(false),
@@ -744,6 +757,7 @@ export const auditFindings = pgTable(
     suggestedText: text("suggested_text"),
     evidenceSource: text("evidence_source"),
     expectedScoreImpact: integer("expected_score_impact").default(0),
+    editedText: text("edited_text"),
     bulletId: text("bullet_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1023,6 +1037,7 @@ export const storedFiles = pgTable(
     checksum: text("checksum"),
     scanStatus: text("scan_status").notNull().default("pending"),
     retentionState: text("retention_state").notNull().default("active"),
+    physicalDeleteAt: ts("physical_delete_at"),
     originalFilename: text("original_filename"),
     version: version(),
     createdAt: createdAt(),
@@ -1130,6 +1145,7 @@ export const usageLedger = pgTable(
       onDelete: "set null",
     }),
     idempotencyKey: text("idempotency_key").notNull(),
+    status: text("status").notNull().default("committed"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
     createdAt: createdAt(),
   },
@@ -1449,6 +1465,242 @@ export const radarJobInteractions = pgTable(
   (t) => [
     index("radar_job_interactions_tenant_user_idx").on(t.tenantId, t.userId),
     index("radar_job_interactions_job_idx").on(t.canonicalJobId),
+    index("radar_job_interactions_created_idx").on(t.createdAt),
+  ],
+);
+
+export const radarJobSightings = pgTable(
+  "radar_job_sightings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    publicId: publicId(),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    sourceId: uuid("source_id")
+      .notNull()
+      .references(() => radarJobSources.id),
+    sourceListingId: text("source_listing_id").notNull(),
+    sourceCompanyIdentifier: text("source_company_identifier"),
+    sourceRequisitionId: text("source_requisition_id"),
+    sourceUrl: text("source_url").notNull(),
+    sourceApplyUrl: text("source_apply_url"),
+    sourceTitle: text("source_title").notNull(),
+    sourceLocation: text("source_location"),
+    sourcePostedAt: ts("source_posted_at"),
+    sourcePostedPrecision: radarTimestampPrecisionEnum("source_posted_precision")
+      .notNull()
+      .default("UNKNOWN"),
+    sourceUpdatedAt: ts("source_updated_at"),
+    firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
+    lastSeenAt: ts("last_seen_at").notNull().defaultNow(),
+    lastVerifiedAt: ts("last_verified_at"),
+    removedAt: ts("removed_at"),
+    repostedAt: ts("reposted_at"),
+    validThrough: ts("valid_through"),
+    contentHash: text("content_hash").notNull(),
+    descriptionHash: text("description_hash").notNull(),
+    rawSnapshotId: uuid("raw_snapshot_id"),
+    classification: radarJobClassificationEnum("classification").notNull().default("NEW"),
+    classificationConfidence: numeric("classification_confidence", { precision: 5, scale: 4 })
+      .notNull()
+      .default("0"),
+    demoData: boolean("demo_data").notNull().default(false),
+    attribution: text("attribution"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_job_sightings_public_id_uidx").on(t.publicId),
+    uniqueIndex("radar_job_sightings_source_listing_uidx").on(t.sourceId, t.sourceListingId),
+    index("radar_job_sightings_canonical_job_id_idx").on(t.canonicalJobId),
+    index("radar_job_sightings_source_posted_at_idx").on(t.sourcePostedAt),
+  ],
+);
+
+export const radarJobSnapshots = pgTable(
+  "radar_job_snapshots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sightingId: uuid("sighting_id")
+      .notNull()
+      .references(() => radarJobSightings.id, { onDelete: "cascade" }),
+    retrievedAt: ts("retrieved_at").notNull().defaultNow(),
+    contentHash: text("content_hash").notNull(),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    location: text("location"),
+    compensation: jsonb("compensation"),
+    sourcePostedAt: ts("source_posted_at"),
+    applicationUrl: text("application_url"),
+    status: radarJobStatusEnum("status").notNull().default("open"),
+    rawPayloadRef: text("raw_payload_ref"),
+    materialChangeSummary: text("material_change_summary"),
+  },
+  (t) => [index("radar_job_snapshots_sighting_id_idx").on(t.sightingId)],
+);
+
+export const radarJobHistoryEvents = pgTable(
+  "radar_job_history_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    sightingId: uuid("sighting_id").references(() => radarJobSightings.id, { onDelete: "set null" }),
+    eventType: text("event_type").notNull(),
+    occurredAt: ts("occurred_at").notNull().defaultNow(),
+    message: text("message").notNull(),
+    metadata: jsonb("metadata"),
+  },
+  (t) => [
+    index("radar_job_history_events_job_idx").on(t.canonicalJobId, t.occurredAt),
+  ],
+);
+
+export const radarSavedSearches = pgTable(
+  "radar_saved_searches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    publicId: publicId(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    query: jsonb("query").notNull().default({}),
+    alertEnabled: boolean("alert_enabled").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_saved_searches_public_id_uidx").on(t.publicId),
+    index("radar_saved_searches_tenant_user_idx").on(t.tenantId, t.userId),
+  ],
+);
+
+export const radarSavedJobs = pgTable(
+  "radar_saved_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_saved_jobs_tenant_user_job_uidx").on(t.tenantId, t.userId, t.canonicalJobId),
+    index("radar_saved_jobs_tenant_idx").on(t.tenantId),
+  ],
+);
+
+export const radarHiddenJobs = pgTable(
+  "radar_hidden_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_hidden_jobs_tenant_user_job_uidx").on(t.tenantId, t.userId, t.canonicalJobId),
+    index("radar_hidden_jobs_tenant_idx").on(t.tenantId),
+  ],
+);
+
+export const radarJobMatches = pgTable(
+  "radar_job_matches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    score: numeric("score", { precision: 5, scale: 4 }).notNull(),
+    breakdown: jsonb("breakdown").notNull(),
+    computedAt: ts("computed_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("radar_job_matches_tenant_user_job_uidx").on(t.tenantId, t.userId, t.canonicalJobId),
+    index("radar_job_matches_tenant_idx").on(t.tenantId),
+  ],
+);
+
+export const radarJobAlerts = pgTable(
+  "radar_job_alerts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    publicId: publicId(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    savedSearchId: uuid("saved_search_id").references(() => radarSavedSearches.id, {
+      onDelete: "set null",
+    }),
+    query: jsonb("query").notNull().default({}),
+    cadence: text("cadence").notNull().default("immediate"),
+    enabled: boolean("enabled").notNull().default(true),
+    includeReposts: boolean("include_reposts").notNull().default(true),
+    includeRefreshes: boolean("include_refreshes").notNull().default(false),
+    lastEvaluatedAt: ts("last_evaluated_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("radar_job_alerts_public_id_uidx").on(t.publicId),
+    index("radar_job_alerts_tenant_user_idx").on(t.tenantId, t.userId),
+  ],
+);
+
+export const radarJobAlertDeliveries = pgTable(
+  "radar_job_alert_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    alertId: uuid("alert_id")
+      .notNull()
+      .references(() => radarJobAlerts.id, { onDelete: "cascade" }),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    canonicalJobId: uuid("canonical_job_id")
+      .notNull()
+      .references(() => radarCanonicalJobs.id, { onDelete: "cascade" }),
+    classification: radarJobClassificationEnum("classification").notNull(),
+    deliveredAt: ts("delivered_at").notNull().defaultNow(),
+    channel: text("channel").notNull().default("in_app"),
+    message: text("message").notNull(),
+    dedupeKey: text("dedupe_key").notNull(),
+  },
+  (t) => [
+    uniqueIndex("radar_job_alert_deliveries_dedupe_uidx").on(t.dedupeKey),
+    index("radar_job_alert_deliveries_tenant_user_idx").on(t.tenantId, t.userId),
   ],
 );
 
@@ -1497,6 +1749,15 @@ export const schema = {
   radarProviderCheckpoints,
   radarOpportunityBriefs,
   radarJobInteractions,
+  radarJobSightings,
+  radarJobSnapshots,
+  radarJobHistoryEvents,
+  radarSavedSearches,
+  radarSavedJobs,
+  radarHiddenJobs,
+  radarJobMatches,
+  radarJobAlerts,
+  radarJobAlertDeliveries,
 };
 
 export type User = typeof users.$inferSelect;

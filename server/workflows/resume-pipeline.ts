@@ -9,6 +9,7 @@ import {
 } from "../ai/schemas";
 import { collectResearchSources } from "../ai/research-collector";
 import { addMistakeMemoryRule, listActiveMistakeMemory } from "../ai/mistake-memory";
+import { adjudicateFindings, buildAdjudicationContext } from "../resumes/audit-adjudication";
 import type {
   ApplicationRepository,
   AuditRepository,
@@ -17,6 +18,7 @@ import type {
   Repositories,
   ResumeRepository,
   UsageRepository,
+  WorkflowRepository,
   WorkflowRunRecord,
 } from "../database/repositories";
 import { newId, nowIso } from "../database/repositories";
@@ -30,6 +32,7 @@ import { claimableTechnologies, extractTechQuestions, type TechQuestion } from "
 
 export type ResumePipelineDeps = {
   engine: DurableWorkflowEngine;
+  workflows: WorkflowRepository;
   applications: ApplicationRepository;
   research: ResearchRepository;
   resumes: ResumeRepository;
@@ -89,6 +92,7 @@ export class ResumePipeline {
   static fromRepos(repos: Repositories, engine: DurableWorkflowEngine, queue?: QueueAdapter) {
     return new ResumePipeline({
       engine,
+      workflows: repos.workflows,
       applications: repos.applications,
       research: repos.research,
       resumes: repos.resumes,
@@ -446,7 +450,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const previousAudit = auditRuns.at(-1);
     const auditFindings = previousAudit ? await this.deps.audits.listFindings(run.tenantId, previousAudit.publicId) : [];
     const actionable = filterFindingsForNextGeneration(auditFindings);
-    const mistakeMemory = listActiveMistakeMemory(this.deps.store, run.tenantId, run.applicationId);
+    const mistakeMemory = await listActiveMistakeMemory(this.deps.store, run.tenantId, run.applicationId);
     const attestedTechnologies = claimableTechnologies(
       (application?.metadata?.techQuestions ?? []) as TechQuestion[],
     );
@@ -684,21 +688,58 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       );
       if (!latestAudit) throw new AppError("AUDIT_NOT_FOUND", "Audit result was not persisted", 500);
       const findings = await this.deps.audits.listFindings(run.tenantId, latestAudit.publicId);
-      await Promise.all(
-        findings
-          .filter((finding) => finding.status === "open")
-          .map((finding) => this.deps.audits.updateFindingDecision(run.tenantId, finding.publicId, "accepted")),
+      const attestedTechnologies = claimableTechnologies(
+        (application?.metadata?.techQuestions ?? []) as TechQuestion[],
       );
-      for (const finding of findings.filter(
-        (item) => item.severity === "critical" || item.severity === "major",
+      const adjudicationCtx = buildAdjudicationContext({
+        evidence,
+        attestedTechnologies,
+      });
+      const adjudicated = adjudicateFindings(
+        findings.filter((finding) => finding.status === "open"),
+        adjudicationCtx,
+      );
+      const needsUser = adjudicated.filter((item) => item.adjudication === "needs_user");
+      if (needsUser.length) {
+        await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+          stage: reviewStage,
+          workflowStage: reviewStage,
+          status: "auditing",
+          nextAction: "Confirm factual audit items",
+          metadata: {
+            ...(application.metadata ?? {}),
+            pendingAdjudication: needsUser.map((item) => ({
+              findingPublicId: item.publicId,
+              reason: item.adjudicationReason,
+              title: item.title,
+            })),
+          },
+        });
+        // Pause only when factual evidence is genuinely required; do not auto-continue.
+        return;
+      }
+
+      await Promise.all(
+        adjudicated.map((finding) =>
+          this.deps.audits.updateFindingDecision(
+            run.tenantId,
+            finding.publicId,
+            finding.adjudication === "accepted" ? "accepted" : "rejected",
+          ),
+        ),
+      );
+      for (const finding of adjudicated.filter(
+        (item) =>
+          item.adjudication === "accepted" &&
+          (item.severity === "critical" || item.severity === "major"),
       )) {
-        addMistakeMemoryRule(this.deps.store, {
+        await addMistakeMemoryRule(this.deps.store, {
           tenantId: run.tenantId,
           applicationId: run.applicationId,
           originatingAudit: latestAudit.lens,
           affectedVersion: latestAudit.reviewsVersion,
           category: finding.section,
-          rule: finding.suggestedText,
+          rule: finding.suggestedText ?? finding.title,
           severity: finding.severity,
           status: "active",
           userOverride: false,
@@ -707,13 +748,22 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       }
       const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
       await this.deps.engine.transition(run.id, nextStage, {
-        message: "Customer audit applied automatically",
+        message: "Customer audit applied after adjudication",
       });
       await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
         stage: nextStage,
         workflowStage: nextStage,
         status: "resume",
         nextAction: "Creating tailored resume",
+        metadata: {
+          ...(application.metadata ?? {}),
+          pendingAdjudication: [],
+          lastAdjudication: adjudicated.map((item) => ({
+            findingPublicId: item.publicId,
+            decision: item.adjudication,
+            reason: item.adjudicationReason,
+          })),
+        },
       });
     }
   }

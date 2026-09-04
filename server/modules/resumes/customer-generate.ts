@@ -6,7 +6,10 @@ import { requireTenantMembership, requireTenantRole, requireUser } from "../../a
 import type { Repositories, ResumeVersionRecord } from "../../database/repositories";
 import { newId } from "../../database/repositories";
 import { AppError } from "../../domain/types";
+import { previewHtmlFromDocument } from "../../resumes/document-renderer";
+import { buildResumeDocument } from "../../resumes/resume-document";
 import { mapInternalStageToCustomer } from "../../resumes/customer-status";
+import { computeCandidArcQualityScore } from "../../resumes/quality-score";
 import {
   applyTechAnswers,
   type TechAnswerKind,
@@ -40,9 +43,14 @@ export const refineResumeInputSchema = z.object({
 
 type GenerateInput = z.infer<typeof customerGenerateInputSchema>;
 
-function previewHtml(version: ResumeVersionRecord): string {
-  const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return version.sections.map((section) => `<section><pre>${escape(JSON.stringify(section, null, 2))}</pre></section>`).join("");
+function previewHtml(version: ResumeVersionRecord, candidateName: string, role: string, company: string): string {
+  const document = buildResumeDocument({
+    sections: version.sections,
+    candidateName,
+    role,
+    company,
+  });
+  return previewHtmlFromDocument(document);
 }
 
 export class CustomerGenerateService {
@@ -134,12 +142,16 @@ export class CustomerGenerateService {
     const mapped = mapInternalStageToCustomer(app.workflowStage, {
       failed: latestRun.status === "failed",
       documentsReady,
+      startedAt: latestRun.startedAt ?? latestRun.createdAt,
     });
     const response: Record<string, unknown> = {
       workflowId: requested.publicId,
       applicationId: app.publicId,
       status: mapped.status,
       message: mapped.message,
+      pipelineStage: mapped.pipelineStage,
+      pipelineLabel: mapped.pipelineLabel,
+      elapsedMs: mapped.elapsedMs,
       downloads: { pdfReady, docxReady },
     };
     const questions = (app.metadata?.techQuestions ?? []) as TechQuestion[];
@@ -154,12 +166,38 @@ export class CustomerGenerateService {
       if (current) {
         const customerNumber = Math.max(1, finalVersions.findIndex((version) => version.publicId === current.publicId) + 1);
         const breakdown = (current.scoreBreakdown ?? {}) as Record<string, number>;
+        const quality = computeCandidArcQualityScore({
+          sections: current.sections as Array<Record<string, unknown>>,
+          contact: {
+            email: typeof app.metadata?.candidateEmail === "string" ? app.metadata.candidateEmail : undefined,
+            phone: typeof app.metadata?.candidatePhone === "string" ? app.metadata.candidatePhone : undefined,
+            location: app.location,
+            linkedIn: typeof app.metadata?.candidateLinkedIn === "string" ? app.metadata.candidateLinkedIn : undefined,
+          },
+          jobRequirements: Array.isArray(app.metadata?.jobRequirements)
+            ? (app.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+            : [],
+          knownTechnologies: Array.isArray(app.metadata?.knownTechnologies)
+            ? (app.metadata.knownTechnologies as unknown[]).filter((item): item is string => typeof item === "string")
+            : [],
+          preferredLength: "one-page",
+          aiRoleAlignment: breakdown.jobAlignment ?? current.score,
+          aiAtsReadability: breakdown.atsCompatibility,
+        });
         response.resume = {
           versionId: current.publicId,
           versionLabel: `Version ${customerNumber}`,
-          previewHtml: previewHtml(current),
+          previewHtml: previewHtml(
+            current,
+            typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : "Candidate",
+            app.role,
+            app.company,
+          ),
           sections: current.sections,
           createdAt: current.createdAt,
+          role: app.role,
+          company: app.company,
+          candidateName: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : "Candidate",
         };
         response.versions = finalVersions.map((version, index) => ({
           id: version.publicId,
@@ -167,21 +205,19 @@ export class CustomerGenerateService {
           createdAt: version.createdAt,
         }));
         response.qualityReport = {
-          summary: "Your resume passed evidence, readability, and formatting checks.",
-          score: current.score,
-          roleAlignment: breakdown.jobAlignment ?? current.score,
-          atsReadability: breakdown.atsCompatibility,
-          verifiedClaims: current.sections.reduce((count: number, section) => {
-            const bullets = Array.isArray((section as { bullets?: unknown[] }).bullets) ? (section as { bullets: unknown[] }).bullets : [];
-            return count + bullets.filter((bullet) => {
-              const ids = (bullet as { evidenceIds?: unknown }).evidenceIds;
-              return Array.isArray(ids) && ids.length > 0;
-            }).length;
-          }, 0),
+          name: quality.name,
+          summary: quality.summary,
+          score: quality.score,
+          roleAlignment: quality.roleAlignment,
+          atsReadability: quality.atsReadability,
+          verifiedClaims: quality.verifiedClaims,
           researchSourcesUsed: typeof app.metadata?.researchSourceCount === "number" ? app.metadata.researchSourceCount : undefined,
-          remainingSkillGaps: Array.isArray(app.metadata?.remainingSkillGaps)
-            ? (app.metadata.remainingSkillGaps as unknown[]).filter((item): item is string => typeof item === "string").slice(0, 5)
-            : [],
+          remainingSkillGaps: quality.remainingSkillGaps ?? [],
+          passed: quality.passed,
+          missing: quality.missing,
+          verifiedConclusions: quality.verifiedConclusions,
+          aiEstimates: quality.aiEstimates,
+          nextSteps: quality.nextSteps,
         };
       }
       if (app.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;

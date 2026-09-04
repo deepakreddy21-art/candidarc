@@ -60,7 +60,7 @@ describe("customer resume generation", () => {
     for (const stage of ["V0_GENERATING", "HR_AUDIT_1_REVIEW", "EM_AUDIT_2_RUNNING", "RESEARCH_QUEUED", "REVISING"]) {
       const mapped = mapInternalStageToCustomer(stage);
       expect(JSON.stringify(mapped)).not.toMatch(/V0|HR_AUDIT|EM_AUDIT|RESEARCH_QUEUED|REVISING/);
-      expect(mapped.message).toBe("Creating your tailored resume…");
+      expect(["Understanding role", "Tailoring experience", "Preparing documents"]).toContain(mapped.pipelineLabel);
     }
   });
 
@@ -150,14 +150,14 @@ describe("customer resume generation", () => {
     expect(enhanced.status).toBe("queued");
   });
 
-  it("creates non-empty, correctly identified PDF and DOCX documents", () => {
-    const pdf = createMinimalPdf(["Candidate", "Engineer"]);
-    const docx = createMinimalDocx(["Candidate", "Engineer"]);
+  it("creates non-empty, correctly identified PDF and DOCX documents", async () => {
+    const pdf = await createMinimalPdf(["Candidate", "Engineer"]);
+    const docx = await createMinimalDocx(["Candidate", "Engineer"]);
     expect(pdf.length).toBeGreaterThan(100);
     expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
     expect(docx.length).toBeGreaterThan(100);
     expect(docx.readUInt32LE(0)).toBe(0x04034b50);
-  });
+  }, 60_000);
 
   it("refinement preserves old versions and allocates a new pipeline cycle", async () => {
     const store = createEmptyMemoryStore();
@@ -208,7 +208,7 @@ describe("customer resume generation", () => {
     expect(source).not.toContain("setTimeout(");
     expect(source).not.toMatch(/You may close this page/i);
     expect(source).not.toMatch(/HR Audit|EM Audit|HR_AUDIT|EM_AUDIT|\bV0\b|token usage|BullMQ|OpenAI|Anthropic/i);
-    expect(source).toContain("Creating your tailored resume…");
+    expect(source).toContain("Understanding role");
     expect(source).toContain("Refine this resume");
     expect(source).toContain("Create new version");
   });

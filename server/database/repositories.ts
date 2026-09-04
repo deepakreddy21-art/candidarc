@@ -290,6 +290,43 @@ export type InterviewSessionRecord = {
   deletedAt: string | null;
 };
 
+export type CandidateProfileRecord = {
+  id: Id;
+  publicId: string;
+  tenantId: Id;
+  userId: Id | null;
+  fullName: string;
+  preferredName: string | null;
+  email: string | null;
+  phone: string | null;
+  location: string | null;
+  linkedIn: string | null;
+  github: string | null;
+  portfolio: string | null;
+  headline: string | null;
+  summary: string | null;
+  experienceLevel: string | null;
+  yearsExperience: number | null;
+  targetRoleFamilies: string[];
+  preferredResumeLength: string | null;
+  careerGoal: string | null;
+  avatarInitials: string | null;
+  remoteOk: boolean;
+  preferredLocations: string[];
+  workAuthorization: string | null;
+  requiresSponsorship: boolean | null;
+  onboardingStep: number;
+  onboardingCompletedAt: string | null;
+  modelImprovementOptIn: boolean;
+  sourceResumeFilePublicId: string | null;
+  resumeImportStatus: string | null;
+  resumeImportExtraction: Record<string, unknown> | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
 /**
  * MemoryStore-shaped dependency. Implemented by `memory-store.ts` (sibling)
  * or any compatible in-memory store for tests.
@@ -312,6 +349,7 @@ export interface MemoryStoreLike {
   usageLedger: Map<string, UsageLedgerRecord>;
   storedFiles: Map<string, StoredFileRecord>;
   interviews: Map<string, InterviewSessionRecord>;
+  candidateProfiles: Map<string, CandidateProfileRecord>;
   /** optional helpers some stores expose */
   getTenantIdForUser?(userId: string): string | null;
   ensureSeeded?(): Promise<void> | void;
@@ -416,7 +454,50 @@ export interface UsageRepository {
 export interface FileRepository {
   create(file: Omit<StoredFileRecord, "createdAt" | "deletedAt"> & { createdAt?: string }): Promise<StoredFileRecord>;
   getByPublicId(tenantId: string, publicId: string): Promise<StoredFileRecord | null>;
+  update(tenantId: string, publicId: string, patch: Partial<StoredFileRecord>): Promise<StoredFileRecord>;
   softDelete(tenantId: string, publicId: string, physicalDeleteAt: string): Promise<StoredFileRecord>;
+}
+
+export interface CandidateProfileRepository {
+  getByUser(tenantId: string, userId: string): Promise<CandidateProfileRecord | null>;
+  findBySourceResumeFile(tenantId: string, filePublicId: string): Promise<CandidateProfileRecord | null>;
+  upsert(
+    input: Omit<CandidateProfileRecord, "createdAt" | "updatedAt" | "deletedAt" | "version"> & {
+      version?: number;
+    },
+  ): Promise<CandidateProfileRecord>;
+  updateOnboarding(
+    tenantId: string,
+    userId: string,
+    patch: Partial<
+      Pick<
+        CandidateProfileRecord,
+        | "onboardingStep"
+        | "onboardingCompletedAt"
+        | "careerGoal"
+        | "fullName"
+        | "email"
+        | "phone"
+        | "location"
+        | "github"
+        | "portfolio"
+        | "experienceLevel"
+        | "yearsExperience"
+        | "targetRoleFamilies"
+        | "preferredResumeLength"
+        | "remoteOk"
+        | "preferredLocations"
+        | "workAuthorization"
+        | "requiresSponsorship"
+        | "modelImprovementOptIn"
+      >
+    >,
+  ): Promise<CandidateProfileRecord>;
+  update(
+    tenantId: string,
+    userId: string,
+    patch: Partial<Omit<CandidateProfileRecord, "id" | "publicId" | "tenantId" | "userId" | "createdAt">>,
+  ): Promise<CandidateProfileRecord>;
 }
 
 export interface InterviewRepository {
@@ -439,6 +520,7 @@ export type Repositories = {
   usage: UsageRepository;
   files: FileRepository;
   interviews: InterviewRepository;
+  candidateProfiles: CandidateProfileRepository;
   store: MemoryStoreLike;
 };
 
@@ -458,6 +540,7 @@ export class MemoryRepositories implements Repositories {
   readonly usage: UsageRepository;
   readonly files: FileRepository;
   readonly interviews: InterviewRepository;
+  readonly candidateProfiles: CandidateProfileRepository;
 
   constructor(public readonly store: MemoryStoreLike) {
     this.users = {
@@ -923,6 +1006,19 @@ export class MemoryRepositories implements Repositories {
         }
         return null;
       },
+      async update(tenantId, publicId, patch) {
+        let existing: StoredFileRecord | null = null;
+        for (const f of store.storedFiles.values()) {
+          if (f.tenantId === tenantId && f.publicId === publicId && !f.deletedAt) {
+            existing = f;
+            break;
+          }
+        }
+        if (!existing) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
+        const updated = { ...existing, ...patch };
+        store.storedFiles.set(existing.id, updated);
+        return updated;
+      },
       async softDelete(tenantId, publicId, physicalDeleteAt) {
         let existing: StoredFileRecord | null = null;
         for (const f of store.storedFiles.values()) {
@@ -978,6 +1074,106 @@ export class MemoryRepositories implements Repositories {
         return updated;
       },
     };
+
+    this.candidateProfiles = {
+      async getByUser(tenantId, userId) {
+        for (const p of store.candidateProfiles.values()) {
+          if (p.tenantId === tenantId && p.userId === userId && !p.deletedAt) return p;
+        }
+        return null;
+      },
+      async findBySourceResumeFile(tenantId, filePublicId) {
+        for (const p of store.candidateProfiles.values()) {
+          if (
+            p.tenantId === tenantId &&
+            p.sourceResumeFilePublicId === filePublicId &&
+            !p.deletedAt
+          ) {
+            return p;
+          }
+        }
+        return null;
+      },
+      async upsert(input) {
+        let existing: CandidateProfileRecord | null = null;
+        for (const p of store.candidateProfiles.values()) {
+          if (
+            p.tenantId === input.tenantId &&
+            p.userId === input.userId &&
+            !p.deletedAt
+          ) {
+            existing = p;
+            break;
+          }
+        }
+        if (existing) {
+          const updated: CandidateProfileRecord = {
+            ...existing,
+            ...input,
+            id: existing.id,
+            publicId: existing.publicId,
+            tenantId: existing.tenantId,
+            userId: existing.userId,
+            targetRoleFamilies: input.targetRoleFamilies ?? existing.targetRoleFamilies,
+            preferredLocations: input.preferredLocations ?? existing.preferredLocations,
+            version: existing.version + 1,
+            updatedAt: nowIso(),
+          };
+          store.candidateProfiles.set(existing.id, updated);
+          return updated;
+        }
+        const record: CandidateProfileRecord = {
+          ...input,
+          id: input.id ?? newId("cp"),
+          version: input.version ?? 1,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+          deletedAt: null,
+        };
+        store.candidateProfiles.set(record.id, record);
+        return record;
+      },
+      async updateOnboarding(tenantId, userId, patch) {
+        let existing: CandidateProfileRecord | null = null;
+        for (const p of store.candidateProfiles.values()) {
+          if (p.tenantId === tenantId && p.userId === userId && !p.deletedAt) {
+            existing = p;
+            break;
+          }
+        }
+        if (!existing) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
+        const updated: CandidateProfileRecord = {
+          ...existing,
+          ...patch,
+          version: existing.version + 1,
+          updatedAt: nowIso(),
+        };
+        store.candidateProfiles.set(existing.id, updated);
+        return updated;
+      },
+      async update(tenantId, userId, patch) {
+        let existing: CandidateProfileRecord | null = null;
+        for (const p of store.candidateProfiles.values()) {
+          if (p.tenantId === tenantId && p.userId === userId && !p.deletedAt) {
+            existing = p;
+            break;
+          }
+        }
+        if (!existing) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
+        const updated: CandidateProfileRecord = {
+          ...existing,
+          ...patch,
+          id: existing.id,
+          publicId: existing.publicId,
+          tenantId: existing.tenantId,
+          userId: existing.userId,
+          version: existing.version + 1,
+          updatedAt: nowIso(),
+        };
+        store.candidateProfiles.set(existing.id, updated);
+        return updated;
+      },
+    };
   }
 }
 
@@ -1000,5 +1196,6 @@ export function createEmptyMemoryStore(): MemoryStoreLike {
     usageLedger: new Map(),
     storedFiles: new Map(),
     interviews: new Map(),
+    candidateProfiles: new Map(),
   };
 }

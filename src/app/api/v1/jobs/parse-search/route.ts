@@ -3,7 +3,6 @@
  * Parse natural language search query into structured filters.
  */
 
-import { NextRequest, NextResponse } from "next/server";
 import { getRuntime } from "@server/bootstrap";
 import { buildAuthContext } from "@server/http/context";
 import { requireUser } from "@server/auth/guards";

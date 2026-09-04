@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -8,8 +8,8 @@ import { Input, Textarea, Label } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProgressBar } from "@/components/ui/feedback";
 import { api } from "@/services/api";
-import { evidenceItems } from "@/data/seed";
 import { cn } from "@/lib/utils";
+import type { EvidenceItem } from "@/types/domain";
 
 const steps = [
   "Job information",
@@ -23,6 +23,7 @@ export function NewApplicationFlow() {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [availableEvidence, setAvailableEvidence] = useState<EvidenceItem[]>([]);
   const [form, setForm] = useState({
     url: "",
     rawText: "",
@@ -39,6 +40,10 @@ export function NewApplicationFlow() {
   });
 
   const progress = ((step + 1) / steps.length) * 100;
+
+  useEffect(() => {
+    void api.listEvidence().then(setAvailableEvidence);
+  }, []);
 
   const summary = useMemo(
     () => ({
@@ -213,7 +218,7 @@ export function NewApplicationFlow() {
                 <CardDescription>Matched items are ready. Exclude anything you never want used.</CardDescription>
               </CardHeader>
               <div className="space-y-2">
-                {evidenceItems.slice(0, 5).map((ev) => {
+                {availableEvidence.slice(0, 5).map((ev) => {
                   const excluded = form.excludeEvidence.includes(ev.id);
                   return (
                     <div

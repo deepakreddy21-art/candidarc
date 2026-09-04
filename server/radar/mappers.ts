@@ -1,4 +1,4 @@
-import { formatFreshnessLabel, resolveFreshnessTimestamp, formatCompositeFreshness } from "./freshness";
+import { formatFreshnessLabel, resolveFreshnessTimestamp } from "./freshness";
 import type { CanonicalJobCatalog } from "./catalog";
 import type {
   CanonicalJob,

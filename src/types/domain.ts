@@ -50,7 +50,56 @@ export interface CandidateProfile {
   preferredResumeLength: ResumeLength;
   careerGoal: string;
   avatarInitials: string;
+  remoteOk?: boolean;
+  preferredLocations?: string[];
+  workAuthorization?: string;
+  requiresSponsorship?: boolean;
+  onboardingStep?: number;
+  onboardingCompletedAt?: string | null;
+  modelImprovementOptIn?: boolean;
+  resumeImportStatus?: string | null;
 }
+
+export type ResumeImportExtraction = {
+  contact?: {
+    fullName?: string;
+    email?: string;
+    phone?: string;
+    location?: string;
+    linkedIn?: string;
+    github?: string;
+    portfolio?: string;
+  };
+  employment: Array<{
+    title?: string;
+    company?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    bullets: string[];
+  }>;
+  education: Array<{
+    institution?: string;
+    degree?: string;
+    field?: string;
+    endDate?: string;
+  }>;
+  projects: Array<{
+    name?: string;
+    description?: string;
+    technologies: string[];
+  }>;
+  skills: string[];
+  certifications: string[];
+  evidence: Array<{
+    title: string;
+    summary: string;
+    technologies: string[];
+  }>;
+  rawText?: string;
+  parseWarnings?: string[];
+  error?: string;
+};
 
 export interface JobDescription {
   id: string;

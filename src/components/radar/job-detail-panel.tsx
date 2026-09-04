@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Briefcase,
   Building2,
   CheckCircle2,
   ExternalLink,

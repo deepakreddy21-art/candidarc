@@ -31,8 +31,8 @@ describe("CommandPalette", () => {
       </TooltipProvider>,
     );
     expect(screen.getByPlaceholderText(/search commands/i)).toBeInTheDocument();
-    await user.click(screen.getByText("New opportunity"));
-    expect(push).toHaveBeenCalledWith("/app/opportunities/new");
+    await user.click(screen.getByText("New application"));
+    expect(push).toHaveBeenCalledWith("/app/resumes/new");
   });
 });
 

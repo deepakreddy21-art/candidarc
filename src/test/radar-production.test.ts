@@ -33,7 +33,7 @@ import {
   descriptionHash,
 } from "../../server/radar/repost";
 import { parseNaturalLanguageQuery } from "../../server/radar/nl-search";
-import { getEnv, resetEnvCache } from "../../server/config/env";
+import { resetEnvCache } from "../../server/config/env";
 
 // Mock env for testing
 vi.mock("@/server/config/env", async () => {

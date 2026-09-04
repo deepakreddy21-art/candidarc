@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { api } from "@/services/api";
+import { api, ApiError } from "@/services/api";
 import type { CandidateProfile } from "@/types/domain";
 
 export default function ProfileSettingsPage() {
@@ -56,9 +56,16 @@ export default function ProfileSettingsPage() {
           <div className="sm:col-span-2">
             <Button
               type="button"
+              disabled={!profile}
               onClick={async () => {
-                await api.updateProfile(profile);
-                toast.success("Profile saved");
+                if (!profile) return;
+                try {
+                  const saved = await api.updateProfile(profile);
+                  setProfile(saved);
+                  toast.success("Profile saved");
+                } catch (err) {
+                  toast.error(err instanceof ApiError ? err.message : "Could not save profile");
+                }
               }}
             >
               Save profile

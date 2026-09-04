@@ -6,7 +6,8 @@
  * Supports FTS via search_vector column when available.
  */
 
-import { eq, and, sql, desc, ilike } from "drizzle-orm";
+import { randomUUID } from "crypto";
+import { eq, and, or, sql, desc } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type {
   CanonicalJob,
@@ -351,44 +352,219 @@ export class PostgresRadarStore implements RadarStore {
     };
   }
 
-  // Sightings - stub implementations (would need full implementation)
+  // Sightings
   async getSighting(id: string): Promise<JobSighting | null> {
-    // TODO: Implement when radar sightings table schema is added
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarJobSightings)
+      .where(eq(schema.radarJobSightings.id, id))
+      .limit(1);
+    return row ? this.mapSighting(row) : null;
   }
 
   async getSightingBySourceListing(sourceId: string, listingId: string): Promise<JobSighting | null> {
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarJobSightings)
+      .where(
+        and(
+          eq(schema.radarJobSightings.sourceId, sourceId),
+          eq(schema.radarJobSightings.sourceListingId, listingId),
+        ),
+      )
+      .limit(1);
+    return row ? this.mapSighting(row) : null;
   }
 
   async listSightingsForJob(jobId: string): Promise<JobSighting[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarJobSightings)
+      .where(eq(schema.radarJobSightings.canonicalJobId, jobId))
+      .orderBy(desc(schema.radarJobSightings.lastSeenAt));
+    return rows.map((r) => this.mapSighting(r));
   }
 
   async upsertSighting(sighting: JobSighting): Promise<JobSighting> {
-    return sighting;
+    const [row] = await this.db
+      .insert(schema.radarJobSightings)
+      .values({
+        id: sighting.id,
+        publicId: sighting.publicId,
+        canonicalJobId: sighting.canonicalJobId,
+        sourceId: sighting.sourceId,
+        sourceListingId: sighting.sourceListingId,
+        sourceCompanyIdentifier: sighting.sourceCompanyIdentifier,
+        sourceRequisitionId: sighting.sourceRequisitionId,
+        sourceUrl: sighting.sourceUrl,
+        sourceApplyUrl: sighting.sourceApplyUrl,
+        sourceTitle: sighting.sourceTitle,
+        sourceLocation: sighting.sourceLocation,
+        sourcePostedAt: sighting.sourcePostedAt ? new Date(sighting.sourcePostedAt) : null,
+        sourcePostedPrecision: sighting.sourcePostedPrecision,
+        sourceUpdatedAt: sighting.sourceUpdatedAt ? new Date(sighting.sourceUpdatedAt) : null,
+        firstSeenAt: new Date(sighting.firstSeenAt),
+        lastSeenAt: new Date(sighting.lastSeenAt),
+        lastVerifiedAt: sighting.lastVerifiedAt ? new Date(sighting.lastVerifiedAt) : null,
+        removedAt: sighting.removedAt ? new Date(sighting.removedAt) : null,
+        repostedAt: sighting.repostedAt ? new Date(sighting.repostedAt) : null,
+        validThrough: sighting.validThrough ? new Date(sighting.validThrough) : null,
+        contentHash: sighting.contentHash,
+        descriptionHash: sighting.descriptionHash,
+        rawSnapshotId: sighting.rawSnapshotId,
+        classification: sighting.classification,
+        classificationConfidence: String(sighting.classificationConfidence),
+        demoData: sighting.demoData ?? false,
+        attribution: sighting.attribution,
+        createdAt: new Date(sighting.createdAt),
+        updatedAt: new Date(sighting.updatedAt),
+      })
+      .onConflictDoUpdate({
+        target: schema.radarJobSightings.id,
+        set: {
+          lastSeenAt: new Date(sighting.lastSeenAt),
+          lastVerifiedAt: sighting.lastVerifiedAt ? new Date(sighting.lastVerifiedAt) : null,
+          removedAt: sighting.removedAt ? new Date(sighting.removedAt) : null,
+          contentHash: sighting.contentHash,
+          descriptionHash: sighting.descriptionHash,
+          classification: sighting.classification,
+          classificationConfidence: String(sighting.classificationConfidence),
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return this.mapSighting(row);
   }
 
-  // Snapshots - stub
+  private mapSighting(row: typeof schema.radarJobSightings.$inferSelect): JobSighting {
+    return {
+      id: row.id,
+      publicId: row.publicId,
+      canonicalJobId: row.canonicalJobId,
+      sourceId: row.sourceId,
+      sourceListingId: row.sourceListingId,
+      sourceCompanyIdentifier: row.sourceCompanyIdentifier ?? undefined,
+      sourceRequisitionId: row.sourceRequisitionId ?? undefined,
+      sourceUrl: row.sourceUrl,
+      sourceApplyUrl: row.sourceApplyUrl ?? undefined,
+      sourceTitle: row.sourceTitle,
+      sourceLocation: row.sourceLocation ?? undefined,
+      sourcePostedAt: row.sourcePostedAt?.toISOString() ?? null,
+      sourcePostedPrecision: row.sourcePostedPrecision as JobSighting["sourcePostedPrecision"],
+      sourceUpdatedAt: row.sourceUpdatedAt?.toISOString() ?? null,
+      firstSeenAt: row.firstSeenAt.toISOString(),
+      lastSeenAt: row.lastSeenAt.toISOString(),
+      lastVerifiedAt: row.lastVerifiedAt?.toISOString() ?? null,
+      removedAt: row.removedAt?.toISOString() ?? null,
+      repostedAt: row.repostedAt?.toISOString() ?? null,
+      validThrough: row.validThrough?.toISOString() ?? null,
+      contentHash: row.contentHash,
+      descriptionHash: row.descriptionHash,
+      rawSnapshotId: row.rawSnapshotId ?? undefined,
+      classification: row.classification as JobSighting["classification"],
+      classificationConfidence: Number(row.classificationConfidence),
+      demoData: row.demoData,
+      attribution: row.attribution ?? undefined,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  // Snapshots
   async getSnapshot(id: string): Promise<JobSnapshot | null> {
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarJobSnapshots)
+      .where(eq(schema.radarJobSnapshots.id, id))
+      .limit(1);
+    return row ? this.mapSnapshot(row) : null;
   }
 
   async listSnapshotsForSighting(sightingId: string): Promise<JobSnapshot[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarJobSnapshots)
+      .where(eq(schema.radarJobSnapshots.sightingId, sightingId))
+      .orderBy(desc(schema.radarJobSnapshots.retrievedAt));
+    return rows.map((r) => this.mapSnapshot(r));
   }
 
   async createSnapshot(snapshot: JobSnapshot): Promise<JobSnapshot> {
-    return snapshot;
+    const [row] = await this.db
+      .insert(schema.radarJobSnapshots)
+      .values({
+        id: snapshot.id,
+        sightingId: snapshot.sightingId,
+        retrievedAt: new Date(snapshot.retrievedAt),
+        contentHash: snapshot.contentHash,
+        title: snapshot.title,
+        description: snapshot.description,
+        location: snapshot.location,
+        compensation: snapshot.compensation,
+        sourcePostedAt: snapshot.sourcePostedAt ? new Date(snapshot.sourcePostedAt) : null,
+        applicationUrl: snapshot.applicationUrl,
+        status: snapshot.status,
+        rawPayloadRef: snapshot.rawPayloadRef,
+        materialChangeSummary: snapshot.materialChangeSummary,
+      })
+      .returning();
+    return this.mapSnapshot(row);
   }
 
-  // History - stub
+  private mapSnapshot(row: typeof schema.radarJobSnapshots.$inferSelect): JobSnapshot {
+    return {
+      id: row.id,
+      sightingId: row.sightingId,
+      retrievedAt: row.retrievedAt.toISOString(),
+      contentHash: row.contentHash,
+      title: row.title,
+      description: row.description,
+      location: row.location ?? undefined,
+      compensation: row.compensation as JobSnapshot["compensation"],
+      sourcePostedAt: row.sourcePostedAt?.toISOString() ?? null,
+      applicationUrl: row.applicationUrl ?? undefined,
+      status: row.status as JobSnapshot["status"],
+      rawPayloadRef: row.rawPayloadRef ?? undefined,
+      materialChangeSummary: row.materialChangeSummary ?? undefined,
+    };
+  }
+
+  // History
   async listHistoryForJob(jobId: string): Promise<JobHistoryEvent[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarJobHistoryEvents)
+      .where(eq(schema.radarJobHistoryEvents.canonicalJobId, jobId))
+      .orderBy(desc(schema.radarJobHistoryEvents.occurredAt));
+    return rows.map((r) => this.mapHistoryEvent(r));
   }
 
   async createHistoryEvent(event: JobHistoryEvent): Promise<JobHistoryEvent> {
-    return event;
+    const [row] = await this.db
+      .insert(schema.radarJobHistoryEvents)
+      .values({
+        id: event.id,
+        canonicalJobId: event.canonicalJobId,
+        sightingId: event.sightingId,
+        eventType: event.type,
+        occurredAt: new Date(event.occurredAt),
+        message: event.message,
+        metadata: event.metadata,
+      })
+      .returning();
+    return this.mapHistoryEvent(row);
+  }
+
+  private mapHistoryEvent(row: typeof schema.radarJobHistoryEvents.$inferSelect): JobHistoryEvent {
+    return {
+      id: row.id,
+      canonicalJobId: row.canonicalJobId,
+      sightingId: row.sightingId ?? undefined,
+      type: row.eventType as JobHistoryEvent["type"],
+      occurredAt: row.occurredAt.toISOString(),
+      message: row.message,
+      metadata: row.metadata as Record<string, unknown> | undefined,
+    };
   }
 
   // Provider checkpoints
@@ -429,90 +605,557 @@ export class PostgresRadarStore implements RadarStore {
       });
   }
 
-  // User data - simplified stubs for now
+  // User data
   async getSavedJob(tenantId: string, userId: string, jobId: string): Promise<SavedJob | null> {
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarSavedJobs)
+      .where(
+        and(
+          eq(schema.radarSavedJobs.tenantId, tenantId),
+          eq(schema.radarSavedJobs.userId, userId),
+          eq(schema.radarSavedJobs.canonicalJobId, jobId),
+        ),
+      )
+      .limit(1);
+    return row ? this.mapSavedJob(row) : null;
   }
+
   async listSavedJobs(tenantId: string, userId: string): Promise<SavedJob[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarSavedJobs)
+      .where(
+        and(eq(schema.radarSavedJobs.tenantId, tenantId), eq(schema.radarSavedJobs.userId, userId)),
+      )
+      .orderBy(desc(schema.radarSavedJobs.createdAt));
+    return rows.map((r) => this.mapSavedJob(r));
   }
+
   async saveJob(savedJob: SavedJob): Promise<SavedJob> {
-    return savedJob;
+    const [row] = await this.db
+      .insert(schema.radarSavedJobs)
+      .values({
+        id: savedJob.id,
+        tenantId: savedJob.tenantId,
+        userId: savedJob.userId,
+        canonicalJobId: savedJob.canonicalJobId,
+        createdAt: new Date(savedJob.createdAt),
+      })
+      .onConflictDoUpdate({
+        target: [
+          schema.radarSavedJobs.tenantId,
+          schema.radarSavedJobs.userId,
+          schema.radarSavedJobs.canonicalJobId,
+        ],
+        set: { createdAt: new Date(savedJob.createdAt) },
+      })
+      .returning();
+    return this.mapSavedJob(row);
   }
-  async unsaveJob(tenantId: string, userId: string, jobId: string): Promise<void> {}
+
+  async unsaveJob(tenantId: string, userId: string, jobId: string): Promise<void> {
+    await this.db
+      .delete(schema.radarSavedJobs)
+      .where(
+        and(
+          eq(schema.radarSavedJobs.tenantId, tenantId),
+          eq(schema.radarSavedJobs.userId, userId),
+          eq(schema.radarSavedJobs.canonicalJobId, jobId),
+        ),
+      );
+  }
 
   async getHiddenJob(tenantId: string, userId: string, jobId: string): Promise<HiddenJob | null> {
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarHiddenJobs)
+      .where(
+        and(
+          eq(schema.radarHiddenJobs.tenantId, tenantId),
+          eq(schema.radarHiddenJobs.userId, userId),
+          eq(schema.radarHiddenJobs.canonicalJobId, jobId),
+        ),
+      )
+      .limit(1);
+    return row ? this.mapHiddenJob(row) : null;
   }
+
   async listHiddenJobs(tenantId: string, userId: string): Promise<HiddenJob[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarHiddenJobs)
+      .where(
+        and(eq(schema.radarHiddenJobs.tenantId, tenantId), eq(schema.radarHiddenJobs.userId, userId)),
+      )
+      .orderBy(desc(schema.radarHiddenJobs.createdAt));
+    return rows.map((r) => this.mapHiddenJob(r));
   }
+
   async hideJob(hiddenJob: HiddenJob): Promise<HiddenJob> {
-    return hiddenJob;
+    const [row] = await this.db
+      .insert(schema.radarHiddenJobs)
+      .values({
+        id: hiddenJob.id,
+        tenantId: hiddenJob.tenantId,
+        userId: hiddenJob.userId,
+        canonicalJobId: hiddenJob.canonicalJobId,
+        createdAt: new Date(hiddenJob.createdAt),
+      })
+      .onConflictDoUpdate({
+        target: [
+          schema.radarHiddenJobs.tenantId,
+          schema.radarHiddenJobs.userId,
+          schema.radarHiddenJobs.canonicalJobId,
+        ],
+        set: { createdAt: new Date(hiddenJob.createdAt) },
+      })
+      .returning();
+    return this.mapHiddenJob(row);
   }
-  async unhideJob(tenantId: string, userId: string, jobId: string): Promise<void> {}
+
+  async unhideJob(tenantId: string, userId: string, jobId: string): Promise<void> {
+    await this.db
+      .delete(schema.radarHiddenJobs)
+      .where(
+        and(
+          eq(schema.radarHiddenJobs.tenantId, tenantId),
+          eq(schema.radarHiddenJobs.userId, userId),
+          eq(schema.radarHiddenJobs.canonicalJobId, jobId),
+        ),
+      );
+  }
 
   async getSavedSearch(tenantId: string, id: string): Promise<SavedSearch | null> {
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarSavedSearches)
+      .where(
+        and(
+          eq(schema.radarSavedSearches.tenantId, tenantId),
+          or(eq(schema.radarSavedSearches.id, id), eq(schema.radarSavedSearches.publicId, id)),
+        ),
+      )
+      .limit(1);
+    return row ? this.mapSavedSearch(row) : null;
   }
+
   async listSavedSearches(tenantId: string, userId: string): Promise<SavedSearch[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarSavedSearches)
+      .where(
+        and(
+          eq(schema.radarSavedSearches.tenantId, tenantId),
+          eq(schema.radarSavedSearches.userId, userId),
+        ),
+      )
+      .orderBy(desc(schema.radarSavedSearches.updatedAt));
+    return rows.map((r) => this.mapSavedSearch(r));
   }
+
   async createSavedSearch(search: SavedSearch): Promise<SavedSearch> {
-    return search;
+    const [row] = await this.db
+      .insert(schema.radarSavedSearches)
+      .values({
+        id: search.id,
+        publicId: search.publicId,
+        tenantId: search.tenantId,
+        userId: search.userId,
+        name: search.name,
+        query: search.query,
+        alertEnabled: search.alertEnabled,
+        createdAt: new Date(search.createdAt),
+        updatedAt: new Date(search.updatedAt),
+      })
+      .returning();
+    return this.mapSavedSearch(row);
   }
+
   async updateSavedSearch(
     tenantId: string,
     id: string,
     patch: Partial<Pick<SavedSearch, "name" | "query" | "alertEnabled">>,
   ): Promise<SavedSearch> {
-    throw new Error("Not implemented");
+    const existing = await this.getSavedSearch(tenantId, id);
+    if (!existing) throw new Error("Saved search not found");
+
+    const [row] = await this.db
+      .update(schema.radarSavedSearches)
+      .set({
+        name: patch.name ?? existing.name,
+        query: patch.query ?? existing.query,
+        alertEnabled: patch.alertEnabled ?? existing.alertEnabled,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.radarSavedSearches.id, existing.id))
+      .returning();
+    return this.mapSavedSearch(row);
   }
-  async deleteSavedSearch(tenantId: string, id: string): Promise<void> {}
+
+  async deleteSavedSearch(tenantId: string, id: string): Promise<void> {
+    const existing = await this.getSavedSearch(tenantId, id);
+    if (!existing) return;
+    await this.db.delete(schema.radarSavedSearches).where(eq(schema.radarSavedSearches.id, existing.id));
+  }
 
   async getAlert(tenantId: string, id: string): Promise<JobAlert | null> {
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarJobAlerts)
+      .where(
+        and(
+          eq(schema.radarJobAlerts.tenantId, tenantId),
+          or(eq(schema.radarJobAlerts.id, id), eq(schema.radarJobAlerts.publicId, id)),
+        ),
+      )
+      .limit(1);
+    return row ? this.mapAlert(row) : null;
   }
+
   async listAlerts(tenantId: string, userId: string): Promise<JobAlert[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarJobAlerts)
+      .where(
+        and(eq(schema.radarJobAlerts.tenantId, tenantId), eq(schema.radarJobAlerts.userId, userId)),
+      )
+      .orderBy(desc(schema.radarJobAlerts.updatedAt));
+    return rows.map((r) => this.mapAlert(r));
   }
+
   async createAlert(alert: JobAlert): Promise<JobAlert> {
-    return alert;
+    const [row] = await this.db
+      .insert(schema.radarJobAlerts)
+      .values({
+        id: alert.id,
+        publicId: alert.publicId,
+        tenantId: alert.tenantId,
+        userId: alert.userId,
+        name: alert.name,
+        savedSearchId: alert.savedSearchId,
+        query: alert.query,
+        cadence: alert.cadence,
+        enabled: alert.enabled,
+        includeReposts: alert.includeReposts,
+        includeRefreshes: alert.includeRefreshes,
+        lastEvaluatedAt: alert.lastEvaluatedAt ? new Date(alert.lastEvaluatedAt) : null,
+        createdAt: new Date(alert.createdAt),
+        updatedAt: new Date(alert.updatedAt),
+      })
+      .returning();
+    return this.mapAlert(row);
   }
+
   async updateAlert(tenantId: string, id: string, patch: Partial<JobAlert>): Promise<JobAlert> {
-    throw new Error("Not implemented");
+    const existing = await this.getAlert(tenantId, id);
+    if (!existing) throw new Error("Alert not found");
+
+    const [row] = await this.db
+      .update(schema.radarJobAlerts)
+      .set({
+        name: patch.name ?? existing.name,
+        savedSearchId: patch.savedSearchId ?? existing.savedSearchId,
+        query: patch.query ?? existing.query,
+        cadence: patch.cadence ?? existing.cadence,
+        enabled: patch.enabled ?? existing.enabled,
+        includeReposts: patch.includeReposts ?? existing.includeReposts,
+        includeRefreshes: patch.includeRefreshes ?? existing.includeRefreshes,
+        lastEvaluatedAt:
+          patch.lastEvaluatedAt !== undefined
+            ? patch.lastEvaluatedAt
+              ? new Date(patch.lastEvaluatedAt)
+              : null
+            : existing.lastEvaluatedAt
+              ? new Date(existing.lastEvaluatedAt)
+              : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.radarJobAlerts.id, existing.id))
+      .returning();
+    return this.mapAlert(row);
   }
-  async deleteAlert(tenantId: string, id: string): Promise<void> {}
+
+  async deleteAlert(tenantId: string, id: string): Promise<void> {
+    const existing = await this.getAlert(tenantId, id);
+    if (!existing) return;
+    await this.db.delete(schema.radarJobAlerts).where(eq(schema.radarJobAlerts.id, existing.id));
+  }
 
   async listDeliveries(tenantId: string, userId: string): Promise<JobAlertDelivery[]> {
-    return [];
+    const rows = await this.db
+      .select()
+      .from(schema.radarJobAlertDeliveries)
+      .where(
+        and(
+          eq(schema.radarJobAlertDeliveries.tenantId, tenantId),
+          eq(schema.radarJobAlertDeliveries.userId, userId),
+        ),
+      )
+      .orderBy(desc(schema.radarJobAlertDeliveries.deliveredAt));
+    return rows.map((r) => this.mapDelivery(r));
   }
+
   async createDelivery(delivery: JobAlertDelivery): Promise<JobAlertDelivery> {
-    return delivery;
+    const [row] = await this.db
+      .insert(schema.radarJobAlertDeliveries)
+      .values({
+        id: delivery.id,
+        alertId: delivery.alertId,
+        tenantId: delivery.tenantId,
+        userId: delivery.userId,
+        canonicalJobId: delivery.canonicalJobId,
+        classification: delivery.classification,
+        deliveredAt: new Date(delivery.deliveredAt),
+        channel: delivery.channel,
+        message: delivery.message,
+        dedupeKey: delivery.dedupeKey,
+      })
+      .returning();
+    return this.mapDelivery(row);
   }
+
   async deliveryExists(dedupeKey: string): Promise<boolean> {
-    return false;
+    const [row] = await this.db
+      .select({ id: schema.radarJobAlertDeliveries.id })
+      .from(schema.radarJobAlertDeliveries)
+      .where(eq(schema.radarJobAlertDeliveries.dedupeKey, dedupeKey))
+      .limit(1);
+    return Boolean(row);
   }
 
   async getMatch(tenantId: string, userId: string, jobId: string): Promise<JobMatch | null> {
-    return null;
+    const [row] = await this.db
+      .select()
+      .from(schema.radarJobMatches)
+      .where(
+        and(
+          eq(schema.radarJobMatches.tenantId, tenantId),
+          eq(schema.radarJobMatches.userId, userId),
+          eq(schema.radarJobMatches.canonicalJobId, jobId),
+        ),
+      )
+      .limit(1);
+    return row ? this.mapMatch(row) : null;
   }
+
   async upsertMatch(match: JobMatch): Promise<JobMatch> {
-    return match;
+    const [row] = await this.db
+      .insert(schema.radarJobMatches)
+      .values({
+        id: match.id,
+        tenantId: match.tenantId,
+        userId: match.userId,
+        canonicalJobId: match.canonicalJobId,
+        score: String(match.score),
+        breakdown: match.breakdown,
+        computedAt: new Date(match.computedAt),
+      })
+      .onConflictDoUpdate({
+        target: [
+          schema.radarJobMatches.tenantId,
+          schema.radarJobMatches.userId,
+          schema.radarJobMatches.canonicalJobId,
+        ],
+        set: {
+          score: String(match.score),
+          breakdown: match.breakdown,
+          computedAt: new Date(match.computedAt),
+        },
+      })
+      .returning();
+    return this.mapMatch(row);
   }
 
   async listInteractions(tenantId: string, userId: string, jobId?: string): Promise<JobInteraction[]> {
-    return [];
+    const conditions = [
+      eq(schema.radarJobInteractions.tenantId, tenantId),
+      eq(schema.radarJobInteractions.userId, userId),
+    ];
+    if (jobId) {
+      conditions.push(eq(schema.radarJobInteractions.canonicalJobId, jobId));
+    }
+
+    const rows = await this.db
+      .select()
+      .from(schema.radarJobInteractions)
+      .where(and(...conditions))
+      .orderBy(desc(schema.radarJobInteractions.createdAt));
+    return rows.map((r) => this.mapInteraction(r));
   }
+
   async createInteraction(interaction: JobInteraction): Promise<JobInteraction> {
-    return interaction;
+    const id = interaction.id || `int_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const [row] = await this.db
+      .insert(schema.radarJobInteractions)
+      .values({
+        id,
+        tenantId: interaction.tenantId,
+        userId: interaction.userId,
+        canonicalJobId: interaction.canonicalJobId,
+        interactionType: interaction.interactionType,
+        metadata: interaction.metadata,
+        createdAt: new Date(interaction.createdAt),
+      })
+      .returning();
+    return this.mapInteraction(row);
   }
 
   async getBrief(tenantId: string, userId: string, jobId: string): Promise<PersistedOpportunityBrief | null> {
-    return null;
-  }
-  async upsertBrief(brief: PersistedOpportunityBrief): Promise<PersistedOpportunityBrief> {
+    const [row] = await this.db
+      .select()
+      .from(schema.radarOpportunityBriefs)
+      .where(
+        and(
+          eq(schema.radarOpportunityBriefs.tenantId, tenantId),
+          eq(schema.radarOpportunityBriefs.userId, userId),
+          eq(schema.radarOpportunityBriefs.canonicalJobId, jobId),
+        ),
+      )
+      .limit(1);
+    if (!row) return null;
+
+    const brief = this.mapBrief(row);
+    if (new Date(brief.expiresAt) < new Date()) {
+      await this.db
+        .delete(schema.radarOpportunityBriefs)
+        .where(eq(schema.radarOpportunityBriefs.id, row.id));
+      return null;
+    }
     return brief;
+  }
+
+  async upsertBrief(brief: PersistedOpportunityBrief): Promise<PersistedOpportunityBrief> {
+    const [row] = await this.db
+      .insert(schema.radarOpportunityBriefs)
+      .values({
+        id: brief.id,
+        tenantId: brief.tenantId,
+        userId: brief.userId,
+        canonicalJobId: brief.canonicalJobId,
+        brief: brief.brief,
+        generatedAt: new Date(brief.generatedAt),
+        expiresAt: new Date(brief.expiresAt),
+        createdAt: new Date(brief.generatedAt),
+      })
+      .onConflictDoUpdate({
+        target: [
+          schema.radarOpportunityBriefs.tenantId,
+          schema.radarOpportunityBriefs.userId,
+          schema.radarOpportunityBriefs.canonicalJobId,
+        ],
+        set: {
+          brief: brief.brief,
+          generatedAt: new Date(brief.generatedAt),
+          expiresAt: new Date(brief.expiresAt),
+        },
+      })
+      .returning();
+    return this.mapBrief(row);
+  }
+
+  private mapSavedJob(row: typeof schema.radarSavedJobs.$inferSelect): SavedJob {
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      canonicalJobId: row.canonicalJobId,
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  private mapHiddenJob(row: typeof schema.radarHiddenJobs.$inferSelect): HiddenJob {
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      canonicalJobId: row.canonicalJobId,
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  private mapSavedSearch(row: typeof schema.radarSavedSearches.$inferSelect): SavedSearch {
+    return {
+      id: row.id,
+      publicId: row.publicId,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      name: row.name,
+      query: row.query as SavedSearch["query"],
+      alertEnabled: row.alertEnabled,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  private mapAlert(row: typeof schema.radarJobAlerts.$inferSelect): JobAlert {
+    return {
+      id: row.id,
+      publicId: row.publicId,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      name: row.name,
+      savedSearchId: row.savedSearchId ?? undefined,
+      query: row.query as JobAlert["query"],
+      cadence: row.cadence as JobAlert["cadence"],
+      enabled: row.enabled,
+      includeReposts: row.includeReposts,
+      includeRefreshes: row.includeRefreshes,
+      lastEvaluatedAt: row.lastEvaluatedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  private mapDelivery(row: typeof schema.radarJobAlertDeliveries.$inferSelect): JobAlertDelivery {
+    return {
+      id: row.id,
+      alertId: row.alertId,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      canonicalJobId: row.canonicalJobId,
+      classification: row.classification as JobAlertDelivery["classification"],
+      deliveredAt: row.deliveredAt.toISOString(),
+      channel: row.channel as JobAlertDelivery["channel"],
+      message: row.message,
+      dedupeKey: row.dedupeKey,
+    };
+  }
+
+  private mapMatch(row: typeof schema.radarJobMatches.$inferSelect): JobMatch {
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      canonicalJobId: row.canonicalJobId,
+      score: Number(row.score),
+      breakdown: row.breakdown as JobMatch["breakdown"],
+      computedAt: row.computedAt.toISOString(),
+    };
+  }
+
+  private mapInteraction(row: typeof schema.radarJobInteractions.$inferSelect): JobInteraction {
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      canonicalJobId: row.canonicalJobId,
+      interactionType: row.interactionType,
+      metadata: row.metadata as Record<string, unknown> | undefined,
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  private mapBrief(row: typeof schema.radarOpportunityBriefs.$inferSelect): PersistedOpportunityBrief {
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      userId: row.userId,
+      canonicalJobId: row.canonicalJobId,
+      brief: row.brief as PersistedOpportunityBrief["brief"],
+      generatedAt: row.generatedAt.toISOString(),
+      expiresAt: row.expiresAt.toISOString(),
+    };
   }
 
   // Hydration for catalog sync
@@ -522,17 +1165,18 @@ export class PostgresRadarStore implements RadarStore {
     jobs: CanonicalJob[];
     sightings: JobSighting[];
   }> {
-    const [companies, sources, jobs] = await Promise.all([
+    const [companies, sources, jobs, sightings] = await Promise.all([
       this.db.select().from(schema.radarCompanies),
       this.db.select().from(schema.radarJobSources),
       this.db.select().from(schema.radarCanonicalJobs),
+      this.db.select().from(schema.radarJobSightings),
     ]);
 
     return {
       companies: companies.map((c) => this.mapCompany(c)),
       sources: sources.map((s) => this.mapSource(s)),
       jobs: jobs.map((j) => this.mapJob(j)),
-      sightings: [], // Would need sightings table implementation
+      sightings: sightings.map((s) => this.mapSighting(s)),
     };
   }
 }

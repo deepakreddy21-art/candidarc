@@ -14,6 +14,9 @@ type WorkflowData = {
   applicationId: string;
   status: "queued" | "creating" | "completed" | "failed";
   message: string;
+  pipelineStage?: "understanding" | "tailoring" | "preparing";
+  pipelineLabel?: string;
+  elapsedMs?: number;
   techQuestions?: Array<{ id: string; technology: string; reason: string }>;
   resume?: { versionLabel: string; previewHtml?: string };
   versions?: Array<{ id: string; label: string; createdAt: string }>;
@@ -88,7 +91,11 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
   if (error && !data) return <ErrorState description={error} onRetry={() => void load()} />;
   if (!data || data.status === "queued" || data.status === "creating") {
     return (
-      <CreatingState>
+      <CreatingState
+        pipelineStage={data?.pipelineStage}
+        pipelineLabel={data?.pipelineLabel ?? data?.message}
+        elapsedMs={data?.elapsedMs}
+      >
         {data?.techQuestions?.length ? <TechConfirmCard workflowId={workflowId} questions={data.techQuestions} /> : null}
       </CreatingState>
     );

@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProgressBar, ScoreRing, Skeleton } from "@/components/ui/feedback";
 import { SectionHeader, StatusBadge } from "@/components/layout/page-header";
-import { candidate } from "@/data/seed";
 import { api } from "@/services/api";
 import { cn, formatDate } from "@/lib/utils";
 import type {
@@ -35,18 +34,33 @@ export function ResumeStudio({
   const [selectedBulletId, setSelectedBulletId] = useState<string | null>(null);
   const [compareMode, setCompareMode] = useState(false);
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState("Candidate");
+  const [profileContact, setProfileContact] = useState({
+    email: "",
+    phone: "",
+    location: "",
+    links: [] as string[],
+  });
 
   async function load() {
     setAuditsLoading(true);
     try {
-      const [r, audits, checks, workflow] = await Promise.all([
+      const [r, audits, checks, workflow, profile] = await Promise.all([
         api.getResume(applicationId),
         api.listAudits(applicationId),
         api.getFinalQA(applicationId),
         typeof api.getWorkflow === "function"
           ? api.getWorkflow(applicationId)
           : Promise.resolve({ workflow: null, events: [] }),
+        api.getProfile(),
       ]);
+      setProfileName(profile.fullName || profile.preferredName || "Candidate");
+      setProfileContact({
+        email: profile.email,
+        phone: profile.phone,
+        location: profile.location,
+        links: [profile.linkedIn, profile.github, profile.portfolio].filter(Boolean) as string[],
+      });
       setResume(r ?? null);
       setFindings(audits.flatMap((a) => a.findings));
       setQa(checks);
@@ -217,12 +231,12 @@ export function ResumeStudio({
         <div className={cn("min-w-0", compareMode && "grid gap-3 lg:grid-cols-2")}>
           <ResumeCanvas
             version={current}
-            candidateName={candidate.fullName}
+            candidateName={profileName}
             contact={{
-              email: candidate.email,
-              phone: candidate.phone,
-              location: candidate.location,
-              links: [candidate.linkedIn, candidate.github, candidate.portfolio].filter(Boolean) as string[],
+              email: profileContact.email,
+              phone: profileContact.phone,
+              location: profileContact.location,
+              links: profileContact.links,
             }}
             selectedBulletId={selectedBulletId}
             onSelectBullet={setSelectedBulletId}
@@ -233,12 +247,12 @@ export function ResumeStudio({
           {compareMode && compare ? (
             <ResumeCanvas
               version={compare}
-              candidateName={candidate.fullName}
+              candidateName={profileName}
               contact={{
-                email: candidate.email,
-                phone: candidate.phone,
-                location: candidate.location,
-                links: [candidate.linkedIn, candidate.github, candidate.portfolio].filter(Boolean) as string[],
+                email: profileContact.email,
+                phone: profileContact.phone,
+                location: profileContact.location,
+                links: profileContact.links,
               }}
               selectedBulletId={null}
               onSelectBullet={() => undefined}

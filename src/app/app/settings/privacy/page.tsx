@@ -15,12 +15,59 @@ import {
 } from "@/components/ui/dialog";
 import { product } from "@/config/product";
 
+function csrfToken() {
+  const raw =
+    document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ??
+    document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ??
+    "";
+  return decodeURIComponent(raw);
+}
+
 export default function PrivacySettingsPage() {
   const [retention, setRetention] = useState("12");
   const [evidenceVisibility, setEvidenceVisibility] = useState(true);
   const [modelImprovement, setModelImprovement] = useState(true);
   const [deleteDocsOpen, setDeleteDocsOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function exportData() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/v1/account", { credentials: "include" });
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "candidarc-export.json";
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Export downloaded");
+    } catch {
+      toast.error("Could not export your data");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteAccount() {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/v1/account", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "x-csrf-token": csrfToken() },
+      });
+      if (!res.ok) throw new Error("Delete failed");
+      toast.success("Account deleted");
+      window.location.href = "/sign-in";
+    } catch {
+      toast.error("Could not delete account");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -35,7 +82,7 @@ export default function PrivacySettingsPage() {
           <CardDescription>Downloads and irreversible removals always confirm first.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
-          <Button type="button" variant="secondary" onClick={() => toast.success("Export started — you’ll get a download shortly")}>
+          <Button type="button" variant="secondary" disabled={busy} onClick={() => void exportData()}>
             Export my data
           </Button>
           <Button type="button" variant="secondary" onClick={() => setDeleteDocsOpen(true)}>
@@ -90,10 +137,7 @@ export default function PrivacySettingsPage() {
               aria-label="Model improvement"
             />
           </label>
-          <Button
-            type="button"
-            onClick={() => toast.success("Privacy controls saved")}
-          >
+          <Button type="button" onClick={() => toast.success("Privacy controls saved")}>
             Save privacy controls
           </Button>
         </CardContent>
@@ -126,7 +170,7 @@ export default function PrivacySettingsPage() {
         description={`This permanently deletes your ${product.name} account and all associated data.`}
         confirmLabel="Delete account"
         destructive
-        onConfirm={() => toast.success("Account deletion scheduled")}
+        onConfirm={() => void deleteAccount()}
       />
     </div>
   );

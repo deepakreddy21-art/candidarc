@@ -11,7 +11,7 @@ import {
 } from "./catalog";
 import { RadarSearchIndex } from "./search-index";
 import { loadCandidateProfileForMatch, EMPTY_PROFILE } from "./profile";
-import { enhanceMatchBreakdown, getMatchLabel } from "./match-labels";
+import { enhanceMatchBreakdown } from "./match-labels";
 import { getEnv } from "../config/env";
 import type {
   CandidateProfileForMatch,
@@ -342,14 +342,12 @@ export class RadarService {
               .join("\n\n")) || `${role} at ${company}. Tailor an evidence-backed resume for this opening.`;
 
       let safeJobUrl: string | undefined;
-      try {
-        if (jobUrl) {
-          // eslint-disable-next-line no-new
-          new URL(jobUrl);
-          safeJobUrl = jobUrl;
+      if (jobUrl) {
+        try {
+          safeJobUrl = new URL(jobUrl).toString();
+        } catch {
+          safeJobUrl = undefined;
         }
-      } catch {
-        safeJobUrl = undefined;
       }
 
       const result = await this.customerGenerate.generate(ctx, {

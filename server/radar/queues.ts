@@ -25,8 +25,9 @@ import { logger } from "../observability/logger";
 import type { CanonicalJobCatalog } from "./catalog";
 import type { RadarSearchIndex } from "./search-index";
 import type { QueueName } from "../domain/types";
-import { normalizeTitle, normalizeCompany, descriptionHash } from "./repost";
+import { normalizeTitle, descriptionHash } from "./repost";
 import { setCheckpoint, createCheckpoint } from "./providers/checkpoints";
+import { verifyJobFromSource } from "./verification";
 
 export const RADAR_QUEUE_NAMES = [
   "source-discovery",
@@ -134,13 +135,17 @@ export function registerRadarQueueHandlers(
   queue.registerHandler("job-verification", async (job) => {
     const payload = job.payload as { jobPublicId?: string };
     if (payload.jobPublicId) {
-      const j = catalog.getJob(payload.jobPublicId);
-      if (j) {
-        j.lastVerifiedAt = new Date().toISOString();
-        j.verificationState = "VERIFIED_OPEN";
-        j.lastVerifiedPrecision = "EXACT_TIMESTAMP";
-        catalog.canonicalJobs.set(j.id, j);
-        logger.debug({ jobId: j.id }, "radar job-verification: marked verified open");
+      const outcome = await verifyJobFromSource(catalog, payload.jobPublicId);
+      if (outcome) {
+        logger.debug(
+          {
+            jobId: outcome.job.id,
+            verificationState: outcome.job.verificationState,
+            verified: outcome.verified,
+            sourceChecked: outcome.sourceChecked,
+          },
+          "radar job-verification complete",
+        );
       }
     }
     logger.info({ jobId: job.id }, "radar job-verification");

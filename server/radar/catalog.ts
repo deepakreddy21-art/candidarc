@@ -418,6 +418,17 @@ export class CanonicalJobCatalog {
     });
   }
 
+  /** Public history hook for queue workers and verification flows. */
+  recordHistory(
+    canonicalJobId: string,
+    sightingId: string | undefined,
+    type: JobHistoryEvent["type"],
+    message: string,
+    metadata?: Record<string, unknown>,
+  ): void {
+    this.pushHistory(canonicalJobId, sightingId, type, message, metadata);
+  }
+
   /** Seed coherent Deepak-relevant demo catalog. */
   seedDemoCatalog(now: Date = new Date()): void {
     if (this.seeded) return;

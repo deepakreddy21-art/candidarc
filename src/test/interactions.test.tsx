@@ -42,6 +42,23 @@ vi.mock("@/services/api", () => ({
       currentVersionId: versionId,
     })),
     getFinalQA: vi.fn(async () => structuredClone(finalQAChecks)),
+    getProfile: vi.fn(async () => ({
+      id: "cand-deepak",
+      fullName: "Deepak Reddy Kilaru",
+      preferredName: "Deepak",
+      email: "deepak.kilaru@email.com",
+      phone: "",
+      location: "",
+      headline: "",
+      summary: "",
+      experienceLevel: "experienced" as const,
+      yearsExperience: 5,
+      targetRoleFamilies: [],
+      preferredResumeLength: "one-page" as const,
+      careerGoal: "",
+      avatarInitials: "DR",
+    })),
+    getWorkflow: vi.fn(async () => ({ workflow: null, events: [] })),
   },
 }));
 

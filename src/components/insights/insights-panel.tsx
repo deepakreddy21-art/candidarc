@@ -83,7 +83,7 @@ export function InsightsPanel({
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Insights</h2>
           <p className="mt-1 text-sm text-foreground-secondary">
-            Cisco score path 68 → 91 with remaining competency gaps.
+            Score progression, coverage gaps, and tailoring quality.
           </p>
         </div>
       )}
@@ -92,7 +92,7 @@ export function InsightsPanel({
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">Score by version</CardTitle>
-            <CardDescription>V0 through final V4</CardDescription>
+            <CardDescription>Version progression for this workspace</CardDescription>
           </CardHeader>
           <CardContent>
             <ScoreTrendChart data={data.scoreByVersion} />

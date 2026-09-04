@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { ApplicationCard, ApplicationBoardColumn } from "@/components/applications/application-card";
@@ -18,13 +18,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/feedback";
-import { applications as seedApps } from "@/data/seed";
 import { api } from "@/services/api";
 import type { Application } from "@/types/domain";
 import { cn } from "@/lib/utils";
 
 export default function OpportunitiesPage() {
-  const [apps, setApps] = useState<Application[]>(seedApps.filter((a) => !a.archived));
+  const [apps, setApps] = useState<Application[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState<"list" | "board">("list");
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -36,6 +36,13 @@ export default function OpportunitiesPage() {
     readiness: "all",
     interview: "all",
   });
+
+  useEffect(() => {
+    void api.listApplications().then((items) => {
+      setApps(items.filter((a) => !a.archived));
+      setLoaded(true);
+    });
+  }, []);
 
   const companies = useMemo(() => [...new Set(apps.map((a) => a.company))], [apps]);
   const roleFamilies = useMemo(() => [...new Set(apps.map((a) => a.roleFamily))], [apps]);
@@ -60,17 +67,17 @@ export default function OpportunitiesPage() {
     setApps((prev) => prev.filter((a) => !ids.includes(a.id)));
     setSelected([]);
     setConfirmOpen(false);
-    toast.success(ids.length === 1 ? "Opportunity archived" : `${ids.length} opportunities archived`);
+    toast.success(ids.length === 1 ? "Application archived" : `${ids.length} applications archived`);
   }
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Opportunities"
-        description="Track research, resumes, audits, and application packages for every role."
+        title="My Applications"
+        description="Every role you are preparing with CandidArc — from research to downloadable resume."
         actions={
-          <Link href="/app/opportunities/new" className={buttonVariants()}>
-            New opportunity
+          <Link href="/app/resumes/new" className={buttonVariants()}>
+            Tailor a resume
           </Link>
         }
       />
@@ -96,13 +103,19 @@ export default function OpportunitiesPage() {
         </div>
       ) : null}
 
-      {filtered.length === 0 ? (
+      {!loaded ? (
+        <p className="text-sm text-foreground-muted">Loading applications…</p>
+      ) : filtered.length === 0 ? (
         <EmptyState
-          title="No applications match"
-          description="Adjust filters or start a new role research flow."
+          title={apps.length === 0 ? "No applications yet" : "No applications match"}
+          description={
+            apps.length === 0
+              ? "Paste a job description to start. CandidArc will research the role, tailor your experience, and prepare PDF and Word downloads."
+              : "Adjust filters or start a new application."
+          }
           action={
-            <Link href="/app/opportunities/new" className={buttonVariants()}>
-              New opportunity
+            <Link href="/app/resumes/new" className={buttonVariants()}>
+              Paste a job description
             </Link>
           }
         />
@@ -127,8 +140,8 @@ export default function OpportunitiesPage() {
         <div className={cn("flex gap-4 overflow-x-auto pb-2")}>
           {[
             { title: "Researching", status: "researching" },
-            { title: "Auditing", status: "auditing" },
-            { title: "Final QA", status: "final-qa" },
+            { title: "In progress", status: "auditing" },
+            { title: "Finalizing", status: "final-qa" },
             { title: "Ready", status: "ready" },
           ].map((col) => (
             <ApplicationBoardColumn
@@ -149,7 +162,7 @@ export default function OpportunitiesPage() {
           <DialogHeader>
             <DialogTitle>Archive application{selected.length > 1 ? "s" : ""}?</DialogTitle>
             <DialogDescription>
-              Archived applications leave the active board. You can still restore them later from saved views.
+              Archived applications leave the active board. You can restore them later from saved views.
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">

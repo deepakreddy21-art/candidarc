@@ -1,10 +1,9 @@
 "use client";
 
-import * as React from "react";
+import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Command } from "cmdk";
 import {
-  Bell,
   Briefcase,
   FileText,
   Home,
@@ -13,30 +12,22 @@ import {
   Radar,
   Search,
   Settings,
-  Sparkles,
   Sun,
-  Vault,
+  User,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useUiStore } from "@/stores/ui";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 const commands = [
-  { id: "new-resume", label: "New resume", href: "/app/resumes/new", icon: FileText },
-  { id: "new-opp", label: "New opportunity", href: "/app/opportunities/new", icon: Plus },
-  { id: "active", label: "Open Cisco opportunity", href: "/app/opportunities/app-cisco", icon: Briefcase },
-  { id: "radar", label: "Open Radar", href: "/app/radar", icon: Radar },
-  { id: "radar-search", label: "Search fresh jobs", href: "/app/radar/search", icon: Search },
-  { id: "radar-saved", label: "Open saved Radar jobs", href: "/app/radar/saved", icon: Radar },
-  { id: "radar-alerts", label: "Manage Radar alerts", href: "/app/radar/alerts", icon: Bell },
-  { id: "radar-cisco", label: "Open Cisco Radar job", href: "/app/radar/jobs/job-cisco-cx-ai", icon: Radar },
-  { id: "evidence", label: "Open Career Evidence", href: "/app/evidence", icon: Vault },
-  { id: "resume", label: "Open Resume Studio", href: "/app/opportunities/app-cisco/resume", icon: FileText },
-  { id: "copilot", label: "Open Application Copilot", href: "/app/opportunities/app-cisco/application", icon: Sparkles },
-  { id: "compare", label: "Compare resume versions", href: "/app/opportunities/app-cisco/resume?compare=1", icon: Sparkles },
-  { id: "export", label: "Export final resume", href: "/app/opportunities/app-cisco/resume?export=1", icon: FileText },
-  { id: "home", label: "Go to Today", href: "/app", icon: Home },
-  { id: "settings", label: "Open settings", href: "/app/settings", icon: Settings },
+  { id: "new-resume", label: "Tailor a resume", href: "/app/resumes/new", icon: FileText },
+  { id: "home", label: "Go to Home", href: "/app", icon: Home },
+  { id: "radar", label: "Find Jobs", href: "/app/radar", icon: Radar },
+  { id: "radar-search", label: "Search jobs", href: "/app/radar/search", icon: Search },
+  { id: "applications", label: "My Applications", href: "/app/opportunities", icon: Briefcase },
+  { id: "new-app", label: "New application", href: "/app/resumes/new", icon: Plus },
+  { id: "profile", label: "Career Profile", href: "/app/settings/profile", icon: User },
+  { id: "settings", label: "Settings", href: "/app/settings", icon: Settings },
 ];
 
 export function CommandPalette() {
@@ -45,7 +36,7 @@ export function CommandPalette() {
   const router = useRouter();
   const { setTheme, resolvedTheme } = useTheme();
 
-  React.useEffect(() => {
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();

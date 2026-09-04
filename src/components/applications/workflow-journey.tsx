@@ -3,8 +3,11 @@
 import { motion, useReducedMotion } from "framer-motion";
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { workflowSteps } from "@/data/seed";
+import { workflowSteps as demoWorkflowSteps } from "@/data/seed.demo";
 import type { WorkflowStage } from "@/types/domain";
+
+// Internal/demo workflow visualization only — not linked from customer nav.
+const workflowSteps = demoWorkflowSteps;
 
 const stageOrder: WorkflowStage[] = [
   "research",

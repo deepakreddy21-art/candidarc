@@ -7,6 +7,9 @@ import { Download, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { buildResumeDocument } from "@/lib/resume-document";
+import type { ResumeSection } from "@/types/domain";
+import { ResumePreview } from "./resume-preview";
 import { RefinePanel } from "./refine-panel";
 import { VersionHistory } from "./version-history";
 import { QualityReport } from "./quality-report";
@@ -14,7 +17,14 @@ import { QualityReport } from "./quality-report";
 type ReadyData = {
   workflowId: string;
   applicationId: string;
-  resume?: { versionLabel: string; previewHtml?: string };
+  resume?: {
+    versionLabel: string;
+    previewHtml?: string;
+    sections?: ResumeSection[];
+    role?: string;
+    company?: string;
+    candidateName?: string;
+  };
   versions?: Array<{ id: string; label: string; createdAt: string }>;
   qualityReport?: {
     summary?: string;
@@ -33,10 +43,21 @@ export function ResumeReady({ data }: { data: ReadyData }) {
   const router = useRouter();
   const [enhancing, setEnhancing] = useState(false);
 
+  const resumeDoc = data.resume?.sections?.length
+    ? buildResumeDocument({
+        sections: data.resume.sections,
+        candidateName: data.resume.candidateName ?? "Candidate",
+        role: data.resume.role ?? "Target role",
+        company: data.resume.company ?? "Target company",
+      })
+    : null;
+
   async function enhance() {
     setEnhancing(true);
     try {
-      const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ?? "");
+      const csrf = decodeURIComponent(
+        globalThis.document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ?? "",
+      );
       const response = await fetch(`/api/v1/resumes/workflows/${data.workflowId}/enhance`, {
         method: "POST",
         credentials: "include",
@@ -84,7 +105,7 @@ export function ResumeReady({ data }: { data: ReadyData }) {
             </a>
           </Button>
           <Button asChild variant="ghost">
-            <Link href={`/app/opportunities/${data.applicationId}/resume`}>Edit manually</Link>
+            <Link href="/app/opportunities">View applications</Link>
           </Button>
         </div>
       </div>
@@ -93,10 +114,17 @@ export function ResumeReady({ data }: { data: ReadyData }) {
           <CardTitle>{data.resume?.versionLabel ?? "Version 1"}</CardTitle>
         </CardHeader>
         <CardContent>
-          <div
-            className="mx-auto min-h-[700px] max-w-[760px] rounded-sm border border-border bg-white p-8 text-black shadow-sm [&_pre]:whitespace-pre-wrap [&_pre]:font-sans [&_pre]:text-sm"
-            dangerouslySetInnerHTML={{ __html: data.resume?.previewHtml ?? "" }}
-          />
+          {resumeDoc ? (
+            <ResumePreview document={resumeDoc} />
+          ) : data.resume?.previewHtml ? (
+            <iframe
+              title="Resume preview"
+              className="mx-auto min-h-[700px] w-full max-w-[760px] rounded-sm border border-border bg-white shadow-sm"
+              srcDoc={data.resume.previewHtml}
+            />
+          ) : (
+            <p className="text-sm text-foreground-muted">Preview will appear when your resume finishes generating.</p>
+          )}
         </CardContent>
       </Card>
       <div className="grid gap-5 lg:grid-cols-2">

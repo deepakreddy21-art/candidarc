@@ -32,8 +32,8 @@ export const EMPTY_PROFILE: CandidateProfileForMatch = {
  * Load the candidate's profile for match scoring.
  *
  * Sources:
- * - candidateProfiles table (fullName, yearsExperience, location, careerGoal, experienceLevel, targetRoleFamilies)
- * - evidenceItems table (aggregate technologies as skills, job titles)
+ * - candidateProfiles repository (experience, location, career goals, prefs)
+ * - evidence repository (aggregate technologies as skills)
  *
  * NEVER invents skills. If no profile or evidence exists in production, returns EMPTY_PROFILE.
  * In demo mode only, if empty, falls back to SEED_CANDIDATE_PROFILE.
@@ -51,44 +51,38 @@ export async function loadCandidateProfileForMatch(
 
   requireTenantMembership(ctx, tenantId);
 
-  // Load candidate profile from store
-  // Note: Using type assertion as store interface may vary
-  const store = repos.store as unknown as Record<string, unknown>;
-  const candidateProfileRepo = store.candidateProfiles as { findByUser?: (tenantId: string, userId: string) => Promise<{ experienceLevel?: string; location?: string; careerGoal?: string; targetRoleFamilies?: string[]; yearsExperience?: number } | null> } | undefined;
-  const evidenceRepo = store.evidenceItems as { listByTenant?: (tenantId: string) => Promise<Array<{ technologies?: string[] }>> } | undefined;
+  const candidateProfile = await repos.candidateProfiles.getByUser(tenantId, user.id);
+  const evidenceItems = await repos.evidence.list(tenantId);
 
-  const candidateProfile = await candidateProfileRepo?.findByUser?.(tenantId, user.id) ?? null;
-
-  // Aggregate skills from evidence items (technologies field)
-  const evidenceItems = await evidenceRepo?.listByTenant?.(tenantId) ?? [];
-
-  // Extract technologies from all evidence items as skills
   const skillsFromEvidence = new Set<string>();
   for (const item of evidenceItems) {
-    const techs = item.technologies ?? [];
-    for (const tech of techs) {
+    for (const tech of item.technologies ?? []) {
       if (typeof tech === "string" && tech.trim()) {
         skillsFromEvidence.add(tech.trim());
       }
     }
   }
 
-  // Build profile from actual data
+  const extractionSkills = candidateProfile?.resumeImportExtraction?.skills;
+  if (Array.isArray(extractionSkills)) {
+    for (const skill of extractionSkills) {
+      if (typeof skill === "string" && skill.trim()) {
+        skillsFromEvidence.add(skill.trim());
+      }
+    }
+  }
+
   const skills = [...skillsFromEvidence];
   const hasData = candidateProfile || skills.length > 0;
 
   if (!hasData) {
-    // No profile/evidence exists
     const env = getEnv();
     if (env.APP_MODE === "demo") {
-      // Demo mode: fall back to seed profile for demonstration
       return SEED_CANDIDATE_PROFILE;
     }
-    // Production: return empty profile — never invent skills
     return EMPTY_PROFILE;
   }
 
-  // Map experience level string to seniority
   const seniorityMap: Record<string, string> = {
     entry: "Junior",
     junior: "Junior",
@@ -100,28 +94,27 @@ export async function loadCandidateProfileForMatch(
     lead: "Lead",
     director: "Director",
     executive: "Executive",
+    student: "Junior",
+    "early-career": "Junior",
+    experienced: "Mid-Level",
+    "career-transition": "Mid-Level",
   };
 
   const experienceLevel = candidateProfile?.experienceLevel?.toLowerCase() ?? "";
-  const seniority = seniorityMap[experienceLevel] ?? candidateProfile?.experienceLevel;
+  const seniority = seniorityMap[experienceLevel] ?? candidateProfile?.experienceLevel ?? undefined;
 
-  // Build preferred locations
-  const preferredLocations: string[] = [];
-  if (candidateProfile?.location) {
+  const preferredLocations = [...(candidateProfile?.preferredLocations ?? [])];
+  if (candidateProfile?.location && !preferredLocations.includes(candidateProfile.location)) {
     preferredLocations.push(candidateProfile.location);
   }
 
-  // Build career goals from careerGoal and targetRoleFamilies
   const careerGoals: string[] = [];
   if (candidateProfile?.careerGoal) {
     careerGoals.push(candidateProfile.careerGoal);
   }
-  const targetFamilies = candidateProfile?.targetRoleFamilies ?? [];
-  if (Array.isArray(targetFamilies)) {
-    for (const family of targetFamilies) {
-      if (typeof family === "string" && family.trim()) {
-        careerGoals.push(family.trim());
-      }
+  for (const family of candidateProfile?.targetRoleFamilies ?? []) {
+    if (typeof family === "string" && family.trim()) {
+      careerGoals.push(family.trim());
     }
   }
 
@@ -129,11 +122,11 @@ export async function loadCandidateProfileForMatch(
     skills,
     seniority,
     preferredLocations,
-    remoteOk: true, // Default to remote-friendly
+    remoteOk: candidateProfile?.remoteOk ?? true,
     yearsExperience: candidateProfile?.yearsExperience ?? undefined,
     careerGoals,
-    visaNeeded: undefined, // Not stored in current schema
-    targetCompensationMin: undefined, // Not stored in current schema
+    visaNeeded: candidateProfile?.requiresSponsorship ?? undefined,
+    targetCompensationMin: undefined,
   };
 }
 
