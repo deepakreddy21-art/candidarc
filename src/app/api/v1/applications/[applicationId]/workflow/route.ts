@@ -32,6 +32,7 @@ export async function GET(request: Request, { params }: Params) {
             startedAt: run.startedAt,
             completedAt: run.completedAt,
             errorClass: run.errorClass,
+            payload: run.payload,
           }
         : null,
       events: events.map((e) => ({

@@ -1,11 +1,14 @@
-import { getGenerationProvider } from "../ai";
+import { getProviderForRole } from "../ai";
 import { getPrompt } from "../ai/prompt-registry";
 import {
-  mockAuditSchema,
-  mockEvidenceMatchSchema,
-  mockResearchSchema,
-  mockResumeSchema,
-} from "../ai/mock-provider";
+  auditSchema,
+  evidenceMatchSchema,
+  finalQaSchema,
+  researchSchema,
+  resumeSchema,
+} from "../ai/schemas";
+import { collectResearchSources } from "../ai/research-collector";
+import { listActiveMistakeMemory } from "../ai/mistake-memory";
 import type {
   ApplicationRepository,
   AuditRepository,
@@ -33,6 +36,45 @@ export type ResumePipelineDeps = {
   evidence: EvidenceRepository;
   store: Repositories["store"];
 };
+
+export function filterFindingsForNextGeneration<T extends { status: string }>(findings: T[]): T[] {
+  return findings.filter((finding) => finding.status === "accepted" || finding.status === "edited");
+}
+
+function withResumeProvenance(
+  sections: Array<Record<string, unknown>>,
+  versionNumber: number,
+): Array<Record<string, unknown>> {
+  return sections.map((section, sectionIndex) => {
+    const addBullet = (value: unknown, bulletIndex: number) => {
+      const bullet = value as Record<string, unknown>;
+      return {
+        id: typeof bullet.id === "string" ? bullet.id : newId(`rb${versionNumber}${sectionIndex}${bulletIndex}`),
+        ...bullet,
+        unsupported: bullet.claimRisk === "high",
+        researchRequirementIds: bullet.matchedRequirements,
+      };
+    };
+    const items = Array.isArray(section.items)
+      ? section.items.map((value, itemIndex) => {
+          const item = value as Record<string, unknown>;
+          return {
+            id: typeof item.id === "string" ? item.id : newId(`ri${versionNumber}${sectionIndex}${itemIndex}`),
+            ...item,
+            bullets: Array.isArray(item.bullets) ? item.bullets.map(addBullet) : [],
+          };
+        })
+      : undefined;
+    const bullets = Array.isArray(section.bullets) ? section.bullets.map(addBullet) : undefined;
+    return {
+      id: typeof section.id === "string" ? section.id : newId(`rs${versionNumber}${sectionIndex}`),
+      order: typeof section.order === "number" ? section.order : sectionIndex,
+      ...section,
+      ...(bullets ? { bullets } : {}),
+      ...(items ? { items } : {}),
+    };
+  });
+}
 
 /**
  * Application service orchestrating the vertical slice handlers.
@@ -158,6 +200,17 @@ export class ResumePipeline {
         estimatedCostCents: result.usage.estimatedCostCents,
       },
     });
+    logger.info(
+      {
+        applicationPublicId: run.applicationPublicId,
+        stage: run.stage,
+        provider: result.model.provider,
+        model: result.model.model,
+        latencyMs: result.latencyMs,
+        tokens: result.usage.inputTokens + result.usage.outputTokens,
+      },
+      "pipeline AI stage completed",
+    );
   }
 
   private async runResearch(run: WorkflowRunRecord) {
@@ -167,15 +220,51 @@ export class ResumePipeline {
     }
 
     const usageKey = await this.reserve(run, "research", 1);
-    const provider = getGenerationProvider();
+    const provider = getProviderForRole("generation");
     const prompt = getPrompt("research-synthesis");
+    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    if (!application) throw new AppError("APPLICATION_NOT_FOUND", "Application required for research", 404);
+    const jobDescription = typeof application.metadata?.jobDescription === "string"
+      ? application.metadata.jobDescription
+      : "";
+    const jobUrl = typeof application.metadata?.jobUrl === "string" ? application.metadata.jobUrl : undefined;
+    const collectedSources = await collectResearchSources({
+      company: application.company,
+      role: application.role,
+      jobUrl,
+      jobDescription,
+    });
 
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: prompt.system,
-      user: JSON.stringify({ applicationPublicId: run.applicationPublicId }),
-      schema: mockResearchSchema,
+      system: `${prompt.system}
+Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims without direct source support must be classified as inferred or uncertain.`,
+      user: JSON.stringify({
+        applicationPublicId: run.applicationPublicId,
+        company: application.company,
+        role: application.role,
+        jobUrl,
+        jobDescription,
+        collectedSources,
+      }),
+      schema: researchSchema,
     });
+    const collectedByUrl = new Map(collectedSources.map((source) => [source.url, source]));
+    result.data.sources = result.data.sources
+      .filter((source) => collectedByUrl.has(source.url))
+      .map((source) => ({ ...source, accessedAt: collectedByUrl.get(source.url)!.accessedAt }));
+    if (!result.data.sources.length && collectedSources.length) {
+      result.data.sources = collectedSources.map((source) => ({
+        id: source.id,
+        url: source.url,
+        title: source.title,
+        accessedAt: source.accessedAt,
+        supportingText: source.excerpt,
+        confidence: source.confidence,
+        classification: "explicit" as const,
+        relevance: "Permitted public source collected for this job application",
+      }));
+    }
     await this.recordProviderUsage(run, usageKey, result);
 
     const existing = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
@@ -209,7 +298,7 @@ export class ResumePipeline {
         depth: "standard",
         confidence: result.data.overallConfidence,
         findings: result.data.findings,
-        sources: [],
+        sources: result.data.sources,
         completedAt: nowIso(),
       });
     } else {
@@ -217,6 +306,7 @@ export class ResumePipeline {
         status: "completed",
         confidence: result.data.overallConfidence,
         findings: result.data.findings,
+        sources: result.data.sources,
         completedAt: nowIso(),
       });
     }
@@ -250,13 +340,32 @@ export class ResumePipeline {
 
   private async runEvidenceMatching(run: WorkflowRunRecord) {
     const usageKey = await this.reserve(run, "research", 1);
-    const provider = getGenerationProvider();
+    const provider = getProviderForRole("generation");
     const prompt = getPrompt("evidence-matching");
+    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
+    const evidence = await this.deps.evidence.list(run.tenantId);
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
-      user: JSON.stringify({ applicationPublicId: run.applicationPublicId }),
-      schema: mockEvidenceMatchSchema,
+      user: JSON.stringify({
+        applicationPublicId: run.applicationPublicId,
+        jobDescription: application?.metadata?.jobDescription,
+        requirements: application?.metadata?.jobDescription,
+        research: { findings: research?.findings ?? [], sources: research?.sources ?? [] },
+        evidence: evidence.map((item) => ({
+          id: item.publicId,
+          title: item.title,
+          situation: item.situation,
+          task: item.task,
+          actions: item.actions,
+          result: item.result,
+          technologies: item.technologies,
+          payload: item.payload,
+        })),
+      }),
+      schema: evidenceMatchSchema,
+      metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
     });
     await this.recordProviderUsage(run, usageKey, result);
 
@@ -298,7 +407,7 @@ export class ResumePipeline {
     }
 
     const usageKey = await this.reserve(run, "resume_generation", 1);
-    const provider = getGenerationProvider();
+    const provider = getProviderForRole("generation");
     const prompt = getPrompt("resume-generation");
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
@@ -309,10 +418,9 @@ export class ResumePipeline {
     const auditRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
     const previousAudit = auditRuns.at(-1);
     const auditFindings = previousAudit ? await this.deps.audits.listFindings(run.tenantId, previousAudit.publicId) : [];
-    const mistakeMemory = "mistakeMemoryRules" in this.deps.store
-      ? [...((this.deps.store as Repositories["store"] & { mistakeMemoryRules: Map<string, { tenantId: string; applicationId: string; status: string }> }).mistakeMemoryRules?.values?.() ?? [])]
-          .filter((rule) => rule.tenantId === run.tenantId && rule.applicationId === run.applicationId && rule.status === "active")
-      : [];
+    const actionable = filterFindingsForNextGeneration(auditFindings);
+    const mistakeMemory = listActiveMistakeMemory(this.deps.store, run.tenantId, run.applicationId);
+    const evidenceTechnologies = [...new Set(evidence.flatMap((item) => item.technologies))];
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
@@ -322,24 +430,33 @@ export class ResumePipeline {
         jobDescription: application?.metadata?.jobDescription,
         application: application?.metadata,
         researchFindings: research?.findings ?? [],
-        evidence: evidence.map((item) => ({ id: item.publicId, ...item.payload })),
+        researchSources: research?.sources ?? [],
+        evidence: evidence.map((item) => ({
+          id: item.publicId,
+          title: item.title,
+          organization: item.organization,
+          situation: item.situation,
+          task: item.task,
+          actions: item.actions,
+          result: item.result,
+          technologies: item.technologies,
+          confidence: item.confidence,
+          ...item.payload,
+        })),
         previousVersion,
-        auditFindings,
+        acceptedOrEditedAuditFindings: actionable,
         mistakeMemory,
       }),
-      schema: mockResumeSchema,
-      metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
+      schema: resumeSchema,
+      metadata: {
+        allowedEvidenceIds: evidence.map((item) => item.publicId),
+        allowedTechnologies: evidenceTechnologies,
+      },
     });
     await this.recordProviderUsage(run, usageKey, result);
 
-    const actionable = auditFindings.filter((finding) => finding.status === "accepted" || finding.status === "edited");
     if (versionNumber > 0 && previousVersion && actionable.length === 0) {
       result.data.sections = previousVersion.sections as typeof result.data.sections;
-    } else if (actionable.length) {
-      result.data.sections = [
-        ...result.data.sections,
-        { type: "audit-decisions", title: "Applied audit decisions", content: actionable.map((finding) => finding.editedText ?? finding.suggestedText) },
-      ];
     }
 
     let resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
@@ -368,7 +485,10 @@ export class ResumePipeline {
       scoreBreakdown: result.data.scoreBreakdown,
       notes: result.data.notes,
       triggeredBy,
-      sections: result.data.sections,
+      sections: withResumeProvenance(
+        result.data.sections as Array<Record<string, unknown>>,
+        versionNumber,
+      ),
       idempotencyKey,
       promptVersion: prompt.version,
     });
@@ -432,13 +552,40 @@ export class ResumePipeline {
     });
 
     const usageKey = await this.reserve(run, "audit", 1);
-    const provider = getGenerationProvider();
+    const provider = getProviderForRole(promptId.startsWith("hr-") ? "hr-audit" : "em-audit");
     const prompt = getPrompt(promptId);
+    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    const evidence = await this.deps.evidence.list(run.tenantId);
+    const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
+    if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume required for audit", 422);
+    const versions = await this.deps.resumes.listVersions(run.tenantId, resume.publicId);
+    const reviewedResume = versions.find((version) => version.versionNumber === reviewsVersion);
+    if (!reviewedResume) throw new AppError("RESUME_VERSION_NOT_FOUND", `V${reviewsVersion} required for audit`, 422);
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
-      user: JSON.stringify({ applicationPublicId: run.applicationPublicId, reviewsVersion }),
-      schema: mockAuditSchema,
+      user: JSON.stringify({
+        applicationPublicId: run.applicationPublicId,
+        reviewsVersion,
+        jobDescription: application?.metadata?.jobDescription,
+        resume: {
+          versionNumber: reviewedResume.versionNumber,
+          sections: reviewedResume.sections,
+          score: reviewedResume.score,
+        },
+        evidence: evidence.map((item) => ({
+          id: item.publicId,
+          title: item.title,
+          situation: item.situation,
+          task: item.task,
+          actions: item.actions,
+          result: item.result,
+          technologies: item.technologies,
+          payload: item.payload,
+        })),
+      }),
+      schema: auditSchema,
+      metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
     });
     await this.recordProviderUsage(run, usageKey, result);
 
@@ -502,9 +649,11 @@ export class ResumePipeline {
     if (!latest) throw new AppError("RESUME_VERSION_NOT_FOUND", "Resume version required for Final QA", 422);
     const auditRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
     const findings = (await Promise.all(auditRuns.map((audit) => this.deps.audits.listFindings(run.tenantId, audit.publicId)))).flat();
+    const evidence = await this.deps.evidence.list(run.tenantId);
     const result = runDeterministicFinalQa({
       sections: latest.sections,
       unresolvedCriticalFindings: findings.filter((finding) => finding.severity === "critical" && finding.status === "open").length,
+      knownEvidenceIds: evidence.map((item) => item.publicId),
     });
 
     if (!result.passed) {
@@ -512,10 +661,29 @@ export class ResumePipeline {
       throw new AppError("FINAL_QA_FAILED", "Final QA checks failed", 422, result.checks);
     }
 
+    const usageKey = await this.reserve(run, "final_review", 1);
+    const provider = getProviderForRole("final-review");
+    const prompt = getPrompt("final-qa");
+    const supplement = await provider.generateStructured({
+      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+      system: `${prompt.system}
+This is a supplement to deterministic checks. Do not claim deterministic or visual checks ran unless explicitly supplied.`,
+      user: JSON.stringify({
+        applicationPublicId: run.applicationPublicId,
+        resume: { versionNumber: latest.versionNumber, sections: latest.sections },
+        deterministicChecks: result,
+        evidenceIds: evidence.map((item) => item.publicId),
+      }),
+      schema: finalQaSchema,
+      metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
+    });
+    await this.recordProviderUsage(run, usageKey, supplement);
+    await this.commit(usageKey, String(supplement.usage.estimatedCostCents));
+
     await this.deps.engine.transition(run.id, "FINAL_READY", {
       message: "Final QA passed",
       status: "completed",
-      patch: { payload: { ...run.payload, finalQa: result } },
+      patch: { payload: { ...run.payload, finalQa: result, aiFinalReview: supplement.data } },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       stage: "FINAL_READY",

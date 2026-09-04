@@ -43,6 +43,7 @@ let resumes = structuredClone(seedResumes);
 let memory = structuredClone(seedMemory);
 let notifications = structuredClone(seedNotifications);
 let profile = structuredClone(seedCandidate);
+const findingApplications = new Map<string, string>();
 
 const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
 
@@ -58,6 +59,40 @@ export class ApiError extends Error {
 }
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
+
+type CreateApplicationRequest = Partial<Application> & Pick<Application, "company" | "role"> & {
+  jobUrl?: string;
+  jobDescriptionText?: string;
+  researchDepth?: string;
+  excludedEvidenceIds?: string[];
+  resumeLength?: string;
+  experienceLevel?: string;
+};
+
+export type WorkflowResponse = {
+  workflow: {
+    id: string;
+    applicationId: string;
+    stage: string;
+    status: string;
+    attempt: number;
+    inputVersion?: string;
+    outputVersion?: string;
+    startedAt?: string;
+    completedAt?: string;
+    errorClass?: string;
+    payload?: Record<string, unknown>;
+  } | null;
+  events: Array<{
+    id: string;
+    seq: number;
+    stage: string;
+    status: string;
+    message: string;
+    createdAt: string;
+    metadata: Record<string, unknown>;
+  }>;
+};
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
@@ -108,7 +143,7 @@ const mock = {
     await delay();
     return structuredClone(applications.find((a) => a.id === id));
   },
-  async createApplication(input: Partial<Application> & Pick<Application, "company" | "role">): Promise<Application> {
+  async createApplication(input: CreateApplicationRequest): Promise<Application> {
     await delay(400);
     const app: Application = {
       id: `app-${Date.now()}`,
@@ -256,7 +291,7 @@ export const api = {
     if (res.ok) return res.data.application;
     return mock.getApplication(id);
   },
-  async createApplication(input: Partial<Application> & Pick<Application, "company" | "role">): Promise<Application> {
+  async createApplication(input: CreateApplicationRequest): Promise<Application> {
     const res = await apiFetch<{ application: Application }>("/applications", {
       method: "POST",
       body: JSON.stringify({
@@ -266,9 +301,12 @@ export const api = {
         employmentType: input.employmentType,
         deadline: input.deadline,
         roleFamily: input.roleFamily,
-        jobUrl: undefined,
-        jobDescriptionText: undefined,
-        researchDepth: "standard",
+        jobUrl: input.jobUrl,
+        jobDescriptionText: input.jobDescriptionText,
+        researchDepth: input.researchDepth ?? "standard",
+        excludedEvidenceIds: input.excludedEvidenceIds,
+        resumeLength: input.resumeLength,
+        experienceLevel: input.experienceLevel,
       }),
     });
     if (res.ok) return res.data.application;
@@ -361,13 +399,34 @@ export const api = {
   },
   async listAudits(applicationId: string): Promise<Audit[]> {
     const res = await apiFetch<{ audits: Audit[] }>(`/applications/${applicationId}/audits`);
-    if (res.ok) return res.data.audits;
+    if (res.ok) {
+      res.data.audits.forEach((audit) =>
+        audit.findings.forEach((finding) => findingApplications.set(finding.id, applicationId)),
+      );
+      return res.data.audits;
+    }
     return mock.listAudits(applicationId);
+  },
+  async advanceAudit(applicationId: string): Promise<{ targetVersion: number }> {
+    const res = await apiFetch<{ targetVersion: number }>(`/applications/${applicationId}/audits/advance`, {
+      method: "POST",
+      headers: { "idempotency-key": `audit-advance-${applicationId}-${Date.now()}` },
+      body: JSON.stringify({}),
+    });
+    if (res.ok) return res.data;
+    throw new ApiError("Could not advance audit", res.status);
+  },
+  async getWorkflow(applicationId: string): Promise<WorkflowResponse> {
+    const res = await apiFetch<WorkflowResponse>(`/applications/${applicationId}/workflow`);
+    if (res.ok) return res.data;
+    return { workflow: null, events: [] };
   },
   async updateFinding(findingId: string, status: AuditFinding["status"], editedText?: string): Promise<AuditFinding> {
     // Finding decisions are scoped under an application; try cisco first then fall back
     const appId =
-      audits.find((a) => a.findings.some((f) => f.id === findingId))?.applicationId ?? "app-cisco";
+      findingApplications.get(findingId) ??
+      audits.find((a) => a.findings.some((f) => f.id === findingId))?.applicationId ??
+      "app-cisco";
     const decision =
       status === "open"
         ? undefined
@@ -411,7 +470,15 @@ export const api = {
     }
     return mock.listResearch(applicationId);
   },
-  async getFinalQA(): Promise<FinalQACheck[]> {
+  async getFinalQA(applicationId?: string): Promise<FinalQACheck[]> {
+    if (applicationId) {
+      const workflow = await this.getWorkflow(applicationId);
+      const finalQa = workflow.workflow?.payload?.finalQa as { checks?: Array<Omit<FinalQACheck, "id">> } | undefined;
+      if (finalQa?.checks) {
+        return finalQa.checks.map((check, index) => ({ id: `server-qa-${index}`, ...check }));
+      }
+      return [];
+    }
     return mock.getFinalQA();
   },
   async listActivities(): Promise<ActivityEvent[]> {

@@ -31,6 +31,7 @@ export function ResumeStudio({
   const [auditsLoading, setAuditsLoading] = useState(true);
   const [findings, setFindings] = useState<AuditFinding[]>([]);
   const [qa, setQa] = useState<FinalQACheck[]>([]);
+  const [workflowStage, setWorkflowStage] = useState<string | null>(null);
   const [selectedBulletId, setSelectedBulletId] = useState<string | null>(null);
   const [compareMode, setCompareMode] = useState(false);
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
@@ -38,14 +39,18 @@ export function ResumeStudio({
   async function load() {
     setAuditsLoading(true);
     try {
-      const [r, audits, checks] = await Promise.all([
+      const [r, audits, checks, workflow] = await Promise.all([
         api.getResume(applicationId),
         api.listAudits(applicationId),
-        api.getFinalQA(),
+        api.getFinalQA(applicationId),
+        typeof api.getWorkflow === "function"
+          ? api.getWorkflow(applicationId)
+          : Promise.resolve({ workflow: null, events: [] }),
       ]);
       setResume(r ?? null);
       setFindings(audits.flatMap((a) => a.findings));
       setQa(checks);
+      setWorkflowStage(workflow.workflow?.stage ?? null);
       if (r && !compareVersionId) {
         const prior = r.versions.find((v) => v.id !== r.currentVersionId);
         setCompareVersionId(prior?.id ?? r.versions[0]?.id ?? null);
@@ -57,6 +62,15 @@ export function ResumeStudio({
 
   useEffect(() => {
     void load();
+    const unsubscribe = typeof api.subscribeWorkflow === "function"
+      ? api.subscribeWorkflow(applicationId, (event) => {
+      setWorkflowStage(event.stage);
+      if (event.stage.endsWith("_READY") || event.stage === "FINAL_READY" || event.stage === "FINAL_QA_FAILED") {
+        void load();
+      }
+      })
+      : () => undefined;
+    return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applicationId]);
 
@@ -110,7 +124,7 @@ export function ResumeStudio({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <SectionHeader
           title="Resume studio"
-          description={`${resume.title} · score path 68 → 91`}
+          description={`${resume.title}${workflowStage ? ` · ${workflowStage.replaceAll("_", " ")}` : ""}`}
         />
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor="resume-version" className="sr-only">
@@ -267,19 +281,7 @@ export function ResumeStudio({
             </CardContent>
           </Card>
 
-          <FinalQAChecklist
-            checks={qa}
-            onToggle={(id) => {
-              setQa((prev) =>
-                prev.map((c) =>
-                  c.id === id
-                    ? { ...c, status: c.status === "pass" ? "warning" : "pass" }
-                    : c,
-                ),
-              );
-              toast.message("QA checklist updated");
-            }}
-          />
+          <FinalQAChecklist checks={qa} />
         </aside>
       </div>
     </div>
@@ -512,7 +514,7 @@ export function FinalQAChecklist({
   onToggle,
 }: {
   checks: FinalQACheck[];
-  onToggle: (id: string) => void;
+  onToggle?: (id: string) => void;
 }) {
   return (
     <Card>
@@ -527,7 +529,8 @@ export function FinalQAChecklist({
           <button
             key={check.id}
             type="button"
-            onClick={() => onToggle(check.id)}
+            onClick={() => onToggle?.(check.id)}
+            disabled={!onToggle}
             className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-ring"
           >
             <StatusBadge status={check.status} />

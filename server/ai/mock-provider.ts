@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { getPrompt, type PromptId } from "./prompt-registry";
 import {
+  auditSchema,
+  evidenceMatchSchema,
+  finalQaSchema,
+  researchSchema,
+  resumeSchema,
+} from "./schemas";
+import {
   AiProviderError,
   type GenerationProvider,
   type ModelConfig,
@@ -18,84 +25,12 @@ const DEFAULT_MODEL: ModelConfig = {
   maxOutputTokens: 4096,
 };
 
-export const mockResearchSchema = z.object({
-  findings: z.array(
-    z.object({
-      category: z.enum(["role", "company", "team", "project", "technology", "hiring-signal"]),
-      title: z.string(),
-      summary: z.string(),
-      confidence: z.enum(["high", "medium", "low"]),
-      status: z.enum(["verified", "inferred", "unverified", "disputed"]),
-      sourceIds: z.array(z.string()),
-    }),
-  ),
-  overallConfidence: z.number().min(0).max(100),
-});
-
-export const mockEvidenceMatchSchema = z.object({
-  rows: z.array(
-    z.object({
-      requirement: z.string(),
-      importance: z.enum(["required", "preferred"]),
-      evidenceIds: z.array(z.string()),
-      evidenceStrength: z.enum(["high", "medium", "low"]),
-      resumeUsage: z.enum(["used", "partial", "unused"]),
-      coverageGap: z.string().optional(),
-    }),
-  ),
-  evidenceCoverage: z.number().min(0).max(100),
-});
-
-export const mockResumeSchema = z.object({
-  versionNumber: z.number().int().min(0).max(4),
-  score: z.number().min(0).max(100),
-  scoreBreakdown: z.object({
-    atsCompatibility: z.number(),
-    jobAlignment: z.number(),
-    recruiterReadability: z.number(),
-    impact: z.number(),
-    quantification: z.number(),
-    technicalDepth: z.number(),
-    competencyCoverage: z.number(),
-    evidenceConfidence: z.number(),
-    writingQuality: z.number(),
-    formatIntegrity: z.number(),
-  }),
-  notes: z.string(),
-  sections: z.array(z.record(z.unknown())),
-});
-
-export const mockAuditSchema = z.object({
-  lens: z.enum(["hr-1", "em-1", "hr-2", "em-2"]),
-  reviewsVersion: z.number().int(),
-  producesVersion: z.number().int(),
-  scoreBefore: z.number(),
-  scoreAfter: z.number(),
-  summary: z.string(),
-  findings: z.array(
-    z.object({
-      severity: z.enum(["critical", "major", "minor", "suggestion"]),
-      section: z.string(),
-      title: z.string(),
-      explanation: z.string(),
-      beforeText: z.string(),
-      suggestedText: z.string(),
-      expectedScoreImpact: z.number(),
-      evidenceSource: z.string().optional(),
-    }),
-  ),
-});
-
-export const mockFinalQaSchema = z.object({
-  passed: z.boolean(),
-  checks: z.array(
-    z.object({
-      label: z.string(),
-      status: z.enum(["pass", "fail", "warning", "pending"]),
-      detail: z.string(),
-    }),
-  ),
-});
+export const mockResearchSchema = researchSchema;
+export const mockEvidenceMatchSchema = evidenceMatchSchema;
+export const mockResumeSchema = resumeSchema;
+export const mockAuditSchema = auditSchema;
+export const mockFinalQaSchema = finalQaSchema;
+export { mistakeMemorySchema as mockMistakeMemorySchema } from "./schemas";
 
 const SCORE_BY_VERSION: Record<number, { score: number; breakdown: z.infer<typeof mockResumeSchema>["scoreBreakdown"]; notes: string }> = {
   0: {
@@ -198,6 +133,12 @@ function detectPromptId(request: { prompt: { id: string }; system: string }): Pr
 function fixtureForPrompt(promptId: PromptId, user: string): unknown {
   const versionMatch = /versionNumber["']?\s*[:=]\s*(\d)/i.exec(user);
   const versionNumber = versionMatch ? Number(versionMatch[1]) : 0;
+  let context: Record<string, unknown> = {};
+  try {
+    context = JSON.parse(user) as Record<string, unknown>;
+  } catch {
+    // Streaming callers may send plain text.
+  }
 
   switch (promptId) {
     case "job-extraction":
@@ -213,35 +154,38 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
         preferred: ["LangGraph or agent frameworks", "OpenSearch", "SageMaker"],
       };
     case "research-synthesis":
+      {
+        const company = typeof context.company === "string" ? context.company : "Target company";
+        const role = typeof context.role === "string" ? context.role : "target role";
+        const collected = Array.isArray(context.collectedSources) ? context.collectedSources as Array<Record<string, unknown>> : [];
+        const sources = collected.map((source, index) => ({
+          id: typeof source.id === "string" ? source.id : `src-${index + 1}`,
+          url: typeof source.url === "string" ? source.url : "https://example.com",
+          title: typeof source.title === "string" ? source.title : "Provided job source",
+          accessedAt: typeof source.accessedAt === "string" ? source.accessedAt : new Date().toISOString(),
+          supportingText: typeof source.excerpt === "string" ? source.excerpt : "",
+          confidence: source.confidence === "low" || source.confidence === "medium" ? source.confidence : "high",
+          classification: "explicit" as const,
+          relevance: `Provided source for ${role}`,
+        }));
+        const sourceIds = sources.map((source) => source.id);
       return {
         findings: [
           {
             category: "role",
-            title: "Own CX AI systems that improve customer outcomes",
-            summary: "Role emphasizes production AI systems for CX, not pure research.",
+            title: `${role} priorities at ${company}`,
+            summary: typeof context.jobDescription === "string"
+              ? context.jobDescription.slice(0, 300)
+              : `Role requirements supplied for ${company}.`,
             confidence: "high",
             status: "verified",
-            sourceIds: ["src-jd"],
-          },
-          {
-            category: "technology",
-            title: "Stack leans toward Python, retrieval, and cloud ML ops",
-            summary: "Python, PyTorch, retrieval systems, Kubernetes, and evaluation.",
-            confidence: "high",
-            status: "verified",
-            sourceIds: ["src-jd", "src-tech"],
-          },
-          {
-            category: "team",
-            title: "Likely partnership with CX product and platform teams",
-            summary: "Cross-functional delivery with product and platform partners.",
-            confidence: "medium",
-            status: "inferred",
-            sourceIds: ["src-team"],
+            sourceIds,
           },
         ],
+        sources,
         overallConfidence: 84,
       };
+      }
     case "evidence-matching":
       return {
         rows: [
@@ -272,6 +216,11 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
       };
     case "resume-generation": {
       const scored = SCORE_BY_VERSION[versionNumber] ?? SCORE_BY_VERSION[0];
+      const evidence = Array.isArray(context.evidence) ? context.evidence as Array<Record<string, unknown>> : [];
+      const evidenceId = typeof evidence[0]?.id === "string" ? evidence[0].id : "ev-unknown";
+      const technologies = Array.isArray(evidence[0]?.technologies)
+        ? (evidence[0].technologies as unknown[]).filter((value): value is string => typeof value === "string").slice(0, 3)
+        : [];
       return {
         versionNumber,
         score: scored.score,
@@ -281,10 +230,18 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
           {
             type: "summary",
             title: "Professional Summary",
-            content:
-              versionNumber === 0
-                ? "Experienced AI engineer passionate about machine learning, cloud systems, and delivering impactful solutions for customers."
-                : "AI software engineer with 5+ years shipping production inference, retrieval, and evaluation systems.",
+            order: 0,
+            bullets: [{
+              text: versionNumber === 0
+                ? "Engineer with experience grounded in the supplied career evidence."
+                : "Engineer applying accepted audit feedback to evidence-backed delivery experience.",
+              evidenceIds: [evidenceId],
+              matchedRequirements: [],
+              technologies,
+              confidence: "high",
+              claimRisk: "low",
+              sourceVersion: versionNumber === 0 ? "career-evidence" : `V${versionNumber - 1}`,
+            }],
           },
         ],
       };

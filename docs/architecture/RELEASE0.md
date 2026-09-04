@@ -6,7 +6,7 @@
 |---|---|---|
 | Data | Memory repositories OK | PostgreSQL required |
 | Queue | In-process OK | BullMQ + Redis required |
-| AI | Mock OK | OpenAI required (no silent mock fallback) |
+| AI | Mock OK | Live role-routed providers required (no silent mock fallback) |
 | Storage | Local OK | S3-compatible required |
 | Session | Dev default secret OK | Unique 32+ char secret required |
 | Client | Seed fallback OK when `NEXT_PUBLIC_APP_MODE=demo` | API failures throw; empty seed stubs in browser bundles |
@@ -25,8 +25,9 @@ See `.env.example`. Critical production keys:
 - `REDIS_URL`
 - `SESSION_SECRET` (≥32 chars, not the demo default)
 - `CSRF_SECRET` (optional; defaults to session secret)
-- `AI_PROVIDER=openai`
-- `OPENAI_API_KEY`
+- `AI_MODE=live`
+- `AI_GENERATION_PROVIDER`, `AI_HR_AUDIT_PROVIDER`, `AI_EM_AUDIT_PROVIDER`, `AI_FINAL_REVIEW_PROVIDER`
+- `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` for selected providers
 - `STORAGE_DRIVER=s3` + S3 credentials
 - `WORKER_KIND=all|general|ingestion|document`
 

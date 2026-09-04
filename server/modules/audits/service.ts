@@ -4,6 +4,7 @@ import type { ApplicationRepository, AuditRepository, Repositories } from "../..
 import type { FindingDecision, WorkflowStage } from "../../domain/types";
 import { AppError } from "../../domain/types";
 import type { DurableWorkflowEngine } from "../../workflows/engine";
+import { addMistakeMemoryRule } from "../../ai/mistake-memory";
 
 const NEXT_GENERATION: Record<string, { stage: WorkflowStage; version: number }> = {
   "hr-1": { stage: "V1_GENERATING", version: 1 },
@@ -17,10 +18,11 @@ export class AuditsService {
     private readonly audits: AuditRepository,
     private readonly applications: ApplicationRepository,
     private readonly engine: DurableWorkflowEngine,
+    private readonly store: Repositories["store"],
   ) {}
 
   static fromRepos(repos: Repositories, engine: DurableWorkflowEngine) {
-    return new AuditsService(repos.audits, repos.applications, engine);
+    return new AuditsService(repos.audits, repos.applications, engine, repos.store);
   }
 
   private tenantId(ctx: AuthContext) {
@@ -72,6 +74,25 @@ export class AuditsService {
 
     const next = NEXT_GENERATION[latest.lens];
     if (!next) throw new AppError("AUDIT_SEQUENCE_ERROR", `No next generation for lens ${latest.lens}`, 409);
+
+    for (const finding of findings.filter(
+      (item) =>
+        (item.status === "accepted" || item.status === "edited") &&
+        (item.severity === "critical" || item.severity === "major"),
+    )) {
+      addMistakeMemoryRule(this.store, {
+        tenantId,
+        applicationId: app.id,
+        originatingAudit: latest.lens,
+        affectedVersion: latest.reviewsVersion,
+        category: finding.section,
+        rule: finding.editedText ?? finding.suggestedText,
+        severity: finding.severity,
+        status: "active",
+        userOverride: false,
+        appliedIn: [`V${next.version}`],
+      });
+    }
 
     const workflow = await this.engine.start({
       tenantId,

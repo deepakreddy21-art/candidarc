@@ -22,7 +22,6 @@ const steps = [
 export function NewApplicationFlow() {
   const router = useRouter();
   const [step, setStep] = useState(0);
-  const [extracting, setExtracting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
     url: "",
@@ -56,26 +55,14 @@ export function NewApplicationFlow() {
     [form],
   );
 
-  async function extractFromUrl() {
+  function extractFromUrl() {
     if (!form.url.trim()) {
       toast.error("Paste a job URL first");
       return;
     }
-    setExtracting(true);
-    toast.message("Extracting job details…");
-    await new Promise((r) => setTimeout(r, 900));
-    setForm((f) => ({
-      ...f,
-      company: f.company || "Cisco",
-      role: f.role || "CX AI Software Engineer",
-      location: f.location || "United States",
-      rawText:
-        f.rawText ||
-        "Build AI systems that improve customer experience outcomes. Work with Python, PyTorch, retrieval systems, Kubernetes, and evaluation pipelines.",
-      source: "URL extract",
-    }));
-    setExtracting(false);
-    toast.success("Job details extracted");
+    toast.message("Paste the job description below", {
+      description: "The server will collect the public job URL when research starts.",
+    });
   }
 
   async function submit() {
@@ -91,11 +78,17 @@ export function NewApplicationFlow() {
         role: form.role,
         location: form.location,
         deadline: form.deadline || undefined,
+        jobUrl: form.url || undefined,
+        jobDescriptionText: form.rawText || undefined,
+        researchDepth: form.researchDepth,
+        excludedEvidenceIds: form.excludeEvidence,
+        resumeLength: form.length,
+        experienceLevel: form.experience,
       });
       toast.success("Role research started");
       router.push(`/app/opportunities/${app.id}`);
-    } catch {
-      toast.error("Could not create application");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not create application");
     } finally {
       setSubmitting(false);
     }
@@ -124,8 +117,8 @@ export function NewApplicationFlow() {
                     value={form.url}
                     onChange={(e) => setForm({ ...form, url: e.target.value })}
                   />
-                  <Button type="button" variant="secondary" onClick={extractFromUrl} disabled={extracting}>
-                    {extracting ? "Extracting…" : "Extract"}
+                  <Button type="button" variant="secondary" onClick={extractFromUrl}>
+                    Use URL
                   </Button>
                 </div>
               </div>
@@ -152,7 +145,7 @@ export function NewApplicationFlow() {
             <div className="grid gap-3">
               {[
                 { id: "master", title: "Master career profile", desc: "Primary Career Truth profile" },
-                { id: "existing", title: "Existing resume", desc: "Cisco CX AI draft lineage" },
+                { id: "existing", title: "Existing resume", desc: "Use a prior opportunity resume as a starting point" },
                 { id: "persona", title: "Target persona", desc: "CX AI Software Engineer focus" },
               ].map((opt) => (
                 <Choice

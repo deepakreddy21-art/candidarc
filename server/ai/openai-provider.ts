@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { getEnv } from "../config/env";
+import { logger } from "../observability/logger";
+import { validateEvidenceIds, validateResumeTechnologies } from "./evidence-guard";
 import {
   AiProviderError,
   type GenerationProvider,
@@ -9,8 +11,6 @@ import {
   type StructuredGenerationRequest,
   type StructuredGenerationResult,
 } from "./types";
-
-const DEFAULT_MODEL = "gpt-4o-mini";
 
 export class OpenAIProvider implements GenerationProvider {
   readonly name = "openai";
@@ -21,7 +21,9 @@ export class OpenAIProvider implements GenerationProvider {
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const model = request.model?.model ?? DEFAULT_MODEL;
+        const model = request.model?.model ?? (
+          request.prompt.id === "final-qa" ? getEnv().OPENAI_FINAL_MODEL : getEnv().OPENAI_GENERATION_MODEL
+        );
         const completion = await this.client.chat.completions.parse({
           model,
           temperature: request.model?.temperature ?? 0,
@@ -38,8 +40,14 @@ export class OpenAIProvider implements GenerationProvider {
         const rawText = message?.content ?? "";
         const data = request.schema.parse(message?.parsed ?? JSON.parse(rawText));
         validateEvidenceIds(data, request.metadata?.allowedEvidenceIds);
+        validateResumeTechnologies(data, request.metadata?.allowedTechnologies);
         const inputTokens = completion.usage?.prompt_tokens ?? 0;
         const outputTokens = completion.usage?.completion_tokens ?? 0;
+        const latencyMs = Date.now() - started;
+        logger.info(
+          { promptId: request.prompt.id, model, provider: "openai", latencyMs, inputTokens, outputTokens },
+          "AI structured generation completed",
+        );
         return {
           data,
           rawText,
@@ -50,7 +58,7 @@ export class OpenAIProvider implements GenerationProvider {
             outputTokens,
             estimatedCostCents: (inputTokens * 0.000015) + (outputTokens * 0.00006),
           },
-          latencyMs: Date.now() - started,
+          latencyMs,
         };
       } catch (error) {
         lastError = error;
@@ -60,7 +68,9 @@ export class OpenAIProvider implements GenerationProvider {
   }
 
   async *streamText(request: StreamingGenerationRequest): AsyncIterable<StreamingGenerationEvent> {
-    const model = request.model?.model ?? DEFAULT_MODEL;
+    const model = request.model?.model ?? (
+      request.prompt.id === "final-qa" ? getEnv().OPENAI_FINAL_MODEL : getEnv().OPENAI_GENERATION_MODEL
+    );
     const stream = await this.client.chat.completions.create({
       model,
       stream: true,
@@ -72,21 +82,4 @@ export class OpenAIProvider implements GenerationProvider {
     }
     yield { type: "done", usage: { inputTokens: 0, outputTokens: 0, estimatedCostCents: 0 }, model: { provider: "openai", model } };
   }
-}
-
-function validateEvidenceIds(data: unknown, allowed: unknown): void {
-  if (!Array.isArray(allowed)) return;
-  const valid = new Set(allowed.filter((item): item is string => typeof item === "string"));
-  const inspect = (value: unknown, key = ""): void => {
-    if (Array.isArray(value)) {
-      if (/evidenceids?/i.test(key)) {
-        const invalid = value.filter((item) => typeof item === "string" && !valid.has(item));
-        if (invalid.length) throw new Error(`Unknown evidence IDs: ${invalid.join(", ")}`);
-      }
-      value.forEach((item) => inspect(item, key));
-    } else if (value && typeof value === "object") {
-      Object.entries(value).forEach(([childKey, child]) => inspect(child, childKey));
-    }
-  };
-  inspect(data);
 }

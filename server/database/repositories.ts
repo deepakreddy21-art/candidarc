@@ -181,6 +181,23 @@ export type ResearchRunRecord = {
   completedAt?: string;
 };
 
+export type MistakeMemoryRuleRecord = {
+  id: Id;
+  publicId: string;
+  tenantId: Id;
+  applicationId: Id;
+  originatingAudit: string;
+  affectedVersion: string;
+  category: string;
+  rule: string;
+  severity: string;
+  status: string;
+  userOverride: boolean;
+  appliedIn: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type WorkflowRunRecord = {
   id: Id;
   publicId: string;
@@ -288,6 +305,7 @@ export interface MemoryStoreLike {
   resumeVersions: Map<string, ResumeVersionRecord>;
   auditRuns: Map<string, AuditRunRecord>;
   auditFindings: Map<string, AuditFindingRecord>;
+  mistakeMemoryRules: Map<string, MistakeMemoryRuleRecord>;
   researchRuns: Map<string, ResearchRunRecord>;
   workflowRuns: Map<string, WorkflowRunRecord>;
   workflowEvents: WorkflowEventRecord[];
@@ -697,6 +715,8 @@ export class MemoryRepositories implements Repositories {
         if (existing) return existing;
         const record: ResumeVersionRecord = {
           ...version,
+          scoreBreakdown: structuredClone(version.scoreBreakdown),
+          sections: structuredClone(version.sections),
           createdAt: version.createdAt ?? nowIso(),
         };
         store.resumeVersions.set(record.id, record);
@@ -964,6 +984,7 @@ export function createEmptyMemoryStore(): MemoryStoreLike {
     resumeVersions: new Map(),
     auditRuns: new Map(),
     auditFindings: new Map(),
+    mistakeMemoryRules: new Map(),
     researchRuns: new Map(),
     workflowRuns: new Map(),
     workflowEvents: [],

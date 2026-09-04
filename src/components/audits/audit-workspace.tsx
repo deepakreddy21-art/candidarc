@@ -85,15 +85,20 @@ export function AuditWorkspace({
     toast.message(next ? "Rule overridden for this application" : "Rule re-activated");
   }
 
-  function regenerate() {
+  async function regenerate() {
     if (!active?.producesVersion) return;
     setRegenerating(true);
-    window.setTimeout(() => {
-      setRegenerating(false);
-      toast.success(`Generated ${active.producesVersion}`, {
-        description: `Accepted findings from ${active.reviewsVersion} applied.`,
+    try {
+      const result = await api.advanceAudit(applicationId);
+      toast.success(`Generation of V${result.targetVersion} started`, {
+        description: `Accepted findings from ${active.reviewsVersion} will be applied.`,
       });
-    }, 900);
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not advance audit");
+    } finally {
+      setRegenerating(false);
+    }
   }
 
   if (loading) {
@@ -140,7 +145,7 @@ export function AuditWorkspace({
                 size="sm"
                 className="ml-auto"
                 disabled={regenerating || !active.producesVersion}
-                onClick={regenerate}
+                onClick={() => void regenerate()}
               >
                 <RefreshCw className={cn(regenerating && "animate-spin")} />
                 {regenerating ? "Regenerating…" : `Generate ${active.producesVersion}`}
