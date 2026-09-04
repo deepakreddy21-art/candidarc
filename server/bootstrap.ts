@@ -327,6 +327,7 @@ async function buildRuntime(): Promise<Runtime> {
         payload: { source: "demo-seed" },
       });
     }
+  }
 
   const queue = await getQueueAdapter();
   const engine = new DbWorkflowEngine(repos.workflows, queue);
