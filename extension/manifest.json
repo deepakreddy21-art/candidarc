@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "CandidArc Application Copilot",
+  "version": "0.1.0",
+  "description": "Prepare and review applications on supported ATS pages.",
+  "permissions": ["activeTab", "storage"],
+  "optional_host_permissions": ["https://*.greenhouse.io/*", "https://jobs.lever.co/*", "https://jobs.ashbyhq.com/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" },
+  "content_scripts": [{ "matches": ["https://*.greenhouse.io/*", "https://jobs.lever.co/*", "https://jobs.ashbyhq.com/*"], "js": ["contracts.js", "content.js"] }]
+}

@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-ingress, namespace: candidarc }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-web-ingress, namespace: candidarc }
+spec:
+  podSelector: { matchLabels: { app: candidarc-web } }
+  policyTypes: [Ingress]
+  ingress: [{ ports: [{ protocol: TCP, port: 3000 }] }]

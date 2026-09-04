@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: document-worker, namespace: candidarc }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: document-worker } }
+  template:
+    metadata: { labels: { app: document-worker } }
+    spec:
+      containers:
+        - name: worker
+          image: candidarc/worker:latest
+          command: ["npm", "run", "worker"]
+          env: [{ name: WORKER_KIND, value: "document" }]
+          envFrom: [{ configMapRef: { name: candidarc-config } }, { secretRef: { name: candidarc-runtime } }]
+          resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } }

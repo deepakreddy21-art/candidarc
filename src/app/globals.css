@@ -1,0 +1,165 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-instrument), ui-serif, Georgia, serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-cyan: var(--cyan);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-destructive: var(--destructive);
+  --color-ring: var(--ring);
+
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+}
+
+:root {
+  --background: #f4f4f0;
+  --canvas: #fafaf7;
+  --surface: #ffffff;
+  --surface-2: #f1f1ec;
+  --foreground: #111318;
+  --foreground-secondary: #626873;
+  --foreground-muted: #8a9099;
+  --border: rgba(17, 19, 24, 0.09);
+  --border-strong: rgba(17, 19, 24, 0.16);
+  --accent: #5865f2;
+  --accent-hover: #4854dc;
+  --cyan: #20bfc6;
+  --success: #1fad76;
+  --warning: #e49a32;
+  --destructive: #e45f68;
+  --ring: #5865f2;
+  --shadow-sm: 0 1px 2px rgba(17, 19, 24, 0.04);
+  --shadow-md: 0 8px 24px rgba(17, 19, 24, 0.06);
+}
+
+.dark {
+  --background: #0d0f13;
+  --canvas: #12151b;
+  --surface: #171a21;
+  --surface-2: #1d212a;
+  --foreground: #f5f6f8;
+  --foreground-secondary: #a9afba;
+  --foreground-muted: #737b89;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --accent: #7b86ff;
+  --accent-hover: #929aff;
+  --cyan: #3dd8d4;
+  --success: #2ec48a;
+  --warning: #f0b14a;
+  --destructive: #f07178;
+  --ring: #7b86ff;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply scroll-smooth antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 28%, transparent);
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+}
+
+@layer utilities {
+  .arc-bg {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 10% -10%, color-mix(in oklab, var(--accent) 12%, transparent), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 0%, color-mix(in oklab, var(--cyan) 10%, transparent), transparent);
+  }
+
+  .arc-line {
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, var(--accent) 45%, transparent),
+      color-mix(in oklab, var(--cyan) 45%, transparent),
+      transparent
+    );
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      color-mix(in oklab, var(--foreground) 4%, transparent) 0%,
+      color-mix(in oklab, var(--foreground) 8%, transparent) 50%,
+      color-mix(in oklab, var(--foreground) 4%, transparent) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-shimmer {
+      animation: none;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes waveform {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}

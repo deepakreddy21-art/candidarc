@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: candidarc-config, namespace: candidarc }
+data:
+  NODE_ENV: production
+  CANDIDARC_DATA_MODE: postgres
+  COPILOT_AUTHORIZED_SUBMISSION: "false"

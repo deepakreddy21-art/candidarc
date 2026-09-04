@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ingestion-worker, namespace: candidarc }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ingestion-worker } }
+  template:
+    metadata: { labels: { app: ingestion-worker } }
+    spec:
+      containers:
+        - name: worker
+          image: candidarc/worker:latest
+          command: ["npm", "run", "worker"]
+          env: [{ name: WORKER_KIND, value: "ingestion" }]
+          envFrom: [{ configMapRef: { name: candidarc-config } }, { secretRef: { name: candidarc-runtime } }]
+          resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } }

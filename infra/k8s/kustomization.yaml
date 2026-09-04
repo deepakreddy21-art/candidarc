@@ -1,0 +1,12 @@
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - web-deployment.yaml
+  - worker-deployment.yaml
+  - ingestion-worker-deployment.yaml
+  - document-worker-deployment.yaml
+  - services.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
