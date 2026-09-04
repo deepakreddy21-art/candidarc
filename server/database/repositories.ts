@@ -66,6 +66,7 @@ export type ApplicationRecord = {
   jobDescriptionPublicId?: string;
   resumePublicId?: string;
   ownerUserId: Id;
+  candidateProfileId?: Id | null;
   metadata?: Record<string, unknown>;
   version: number;
   createdAt: string;
@@ -77,6 +78,8 @@ export type EvidenceRecord = {
   id: Id;
   publicId: string;
   tenantId: Id;
+  ownerUserId: Id | null;
+  candidateProfileId: Id | null;
   title: string;
   organization: string;
   situation: string;
@@ -394,7 +397,10 @@ export interface ApplicationRepository {
 }
 
 export interface EvidenceRepository {
-  list(tenantId: string): Promise<EvidenceRecord[]>;
+  list(
+    tenantId: string,
+    opts?: { ownerUserId?: string; applicationPublicId?: string },
+  ): Promise<EvidenceRecord[]>;
   getByPublicId(tenantId: string, publicId: string): Promise<EvidenceRecord | null>;
   getByPublicIdGlobal(publicId: string): Promise<EvidenceRecord | null>;
   create(item: Omit<EvidenceRecord, "createdAt" | "updatedAt" | "deletedAt" | "version"> & { version?: number }): Promise<EvidenceRecord>;
@@ -422,6 +428,7 @@ export interface AuditRepository {
     decision: FindingDecision,
     editedText?: string,
   ): Promise<AuditFindingRecord>;
+  updateRun(tenantId: string, publicId: string, patch: Partial<AuditRunRecord>): Promise<AuditRunRecord>;
   createRun(run: Omit<AuditRunRecord, "createdAt" | "updatedAt"> & { createdAt?: string }): Promise<AuditRunRecord>;
   createFindings(findings: Array<Omit<AuditFindingRecord, "id"> & { id?: string }>): Promise<AuditFindingRecord[]>;
 }
@@ -443,12 +450,15 @@ export interface WorkflowRepository {
   listByApplication(tenantId: string, applicationPublicId: string): Promise<WorkflowRunRecord[]>;
   /** Non-terminal runs that should be re-enqueued after a worker/process restart. */
   listIncomplete(limit?: number): Promise<WorkflowRunRecord[]>;
+  /** Compare-and-swap stage claim; returns null when stage mismatch or already claimed. */
+  claimStage(runId: string, expectedStage: WorkflowStage): Promise<WorkflowRunRecord | null>;
 }
 
 export interface UsageRepository {
   findByIdempotency(idempotencyKey: string): Promise<UsageLedgerRecord | null>;
   append(entry: Omit<UsageLedgerRecord, "id" | "publicId" | "createdAt"> & { id?: string; publicId?: string }): Promise<UsageLedgerRecord>;
   updateStatus(idempotencyKey: string, status: UsageLedgerRecord["status"]): Promise<UsageLedgerRecord>;
+  releaseReservedForWorkflowRun(workflowRunId: string): Promise<number>;
 }
 
 export interface FileRepository {
@@ -527,6 +537,27 @@ export type Repositories = {
 /* -------------------------------------------------------------------------- */
 /* Memory implementation                                                      */
 /* -------------------------------------------------------------------------- */
+
+const memoryClaimLocks = new Map<string, Promise<void>>();
+
+async function withMemoryClaimLock<T>(key: string, fn: () => Promise<T> | T): Promise<T> {
+  const previous = memoryClaimLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  memoryClaimLocks.set(
+    key,
+    previous.then(() => gate),
+  );
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (memoryClaimLocks.get(key) === gate) memoryClaimLocks.delete(key);
+  }
+}
 
 export class MemoryRepositories implements Repositories {
   readonly users: UserRepository;
@@ -700,8 +731,15 @@ export class MemoryRepositories implements Repositories {
     };
 
     this.evidence = {
-      async list(tenantId) {
-        return [...store.evidence.values()].filter((e) => e.tenantId === tenantId && !e.deletedAt);
+      async list(tenantId, opts) {
+        let items = [...store.evidence.values()].filter((e) => e.tenantId === tenantId && !e.deletedAt);
+        if (opts?.ownerUserId) {
+          items = items.filter((e) => e.ownerUserId === opts.ownerUserId);
+        }
+        if (opts?.applicationPublicId) {
+          items = items.filter((e) => !e.excludedFromApplicationIds.includes(opts.applicationPublicId!));
+        }
+        return items;
       },
       async getByPublicId(tenantId, publicId) {
         for (const e of store.evidence.values()) {
@@ -856,6 +894,19 @@ export class MemoryRepositories implements Repositories {
         store.auditRuns.set(record.id, record);
         return record;
       },
+      async updateRun(tenantId, publicId, patch) {
+        let existing: AuditRunRecord | null = null;
+        for (const run of store.auditRuns.values()) {
+          if (run.tenantId === tenantId && run.publicId === publicId) {
+            existing = run;
+            break;
+          }
+        }
+        if (!existing) throw new AppError("AUDIT_NOT_FOUND", "Audit run not found", 404);
+        const updated = { ...existing, ...patch, updatedAt: nowIso() };
+        store.auditRuns.set(existing.id, updated);
+        return updated;
+      },
       async createFindings(findings) {
         return findings.map((f) => {
           const record: AuditFindingRecord = { ...f, id: f.id ?? newId("af") };
@@ -953,6 +1004,33 @@ export class MemoryRepositories implements Repositories {
           .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
           .slice(0, limit);
       },
+      async claimStage(runId, expectedStage) {
+        return withMemoryClaimLock(`${runId}:${expectedStage}`, () => {
+          const claimKey = `claimed:${expectedStage}`;
+          const running = expectedStage.endsWith("_QUEUED")
+            ? (expectedStage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage)
+            : null;
+          const existing = store.workflowRuns.get(runId);
+          if (!existing) return null;
+          const stageOk = existing.stage === expectedStage || (running !== null && existing.stage === running);
+          if (!stageOk || existing.payload[claimKey]) return null;
+
+          let nextStage = existing.stage;
+          if (existing.stage === expectedStage && running) {
+            nextStage = running;
+          }
+
+          const updated: WorkflowRunRecord = {
+            ...existing,
+            stage: nextStage,
+            status: "running",
+            payload: { ...existing.payload, [claimKey]: nowIso() },
+            updatedAt: nowIso(),
+          };
+          store.workflowRuns.set(runId, updated);
+          return updated;
+        });
+      },
     };
 
     this.usage = {
@@ -987,6 +1065,17 @@ export class MemoryRepositories implements Repositories {
         const updated = { ...existing, status };
         store.usageLedger.set(existing.id, updated);
         return updated;
+      },
+      async releaseReservedForWorkflowRun(workflowRunId) {
+        let released = 0;
+        for (const entry of store.usageLedger.values()) {
+          if (entry.workflowRunId === workflowRunId && entry.status === "reserved") {
+            entry.status = "released";
+            store.usageLedger.set(entry.id, entry);
+            released += 1;
+          }
+        }
+        return released;
       },
     };
 

@@ -16,7 +16,7 @@ export async function GET(request: Request, { params }: Params) {
     if (format !== "pdf" && format !== "docx") throw new AppError("VALIDATION_ERROR", "format must be pdf or docx", 400);
     const { workflowId } = await params;
     const file = await (await getRuntime()).services.customerResumes.getDownload(ctx, workflowId, format);
-    return new Response(file.body, {
+    return new Response(new Uint8Array(file.body), {
       headers: {
         "content-type": file.contentType,
         "content-disposition": `attachment; filename="${file.filename.replace(/"/g, "")}"`,

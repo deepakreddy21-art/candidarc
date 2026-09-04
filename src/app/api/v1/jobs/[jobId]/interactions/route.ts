@@ -8,6 +8,8 @@ import { buildAuthContext } from "@server/http/context";
 import { requireUser } from "@server/auth/guards";
 import { jsonOk, jsonError } from "@server/http/response";
 import { z } from "zod";
+import { assertCsrf } from "@server/http/csrf";
+import { getRadarService } from "@server/http/feature-guards";
 
 const bodySchema = z.object({
   interactionType: z.enum([
@@ -29,6 +31,7 @@ type Params = { params: Promise<{ jobId: string }> };
 export async function POST(request: Request, { params }: Params) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
     requireUser(ctx);
@@ -37,7 +40,7 @@ export async function POST(request: Request, { params }: Params) {
     const body = await request.json();
     const { interactionType, metadata } = bodySchema.parse(body);
 
-    const result = await services.radar.recordInteraction(ctx, jobId, interactionType, metadata);
+    const result = await getRadarService(services.radar).recordInteraction(ctx, jobId, interactionType, metadata);
 
     return jsonOk(result);
   } catch (error) {

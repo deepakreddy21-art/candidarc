@@ -3,6 +3,8 @@ import { buildAuthContext } from "@server/http/context";
 import { jsonError, jsonOk } from "@server/http/response";
 import { requireUser } from "@server/auth/guards";
 import type { ApplicationMode } from "@server/copilot/types";
+import { assertCsrf } from "@server/http/csrf";
+import { getCopilotService } from "@server/http/feature-guards";
 
 type Params = { params: Promise<{ opportunityId: string }> };
 
@@ -14,7 +16,8 @@ export async function GET(request: Request, { params }: Params) {
     requestId = ctx.requestId;
     const user = requireUser(ctx);
     const runtime = await getRuntime();
-    const applicationPackage = runtime.services.copilot.getOrCreatePackage(
+    const copilot = getCopilotService(runtime.services.copilot);
+    const applicationPackage = copilot.getOrCreatePackage(
       ctx.activeTenantId ?? "demo",
       user.id,
       opportunityId,
@@ -28,6 +31,7 @@ export async function GET(request: Request, { params }: Params) {
 export async function POST(request: Request, { params }: Params) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const { opportunityId } = await params;
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
@@ -41,16 +45,17 @@ export async function POST(request: Request, { params }: Params) {
       approveAnswerId?: string;
     };
     const runtime = await getRuntime();
+    const copilot = getCopilotService(runtime.services.copilot);
     const tenantId = ctx.activeTenantId ?? "demo";
     if (body.approveAnswerId) {
-      runtime.services.copilot.approveAnswer(
+      copilot.approveAnswer(
         tenantId,
         user.id,
         body.approveAnswerId,
         opportunityId,
       );
     }
-    const applicationPackage = runtime.services.copilot.preparePackage(
+    const applicationPackage = copilot.preparePackage(
       tenantId,
       user.id,
       opportunityId,

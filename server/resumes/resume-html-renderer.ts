@@ -60,13 +60,19 @@ export function renderResumeDocumentHtml(doc: ResumeDocument, opts: { preview?: 
     @page { size: letter; margin: 0.55in 0.6in; }
     * { box-sizing: border-box; }
     body { margin: 0; background: ${opts.preview ? "#eef1f4" : "#fff"}; color: #111; font-family: "Segoe UI", Calibri, Arial, sans-serif; }
-    .${pageClass} {
+    .page.preview,
+    .page.print {
       width: 8.5in;
       min-height: 11in;
-      margin: ${opts.preview ? "0 auto" : "0"};
       padding: 0.55in 0.6in;
       background: #fff;
-      ${opts.preview ? "box-shadow: 0 8px 28px rgba(0,0,0,.12);" : ""}
+    }
+    .page.preview {
+      margin: 0 auto;
+      box-shadow: 0 8px 28px rgba(0,0,0,.12);
+    }
+    .page.print {
+      margin: 0;
     }
     header { border-bottom: 1px solid #ddd; padding-bottom: 10px; margin-bottom: 14px; }
     h1 { margin: 0; font-size: 22px; letter-spacing: 0.01em; }

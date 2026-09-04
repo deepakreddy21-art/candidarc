@@ -3,6 +3,7 @@ import { buildAuthContext } from "@server/http/context";
 import { jsonOk, jsonError } from "@server/http/response";
 import { requireUser } from "@server/auth/guards";
 import { toRadarJobView } from "@server/radar/mappers";
+import { getRadarService } from "@server/http/feature-guards";
 
 type Params = { params: Promise<{ jobId: string }> };
 
@@ -14,8 +15,8 @@ export async function GET(request: Request, { params }: Params) {
     requestId = ctx.requestId;
     requireUser(ctx);
     const runtime = await getRuntime();
-    const result = await runtime.services.radar.getJob(ctx, jobId);
-    const job = toRadarJobView(runtime.services.radar.catalog, {
+    const result = await getRadarService(runtime.services.radar).getJob(ctx, jobId);
+    const job = toRadarJobView(getRadarService(runtime.services.radar).catalog, {
       job: result.job,
       match: result.match,
     });

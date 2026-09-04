@@ -291,6 +291,8 @@ export function seedDemoAppsIntoMemory(
       id: newId("ev"),
       publicId: def.publicId,
       tenantId,
+      ownerUserId: userId,
+      candidateProfileId: null,
       title: def.title,
       organization: def.organization,
       situation: def.situation,

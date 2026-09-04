@@ -16,14 +16,19 @@ import {
   User,
 } from "lucide-react";
 import { useTheme } from "next-themes";
+import { isRadarFeatureEnabled } from "@/lib/app-mode";
 import { useUiStore } from "@/stores/ui";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 const commands = [
   { id: "new-resume", label: "Tailor a resume", href: "/app/resumes/new", icon: FileText },
   { id: "home", label: "Go to Home", href: "/app", icon: Home },
-  { id: "radar", label: "Find Jobs", href: "/app/radar", icon: Radar },
-  { id: "radar-search", label: "Search jobs", href: "/app/radar/search", icon: Search },
+  ...(isRadarFeatureEnabled()
+    ? [
+        { id: "radar", label: "Find Jobs", href: "/app/radar", icon: Radar },
+        { id: "radar-search", label: "Search jobs", href: "/app/radar/search", icon: Search },
+      ]
+    : []),
   { id: "applications", label: "My Applications", href: "/app/opportunities", icon: Briefcase },
   { id: "new-app", label: "New application", href: "/app/resumes/new", icon: Plus },
   { id: "profile", label: "Career Profile", href: "/app/settings/profile", icon: User },

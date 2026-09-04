@@ -104,6 +104,7 @@ export const verificationStatusEnum = pgEnum("verification_status", [
   "inferred",
   "unverified",
   "disputed",
+  "user_attested",
 ]);
 
 export const privacyLevelEnum = pgEnum("privacy_level", [
@@ -465,6 +466,10 @@ export const evidenceItems = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+    candidateProfileId: uuid("candidate_profile_id").references(() => candidateProfiles.id, {
+      onDelete: "set null",
+    }),
     title: text("title").notNull(),
     organization: text("organization"),
     situation: text("situation"),
@@ -491,6 +496,7 @@ export const evidenceItems = pgTable(
   (t) => [
     uniqueIndex("evidence_items_public_id_uidx").on(t.publicId),
     index("evidence_items_tenant_idx").on(t.tenantId),
+    index("evidence_items_tenant_owner_idx").on(t.tenantId, t.ownerUserId),
   ],
 );
 

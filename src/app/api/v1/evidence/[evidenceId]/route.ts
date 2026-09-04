@@ -3,6 +3,7 @@ import { buildAuthContext } from "@server/http/context";
 import { jsonOk, jsonError, parseJsonBody } from "@server/http/response";
 import { requireUser, requireEvidenceAccess } from "@server/auth/guards";
 import { updateEvidenceRequestSchema } from "@server/contracts/api";
+import { assertCsrf } from "@server/http/csrf";
 
 type Params = { params: Promise<{ evidenceId: string }> };
 
@@ -25,6 +26,7 @@ export async function GET(request: Request, { params }: Params) {
 export async function PATCH(request: Request, { params }: Params) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const { evidenceId } = await params;
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;

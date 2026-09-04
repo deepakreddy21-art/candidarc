@@ -22,13 +22,20 @@ import type {
   WorkflowRunRecord,
 } from "../database/repositories";
 import { newId, nowIso } from "../database/repositories";
-import { AppError, type WorkflowStage } from "../domain/types";
+import { AppError, AUDIT_SEQUENCE, type WorkflowStage } from "../domain/types";
 import { logger } from "../observability/logger";
-import { assertAuditOrder } from "./stages";
+import { assertAuditOrder, stageMatchesJobClaim } from "./stages";
 import type { DurableWorkflowEngine } from "./engine";
 import { runDeterministicFinalQa } from "./final-qa";
 import type { QueueAdapter } from "./queues";
-import { claimableTechnologies, extractTechQuestions, type TechQuestion } from "../resumes/tech-questions";
+import { claimableTechnologies, extractTechQuestions, hasUnansweredTechQuestions, type TechQuestion } from "../resumes/tech-questions";
+import { computeCandidArcQualityScore } from "../resumes/quality-score";
+import {
+  applyJobExtractionToApplication,
+  extractJobFromText,
+  fetchJobDescriptionFromUrl,
+  isPlaceholderIdentity,
+} from "../resumes/job-extraction";
 
 export type ResumePipelineDeps = {
   engine: DurableWorkflowEngine;
@@ -104,62 +111,77 @@ export class ResumePipeline {
     });
   }
 
-  async handleStage(run: WorkflowRunRecord): Promise<void> {
-    // Always re-read — stale queue jobs must not run against an advanced workflow.
+  private async listScopedEvidence(run: WorkflowRunRecord) {
+    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    if (!application?.ownerUserId) {
+      throw new AppError("OWNER_REQUIRED", "Application owner is required for evidence-scoped workflow", 422);
+    }
+    const evidence = await this.deps.evidence.list(run.tenantId, {
+      ownerUserId: application.ownerUserId,
+      applicationPublicId: run.applicationPublicId,
+    });
+    return { application, evidence };
+  }
+
+  async handleStage(run: WorkflowRunRecord, claimedStage?: WorkflowStage): Promise<void> {
+    const expectedStage = claimedStage ?? run.stage;
     const latest = (await this.deps.workflows.getById(run.id)) ?? run;
-    if (latest.status === "cancelled") return;
-    const runningCounterpart = run.stage.endsWith("_QUEUED")
-      ? run.stage.replace(/_QUEUED$/, "_RUNNING")
-      : run.stage;
-    if (latest.stage !== run.stage && latest.stage !== runningCounterpart) {
+    if (latest.status === "cancelled" || latest.status === "failed") return;
+    if (!stageMatchesJobClaim(latest.stage, expectedStage)) {
       logger.info(
-        { workflowId: latest.publicId, expected: run.stage, actual: latest.stage },
+        { workflowId: latest.publicId, expected: expectedStage, actual: latest.stage },
         "skipping stale queue job",
       );
       return;
     }
 
-    switch (latest.stage) {
+    const claimed = await this.deps.workflows.claimStage(run.id, expectedStage);
+    if (!claimed) {
+      logger.info({ workflowId: latest.publicId, expected: expectedStage }, "stage already claimed");
+      return;
+    }
+
+    switch (claimed.stage) {
       case "RESEARCH_QUEUED":
       case "RESEARCH_RUNNING":
-        await this.runResearch(latest);
+        await this.runResearch(claimed);
         break;
       case "EVIDENCE_MATCHING_RUNNING":
-        await this.runEvidenceMatching(latest);
+        await this.runEvidenceMatching(claimed);
         break;
       case "V0_GENERATING":
-        await this.runResumeGeneration(latest, 0, "Initial generation");
+        await this.runResumeGeneration(claimed, 0, "Initial generation");
         break;
       case "HR_AUDIT_1_RUNNING":
-        await this.runAudit(latest, "hr-audit-1", 0, 1);
+        await this.runAudit(claimed, "hr-audit-1", 0, 1);
         break;
       case "V1_GENERATING":
-        await this.runResumeGeneration(latest, 1, "HR Audit 1");
+        await this.runResumeGeneration(claimed, 1, "HR Audit 1");
         break;
       case "EM_AUDIT_1_RUNNING":
-        await this.runAudit(latest, "em-audit-1", 1, 2);
+        await this.runAudit(claimed, "em-audit-1", 1, 2);
         break;
       case "V2_GENERATING":
-        await this.runResumeGeneration(latest, 2, "EM Audit 1");
+        await this.runResumeGeneration(claimed, 2, "EM Audit 1");
         break;
       case "HR_AUDIT_2_RUNNING":
-        await this.runAudit(latest, "hr-audit-2", 2, 3);
+        await this.runAudit(claimed, "hr-audit-2", 2, 3);
         break;
       case "V3_GENERATING":
-        await this.runResumeGeneration(latest, 3, "HR Audit 2");
+        await this.runResumeGeneration(claimed, 3, "HR Audit 2");
         break;
       case "EM_AUDIT_2_RUNNING":
-        await this.runAudit(latest, "em-audit-2", 3, 4);
+        await this.runAudit(claimed, "em-audit-2", 3, 4);
         break;
       case "V4_GENERATING":
         assertAuditOrder({ stage: "V4_GENERATING", reviewsVersion: 3, producesVersion: 4 });
-        await this.runResumeGeneration(latest, 4, "EM Audit 2");
+        await this.runResumeGeneration(claimed, 4, "EM Audit 2");
         break;
       case "FINAL_QA_RUNNING":
-        await this.runFinalQa(latest);
+        await this.runFinalQa(claimed);
         break;
       default:
-        logger.debug({ stage: latest.stage }, "pipeline no-op stage");
+        logger.debug({ stage: claimed.stage }, "pipeline no-op stage");
     }
   }
 
@@ -239,20 +261,85 @@ export class ResumePipeline {
       run = (await this.deps.engine.getStatus(run.tenantId, run.publicId))!;
     }
 
+    let application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    if (!application) throw new AppError("APPLICATION_NOT_FOUND", "Application required for research", 404);
+
+    if (!application.metadata?.jobExtractionAppliedAt) {
+      let jobDescription = typeof application.metadata?.jobDescription === "string"
+        ? application.metadata.jobDescription
+        : "";
+      const jobUrl = typeof application.metadata?.jobUrl === "string" ? application.metadata.jobUrl : undefined;
+      if (!jobDescription.trim() && jobUrl) {
+        try {
+          jobDescription = await fetchJobDescriptionFromUrl(jobUrl);
+        } catch (error) {
+          logger.warn({ jobUrl, error }, "job URL fetch failed during extraction");
+        }
+      }
+      if (jobDescription.trim()) {
+        const extraction = await extractJobFromText(jobDescription);
+        const applied = applyJobExtractionToApplication(application, extraction);
+        application = await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+          company: applied.company,
+          companyMark: applied.company.slice(0, 2).toUpperCase(),
+          role: applied.role,
+          location: applied.location,
+          employmentType: applied.employmentType,
+          metadata: {
+            ...applied.metadata,
+            jobDescription: jobDescription || application.metadata?.jobDescription,
+          },
+          ...(applied.needsIdentityReview
+            ? {
+                stage: "RESEARCH_REVIEW_REQUIRED",
+                workflowStage: "RESEARCH_REVIEW_REQUIRED",
+                status: "researching",
+                nextAction: "Confirm company and role",
+              }
+            : {}),
+        });
+        if (applied.needsIdentityReview) {
+          await this.deps.engine.transition(run.id, "RESEARCH_REVIEW_REQUIRED", {
+            status: "waiting_review",
+            message: "Company and role confirmation required before research continues",
+          });
+          return;
+        }
+      } else if (isPlaceholderIdentity(application.company, application.role)) {
+        application = await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+          stage: "RESEARCH_REVIEW_REQUIRED",
+          workflowStage: "RESEARCH_REVIEW_REQUIRED",
+          status: "researching",
+          nextAction: "Confirm company and role",
+        });
+        await this.deps.engine.transition(run.id, "RESEARCH_REVIEW_REQUIRED", {
+          status: "waiting_review",
+          message: "Company and role confirmation required before research continues",
+        });
+        return;
+      }
+    }
+
+    if (application.workflowStage === "RESEARCH_REVIEW_REQUIRED") {
+      return;
+    }
+
     const usageKey = await this.reserve(run, "research", 1);
     const provider = getProviderForRole("generation");
     const prompt = getPrompt("research-synthesis");
-    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
-    if (!application) throw new AppError("APPLICATION_NOT_FOUND", "Application required for research", 404);
     const jobDescription = typeof application.metadata?.jobDescription === "string"
       ? application.metadata.jobDescription
       : "";
     const jobUrl = typeof application.metadata?.jobUrl === "string" ? application.metadata.jobUrl : undefined;
+    const researchDepth = typeof application.metadata?.researchDepth === "string"
+      ? application.metadata.researchDepth
+      : "standard";
     const collectedSources = await collectResearchSources({
       company: application.company,
       role: application.role,
       jobUrl,
       jobDescription,
+      researchDepth,
     });
 
     const result = await provider.generateStructured({
@@ -269,14 +356,19 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       }),
       schema: researchSchema,
     });
-    const candidateEvidence = await this.deps.evidence.list(run.tenantId);
+    const candidateEvidence = (await this.listScopedEvidence(run)).evidence;
     const techQuestions = extractTechQuestions({
       jobDescription,
       researchFindings: result.data.findings,
       candidateTechnologies: candidateEvidence.flatMap((item) => item.technologies),
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-      metadata: { ...application.metadata, techQuestions, researchSourceCount: result.data.sources.length },
+      metadata: {
+        ...application.metadata,
+        techQuestions,
+        researchSourceCount: result.data.sources.length,
+        excludedTechnologies: [],
+      },
     });
     const collectedByUrl = new Map(collectedSources.map((source) => [source.url, source]));
     result.data.sources = result.data.sources
@@ -300,13 +392,24 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     if (existing && existing.status === "completed") {
       await this.commit(usageKey, String(result.usage.estimatedCostCents));
       await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
-        message: "Research already completed (idempotent)",
+        status: hasUnansweredTechQuestions(techQuestions) ? "waiting_review" : undefined,
+        message: hasUnansweredTechQuestions(techQuestions)
+          ? "Waiting for technology confirmation before evidence matching"
+          : "Research already completed (idempotent)",
       });
       await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
         stage: "RESEARCH_COMPLETED",
         workflowStage: "RESEARCH_COMPLETED",
         researchConfidence: result.data.overallConfidence,
         status: "evidence",
+        nextAction: hasUnansweredTechQuestions(techQuestions) ? "Confirm technologies" : "Match evidence",
+      });
+      if (hasUnansweredTechQuestions(techQuestions)) {
+        return;
+      }
+      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+        stage: "EVIDENCE_MATCHING_RUNNING",
+        workflowStage: "EVIDENCE_MATCHING_RUNNING",
         nextAction: "Match evidence",
       });
       await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_RUNNING", {
@@ -341,8 +444,12 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     }
 
     await this.commit(usageKey, String(result.usage.estimatedCostCents));
+    const waitingForTech = hasUnansweredTechQuestions(techQuestions);
     await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
-      message: "Research completed",
+      status: waitingForTech ? "waiting_review" : undefined,
+      message: waitingForTech
+        ? "Waiting for technology confirmation before evidence matching"
+        : "Research completed",
       patch: {
         provider: result.model.provider,
         model: result.model.model,
@@ -356,10 +463,20 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-      stage: "EVIDENCE_MATCHING_RUNNING",
-      workflowStage: "EVIDENCE_MATCHING_RUNNING",
+      stage: "RESEARCH_COMPLETED",
+      workflowStage: "RESEARCH_COMPLETED",
       researchConfidence: result.data.overallConfidence,
       status: "evidence",
+      nextAction: waitingForTech ? "Confirm technologies" : "Match evidence",
+    });
+
+    if (waitingForTech) {
+      return;
+    }
+
+    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+      stage: "EVIDENCE_MATCHING_RUNNING",
+      workflowStage: "EVIDENCE_MATCHING_RUNNING",
       nextAction: "Match evidence",
     });
     await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_RUNNING", {
@@ -373,7 +490,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const prompt = getPrompt("evidence-matching");
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
-    const evidence = await this.deps.evidence.list(run.tenantId);
+    const { evidence } = await this.listScopedEvidence(run);
     const result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
@@ -440,9 +557,15 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const usageKey = await this.reserve(run, "resume_generation", 1);
     const provider = getProviderForRole("generation");
     const prompt = getPrompt("resume-generation");
-    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    const { application, evidence } = await this.listScopedEvidence(run);
+    if (!evidence.length && versionNumber === 0) {
+      throw new AppError(
+        "PROFILE_EVIDENCE_REQUIRED",
+        "Cannot generate a resume without owned career evidence for this candidate.",
+        422,
+      );
+    }
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
-    const evidence = await this.deps.evidence.list(run.tenantId);
     const currentResume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
     const previousVersions = currentResume ? await this.deps.resumes.listVersions(run.tenantId, currentResume.publicId) : [];
     const previousVersion = previousVersions.find((version) => version.versionNumber === storedVersionNumber - 1);
@@ -593,7 +716,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const provider = getProviderForRole(promptId.startsWith("hr-") ? "hr-audit" : "em-audit");
     const prompt = getPrompt(promptId);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
-    const evidence = await this.deps.evidence.list(run.tenantId);
+    const { evidence } = await this.listScopedEvidence(run);
     const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
     if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume required for audit", 422);
     const versions = await this.deps.resumes.listVersions(run.tenantId, resume.publicId);
@@ -629,6 +752,26 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
     });
     await this.recordProviderUsage(run, usageKey, result);
+
+    const expectedRule = AUDIT_SEQUENCE.find((rule) => rule.stage === run.stage);
+    if (expectedRule && result.data.lens !== expectedRule.lens) {
+      logger.warn(
+        { expectedLens: expectedRule.lens, actualLens: result.data.lens, stage: run.stage },
+        "audit lens mismatch — skipping invalid audit output",
+      );
+      await this.commit(usageKey, String(result.usage.estimatedCostCents));
+      const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
+      await this.deps.engine.transition(run.id, nextStage, {
+        message: "Skipped audit with mismatched lens",
+      });
+      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+        stage: nextStage,
+        workflowStage: nextStage,
+        status: "resume",
+        nextAction: "Creating tailored resume",
+      });
+      return;
+    }
 
     const existingRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
     const already = existingRuns.find((r) => r.lens === result.data.lens && r.reviewsVersion === `V${storedReviewsVersion}`);
@@ -695,29 +838,16 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         evidence,
         attestedTechnologies,
       });
-      const adjudicated = adjudicateFindings(
+      const adjudicatedRaw = adjudicateFindings(
         findings.filter((finding) => finding.status === "open"),
         adjudicationCtx,
       );
-      const needsUser = adjudicated.filter((item) => item.adjudication === "needs_user");
-      if (needsUser.length) {
-        await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-          stage: reviewStage,
-          workflowStage: reviewStage,
-          status: "auditing",
-          nextAction: "Confirm factual audit items",
-          metadata: {
-            ...(application.metadata ?? {}),
-            pendingAdjudication: needsUser.map((item) => ({
-              findingPublicId: item.publicId,
-              reason: item.adjudicationReason,
-              title: item.title,
-            })),
-          },
-        });
-        // Pause only when factual evidence is genuinely required; do not auto-continue.
-        return;
-      }
+      const needsUser = adjudicatedRaw.filter((item) => item.adjudication === "needs_user");
+      const adjudicated = adjudicatedRaw.map((item) =>
+        item.adjudication === "needs_user"
+          ? { ...item, adjudication: "rejected" as const, adjudicationReason: item.adjudicationReason || "Factual claim needs evidence confirmation" }
+          : item,
+      );
 
       await Promise.all(
         adjudicated.map((finding) =>
@@ -746,6 +876,10 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           appliedIn: [`V${storedProducesVersion}`],
         });
       }
+      await this.deps.audits.updateRun(run.tenantId, latestAudit.publicId, {
+        status: "completed",
+        completedAt: nowIso(),
+      });
       const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
       await this.deps.engine.transition(run.id, nextStage, {
         message: "Customer audit applied after adjudication",
@@ -758,6 +892,11 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         metadata: {
           ...(application.metadata ?? {}),
           pendingAdjudication: [],
+          optionalEnhancements: needsUser.map((item) => ({
+            findingPublicId: item.publicId,
+            reason: item.adjudicationReason,
+            title: item.title,
+          })),
           lastAdjudication: adjudicated.map((item) => ({
             findingPublicId: item.publicId,
             decision: item.adjudication,
@@ -776,11 +915,21 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     if (!latest) throw new AppError("RESUME_VERSION_NOT_FOUND", "Resume version required for Final QA", 422);
     const auditRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
     const findings = (await Promise.all(auditRuns.map((audit) => this.deps.audits.listFindings(run.tenantId, audit.publicId)))).flat();
-    const evidence = await this.deps.evidence.list(run.tenantId);
+    const { evidence } = await this.listScopedEvidence(run);
+    const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
+    const attestedTechnologies = claimableTechnologies(
+      (application?.metadata?.techQuestions ?? []) as TechQuestion[],
+    );
+    const knownTechnologies = [...new Set([
+      ...evidence.flatMap((item) => item.technologies),
+      ...attestedTechnologies,
+    ])];
     const result = runDeterministicFinalQa({
       sections: latest.sections,
       unresolvedCriticalFindings: findings.filter((finding) => finding.severity === "critical" && finding.status === "open").length,
       knownEvidenceIds: evidence.map((item) => item.publicId),
+      knownTechnologies,
+      attestedTechnologies,
     });
 
     if (!result.passed) {
@@ -817,6 +966,20 @@ This is a supplement to deterministic checks. Do not claim deterministic or visu
       workflowStage: "FINAL_READY",
       status: "ready",
       nextAction: "Export resume",
+      metadata: {
+        ...(application?.metadata ?? {}),
+        qualityReport: computeCandidArcQualityScore({
+          sections: latest.sections as Array<Record<string, unknown>>,
+          jobRequirements: Array.isArray(application?.metadata?.jobRequirements)
+            ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+            : [],
+          knownTechnologies,
+          pageCount: result.estimatedPages,
+          aiRoleAlignment: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.jobAlignment ?? latest.score),
+          aiAtsReadability: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.atsCompatibility),
+        }),
+        knownTechnologies,
+      },
     });
     await this.deps.queue?.enqueue(
       "pdf-rendering",

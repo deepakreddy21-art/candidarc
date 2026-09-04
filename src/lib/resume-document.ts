@@ -90,7 +90,15 @@ export function buildResumeDocument(input: {
 
 export function resumeDocumentPlainText(doc: ResumeDocument): string {
   const lines: string[] = [doc.contact.name];
-  const contactLine = [doc.contact.headline, doc.contact.email, doc.contact.phone, doc.contact.location]
+  const contactLine = [
+    doc.contact.headline,
+    doc.contact.email,
+    doc.contact.phone,
+    doc.contact.location,
+    doc.contact.linkedIn,
+    doc.contact.github,
+    doc.contact.portfolio,
+  ]
     .filter(Boolean)
     .join(" · ");
   if (contactLine) lines.push(contactLine);

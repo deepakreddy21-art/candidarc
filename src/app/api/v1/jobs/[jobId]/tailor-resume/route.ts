@@ -11,6 +11,7 @@ import { buildAuthContext } from "@server/http/context";
 import { requireUser } from "@server/auth/guards";
 import { assertCsrf } from "@server/http/csrf";
 import { jsonOk, jsonError } from "@server/http/response";
+import { getRadarService } from "@server/http/feature-guards";
 
 type Params = { params: Promise<{ jobId: string }> };
 
@@ -24,7 +25,7 @@ export async function POST(request: Request, { params }: Params) {
     const { services } = await getRuntime();
     const { jobId } = await params;
 
-    const result = await services.radar.tailorResume(ctx, jobId);
+    const result = await getRadarService(services.radar).tailorResume(ctx, jobId);
 
     return jsonOk({
       workflowId: result.workflowId,

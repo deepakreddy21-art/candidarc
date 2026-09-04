@@ -1,7 +1,6 @@
 "use client";
 
 import { use, useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/feedback";
@@ -12,7 +11,7 @@ import { TechConfirmCard } from "@/components/resumes/tech-confirm-card";
 type WorkflowData = {
   workflowId: string;
   applicationId: string;
-  status: "queued" | "creating" | "completed" | "failed";
+  status: "queued" | "creating" | "completed" | "failed" | "needs_input";
   message: string;
   pipelineStage?: "understanding" | "tailoring" | "preparing";
   pipelineLabel?: string;
@@ -36,7 +35,6 @@ type WorkflowData = {
 
 export default function CustomerResumePage({ params }: { params: Promise<{ workflowId: string }> }) {
   const { workflowId } = use(params);
-  const router = useRouter();
   const [data, setData] = useState<WorkflowData>();
   const [error, setError] = useState<string>();
   const [retrying, setRetrying] = useState(false);
@@ -58,7 +56,7 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
   useEffect(() => {
     void load();
     const interval = window.setInterval(() => {
-      if (statusRef.current === "queued" || statusRef.current === "creating" || !statusRef.current) {
+      if (statusRef.current === "queued" || statusRef.current === "creating" || statusRef.current === "needs_input" || !statusRef.current) {
         void load();
       }
     }, 2000);
@@ -66,21 +64,18 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
   }, [load]);
 
   async function retry() {
-    const saved = sessionStorage.getItem(`resume-input:${workflowId}`);
-    if (!saved) return router.push("/app/resumes/new");
     setRetrying(true);
     try {
-      const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ?? "");
-      const response = await fetch("/api/v1/resumes/generate", {
+      const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "");
+      const response = await fetch(`/api/v1/resumes/workflows/${workflowId}/retry`, {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json", "x-csrf-token": csrf },
-        body: JSON.stringify({ ...JSON.parse(saved), idempotencyKey: crypto.randomUUID() }),
+        headers: { "x-csrf-token": csrf },
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error?.message ?? "Could not retry");
-      sessionStorage.setItem(`resume-input:${body.workflowId}`, saved);
-      router.replace(`/app/resumes/${body.workflowId}`);
+      statusRef.current = "queued";
+      await load();
     } catch (retryError) {
       toast.error(retryError instanceof Error ? retryError.message : "Could not retry");
     } finally {
@@ -89,12 +84,13 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
   }
 
   if (error && !data) return <ErrorState description={error} onRetry={() => void load()} />;
-  if (!data || data.status === "queued" || data.status === "creating") {
+  if (!data || data.status === "queued" || data.status === "creating" || data.status === "needs_input") {
     return (
       <CreatingState
         pipelineStage={data?.pipelineStage}
         pipelineLabel={data?.pipelineLabel ?? data?.message}
         elapsedMs={data?.elapsedMs}
+        needsInput={data?.status === "needs_input"}
       >
         {data?.techQuestions?.length ? <TechConfirmCard workflowId={workflowId} questions={data.techQuestions} /> : null}
       </CreatingState>

@@ -1,4 +1,4 @@
-import { getEnv } from "./config/env";
+import { getEnv, isFeatureCopilotEnabled, isFeatureRadarEnabled } from "./config/env";
 import {
   type ApplicationRecord,
   type AuditFindingRecord,
@@ -25,6 +25,8 @@ import { getStorage } from "./storage";
 import { DbWorkflowEngine } from "./workflows/engine";
 import { getQueueAdapter, type QueueAdapter } from "./workflows/queues";
 import { ResumePipeline } from "./workflows/resume-pipeline";
+import { handleWorkflowJobExhausted, type WorkflowJobPayload } from "./workflows/failure-handler";
+import { stageMatchesJobClaim } from "./workflows/stages";
 import { logger } from "./observability/logger";
 import type { WorkflowStage as BackendStage } from "./domain/types";
 import type {
@@ -45,7 +47,6 @@ import { registerRadarQueueHandlers } from "./radar/queues";
 import { CopilotService } from "./copilot/service";
 import { CustomerGenerateService } from "./modules/resumes/customer-generate";
 import { renderPdfAndDocx } from "./resumes/document-renderer";
-import { promises as fs } from "fs";
 
 export type RuntimeServices = {
   applications: ApplicationsService;
@@ -58,8 +59,8 @@ export type RuntimeServices = {
   files: FilesService;
   profile: ProfileService;
   resumeImport: ResumeImportService;
-  radar: RadarService;
-  copilot: CopilotService;
+  radar: RadarService | null;
+  copilot: CopilotService | null;
   customerResumes: CustomerGenerateService;
 };
 
@@ -309,13 +310,13 @@ async function buildRuntime(): Promise<Runtime> {
   const engine = new DbWorkflowEngine(repos.workflows, queue);
   const pipeline = ResumePipeline.fromRepos(repos, engine, queue);
 
+  queue.onExhaustedRetries(async (job, error) => {
+    await handleWorkflowJobExhausted(repos, engine, job, error);
+  });
+
   for (const q of WORKFLOW_QUEUES) {
     queue.registerHandler(q, async (job) => {
-      const payload = job.payload as {
-        workflowRunId?: string;
-        tenantId?: string;
-        workflowPublicId?: string;
-      };
+      const payload = job.payload as WorkflowJobPayload;
       let run: WorkflowRunRecord | null = null;
       if (payload.workflowRunId) {
         run = await repos.workflows.getById(payload.workflowRunId);
@@ -326,12 +327,20 @@ async function buildRuntime(): Promise<Runtime> {
         logger.warn({ jobId: job.id, queue: q }, "workflow job missing run");
         return;
       }
-      await pipeline.handleStage(run);
+      if (payload.stage && !stageMatchesJobClaim(run.stage, payload.stage)) {
+        logger.info(
+          { workflowId: run.publicId, jobStage: payload.stage, runStage: run.stage, jobId: job.id },
+          "stale workflow job skipped",
+        );
+        return;
+      }
+      const claimedStage = payload.stage ?? run.stage;
+      await pipeline.handleStage(run, claimedStage);
     });
   }
 
   queue.registerHandler("pdf-rendering", async (job) => {
-    const payload = job.payload as { tenantId?: string; applicationId?: string; applicationPublicId?: string; versionId?: string; versionPublicId?: string };
+    const payload = job.payload as { tenantId?: string; applicationId?: string; applicationPublicId?: string; versionId?: string; versionPublicId?: string; ownerUserId?: string };
     const tenantId = payload.tenantId;
     const applicationPublicId = payload.applicationId ?? payload.applicationPublicId;
     const versionPublicId = payload.versionId ?? payload.versionPublicId;
@@ -348,8 +357,35 @@ async function buildRuntime(): Promise<Runtime> {
       company: app.company,
       tenantId,
       applicationId: app.publicId,
+      contact: {
+        name: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : undefined,
+        email: typeof app.metadata?.candidateEmail === "string" ? app.metadata.candidateEmail : undefined,
+        phone: typeof app.metadata?.candidatePhone === "string" ? app.metadata.candidatePhone : undefined,
+        location: typeof app.metadata?.candidateLocation === "string" ? app.metadata.candidateLocation : app.location,
+        linkedIn: typeof app.metadata?.candidateLinkedIn === "string" ? app.metadata.candidateLinkedIn : undefined,
+        github: typeof app.metadata?.candidateGithub === "string" ? app.metadata.candidateGithub : undefined,
+        portfolio: typeof app.metadata?.candidatePortfolio === "string" ? app.metadata.candidatePortfolio : undefined,
+      },
     });
-    const [pdfStat, docxStat] = await Promise.all([fs.stat(rendered.pdfPath), fs.stat(rendered.docxPath)]);
+    const ownerSegment = app.ownerUserId ?? payload.ownerUserId ?? "unknown";
+    const versionSegment = version.publicId;
+    const pdfStorageKey = `generated/${ownerSegment}/${applicationPublicId}/${versionSegment}/resume.pdf`;
+    const docxStorageKey = `generated/${ownerSegment}/${applicationPublicId}/${versionSegment}/resume.docx`;
+    const storage = getStorage();
+    await Promise.all([
+      storage.putObject({
+        tenantId,
+        key: pdfStorageKey,
+        body: rendered.pdfBuffer,
+        contentType: "application/pdf",
+      }),
+      storage.putObject({
+        tenantId,
+        key: docxStorageKey,
+        body: rendered.docxBuffer,
+        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }),
+    ]);
     await Promise.all([
       repos.files.create({
         id: newId("sf"),
@@ -357,9 +393,9 @@ async function buildRuntime(): Promise<Runtime> {
         tenantId,
         ownerUserId: app.ownerUserId,
         purpose: "customer-resume-pdf",
-        storageKey: rendered.pdfPath,
+        storageKey: pdfStorageKey,
         mimeType: "application/pdf",
-        size: pdfStat.size,
+        size: rendered.pdfBuffer.byteLength,
         scanStatus: "clean",
         retentionState: "active",
       }),
@@ -369,9 +405,9 @@ async function buildRuntime(): Promise<Runtime> {
         tenantId,
         ownerUserId: app.ownerUserId,
         purpose: "customer-resume-docx",
-        storageKey: rendered.docxPath,
+        storageKey: docxStorageKey,
         mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        size: docxStat.size,
+        size: rendered.docxBuffer.byteLength,
         scanStatus: "clean",
         retentionState: "active",
       }),
@@ -384,7 +420,13 @@ async function buildRuntime(): Promise<Runtime> {
       nextAction: "Download resume",
       metadata: {
         ...app.metadata,
-        customerFiles: rendered,
+        customerFiles: {
+          pdfFileId: rendered.pdfFileId,
+          docxFileId: rendered.docxFileId,
+          pdfStorageKey,
+          docxStorageKey,
+          pageCount: rendered.pageCount,
+        },
         customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
       },
     });
@@ -411,17 +453,19 @@ async function buildRuntime(): Promise<Runtime> {
   const profile = ProfileService.fromRepos(repos);
   const resumeImport = ResumeImportService.fromRepos(repos, storage, queue);
   const applications = ApplicationsService.fromRepos(repos, engine);
-  const customerResumes = new CustomerGenerateService(repos, engine);
-  // PRODUCTION: Never auto-seed. Catalog stays empty until jobs are ingested.
-  // DEMO: Seed demo catalog with fixtures.
-  if (env.APP_MODE === "demo") {
-    seedDemoCatalog();
+  const customerResumes = new CustomerGenerateService(repos, engine, storage);
+  let radar: RadarService | null = null;
+  if (isFeatureRadarEnabled(env)) {
+    if (env.APP_MODE === "demo") {
+      seedDemoCatalog();
+    }
+    radar = RadarService.create(applications, repos, customerResumes);
+    registerRadarQueueHandlers(queue, radar.catalog, radar.index);
+    void queue.enqueue("job-indexing", "radar-reindex", { reason: "bootstrap" });
+    void queue.enqueue("job-alerting", "radar-alerts-sweep", { reason: "bootstrap" });
   }
-  const radar = RadarService.create(applications, repos, customerResumes);
-  registerRadarQueueHandlers(queue, radar.catalog, radar.index);
-  // Light indexing + alert evaluation on boot
-  void queue.enqueue("job-indexing", "radar-reindex", { reason: "bootstrap" });
-  void queue.enqueue("job-alerting", "radar-alerts-sweep", { reason: "bootstrap" });
+
+  const copilot = isFeatureCopilotEnabled(env) ? new CopilotService() : null;
 
   const services: RuntimeServices = {
     applications,
@@ -435,7 +479,7 @@ async function buildRuntime(): Promise<Runtime> {
     profile,
     resumeImport,
     radar,
-    copilot: new CopilotService(),
+    copilot,
     customerResumes,
   };
 

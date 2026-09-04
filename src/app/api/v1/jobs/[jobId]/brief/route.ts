@@ -7,6 +7,7 @@ import { getRuntime } from "@server/bootstrap";
 import { buildAuthContext } from "@server/http/context";
 import { requireUser } from "@server/auth/guards";
 import { jsonOk, jsonError } from "@server/http/response";
+import { getRadarService } from "@server/http/feature-guards";
 
 type Params = { params: Promise<{ jobId: string }> };
 
@@ -19,7 +20,7 @@ export async function GET(request: Request, { params }: Params) {
     const { services } = await getRuntime();
     const { jobId } = await params;
 
-    const brief = await services.radar.getOpportunityBrief(ctx, jobId);
+    const brief = await getRadarService(services.radar).getOpportunityBrief(ctx, jobId);
 
     return jsonOk(brief);
   } catch (error) {

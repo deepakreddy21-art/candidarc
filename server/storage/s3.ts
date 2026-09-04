@@ -155,8 +155,9 @@ export class S3ObjectStorage implements ObjectStorage {
     return { url, expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString() };
   }
 
-  async resolveSignedUrl(tokenizedPath: string) {
+  async resolveSignedUrl(tokenizedPath: string, requestMethod?: string) {
     void tokenizedPath;
+    void requestMethod;
     return null;
   }
 }

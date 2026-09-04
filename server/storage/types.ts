@@ -27,5 +27,5 @@ export interface ObjectStorage {
   headObject(tenantId: string, key: string): Promise<ObjectMeta | null>;
   getSignedUploadUrl(tenantId: string, key: string, opts?: SignedUrlOptions): Promise<{ url: string; expiresAt: string }>;
   getSignedDownloadUrl(tenantId: string, key: string, opts?: SignedUrlOptions): Promise<{ url: string; expiresAt: string }>;
-  resolveSignedUrl(tokenizedPath: string): Promise<{ tenantId: string; key: string } | null>;
+  resolveSignedUrl(tokenizedPath: string, requestMethod?: string): Promise<{ tenantId: string; key: string; method: "GET" | "PUT" } | null>;
 }

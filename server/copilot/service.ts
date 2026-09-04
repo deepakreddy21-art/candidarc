@@ -8,6 +8,7 @@ import {
   type ApplicationReceipt,
   type ReusableAnswer,
 } from "./types";
+import { isDemoMode } from "../config/env";
 
 type PackageOptions = {
   mode?: ApplicationMode;
@@ -36,6 +37,35 @@ function freezePackage(value: ApplicationPackage): ApplicationPackage {
   return Object.freeze(value);
 }
 
+function demoSeedAnswers(now: string): ReusableAnswer[] {
+  const seed = [
+    ["full_name", "Full name", "Demo Candidate", "profile"],
+    ["preferred_name", "Preferred name", "Demo", "profile"],
+    ["email", "Email", "candidate@example.com", "profile"],
+    ["phone", "Phone", "+1 (555) 555-0100", "profile"],
+    ["location", "Location", "United States", "profile"],
+    ["work_authorization", "Authorized to work in the United States", true, "user"],
+    ["sponsorship", "Requires employer sponsorship", false, "user"],
+  ] as const;
+  return seed.map(([intent, label, answer, source]) => {
+    const sensitive = isSensitiveIntent(intent);
+    return {
+      id: `answer_${intent}`,
+      tenantId: "demo",
+      userId: "demo",
+      intent,
+      label,
+      answer,
+      confidence: classifyFieldConfidence(intent, answer),
+      source,
+      sensitive,
+      requiresApproval: sensitive,
+      approvedForOpportunityIds: [],
+      updatedAt: now,
+    };
+  });
+}
+
 export class CopilotService {
   private readonly answers = new Map<string, ReusableAnswer>();
   private readonly packages = new Map<string, ApplicationPackage>();
@@ -45,33 +75,11 @@ export class CopilotService {
   private readonly appliedOpportunities = new Set<string>();
 
   constructor() {
-    const now = new Date().toISOString();
-    const seed = [
-      ["full_name", "Full name", "Deepak Reddy Kilaru", "profile"],
-      ["preferred_name", "Preferred name", "Deepak", "profile"],
-      ["email", "Email", "deepak.kilaru@email.com", "profile"],
-      ["phone", "Phone", "+1 (415) 555-0142", "profile"],
-      ["location", "Location", "United States", "profile"],
-      ["work_authorization", "Authorized to work in the United States", true, "user"],
-      ["sponsorship", "Requires employer sponsorship", false, "user"],
-    ] as const;
-    for (const [intent, label, answer, source] of seed) {
-      const sensitive = isSensitiveIntent(intent);
-      const record: ReusableAnswer = {
-        id: `answer_${intent}`,
-        tenantId: "demo",
-        userId: "demo",
-        intent,
-        label,
-        answer,
-        confidence: classifyFieldConfidence(intent, answer),
-        source,
-        sensitive,
-        requiresApproval: sensitive,
-        approvedForOpportunityIds: [],
-        updatedAt: now,
-      };
-      this.answers.set(record.id, record);
+    if (isDemoMode()) {
+      const now = new Date().toISOString();
+      for (const record of demoSeedAnswers(now)) {
+        this.answers.set(record.id, record);
+      }
     }
   }
 
@@ -137,9 +145,9 @@ export class CopilotService {
       opportunityId,
       mode,
       state: SubmissionState.PREPARED,
-      company: opts.company ?? "Cisco",
-      role: opts.role ?? "CX AI Software Engineer",
-      resumeId: opts.resumeId ?? "resume-cisco",
+      company: opts.company ?? "Target company",
+      role: opts.role ?? "Target role",
+      resumeId: opts.resumeId ?? "",
       answers: selected,
       unresolvedIntents,
       duplicateWarning,

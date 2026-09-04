@@ -14,8 +14,13 @@ import {
   extractTechQuestions,
   type TechQuestion,
 } from "../../server/resumes/tech-questions";
+import { getStorage } from "../../server/storage";
 import { DbWorkflowEngine } from "../../server/workflows/engine";
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
+
+function makeService(repos: Repositories) {
+  return new CustomerGenerateService(repos, new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter()), getStorage());
+}
 
 function context(userId: string, tenantId: string, repos: Repositories): AuthContext {
   return {
@@ -27,11 +32,35 @@ function context(userId: string, tenantId: string, repos: Repositories): AuthCon
   };
 }
 
+async function seedOwnedEvidence(repos: Repositories, tenantId: string, userId: string) {
+  await repos.evidence.create({
+    id: newId("ev"),
+    publicId: newId("evp"),
+    tenantId,
+    ownerUserId: userId,
+    candidateProfileId: null,
+    title: "Platform delivery",
+    organization: "Acme",
+    situation: "Scaled API platform",
+    task: "Improve reliability",
+    actions: ["Added caching"],
+    result: "Reduced incidents",
+    technologies: ["TypeScript"],
+    confidence: "high",
+    verificationStatus: "user_attested",
+    privacyLevel: "share-safe",
+    excludedFromApplicationIds: [],
+    matchedApplicationIds: [],
+    payload: {},
+  });
+}
+
 describe("customer resume generation", () => {
   it("is idempotent so double-submit does not create duplicate workflows", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
-    const service = new CustomerGenerateService(repos, new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter()));
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
     const ctx = context(userId, tenantId, repos);
     const input = { jobDescription: "Build production systems using TypeScript and React.", idempotencyKey: "same-request-key" };
     const first = await service.generate(ctx, input);
@@ -44,7 +73,8 @@ describe("customer resume generation", () => {
   it("restores an existing workflow after reload without depending on the browser", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
-    const service = new CustomerGenerateService(repos, new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter()));
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
     const ctx = context(userId, tenantId, repos);
     const created = await service.generate(ctx, {
       jobDescription: "Senior engineer role requiring distributed systems experience and careful delivery.",
@@ -97,15 +127,16 @@ describe("customer resume generation", () => {
     expect(attested[0]?.evidenceStatus).toBe("user_attested");
     expect(claimableTechnologies(attested)).toEqual([researched[0]!.technology]);
 
-    const yesWithoutEvidence = applyTechAnswers(researched, [{ id: researched[0]!.id, answer: "yes_professional" as const }]);
-    expect(yesWithoutEvidence[0]?.evidenceStatus).toBe("user_attested");
-    expect(claimableTechnologies(yesWithoutEvidence)).toEqual([]);
+    const yesWithoutEvidence = () =>
+      applyTechAnswers(researched, [{ id: researched[0]!.id, answer: "yes_professional" as const }]);
+    expect(yesWithoutEvidence).toThrow(/Evidence is required/);
   });
 
   it("ignoring optional tech questions does not block generation start", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
-    const service = new CustomerGenerateService(repos, new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter()));
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
     const ctx = context(userId, tenantId, repos);
     const created = await service.generate(ctx, {
       jobDescription: "Role using Kubernetes and Redis for platform reliability work.",
@@ -119,8 +150,8 @@ describe("customer resume generation", () => {
   it("late evidence marks enhancement available without overwriting prior versions", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
-    const engine = new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter());
-    const service = new CustomerGenerateService(repos, engine);
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
     const ctx = context(userId, tenantId, repos);
     const generated = await service.generate(ctx, {
       jobDescription: "Platform role using Kubernetes and Redis.",
@@ -137,7 +168,7 @@ describe("customer resume generation", () => {
       metadata: {
         ...app!.metadata,
         techQuestions: questions,
-        customerFiles: { pdfPath: "x.pdf", docxPath: "x.docx" },
+        customerFiles: { pdfStorageKey: "generated/x/y/resume.pdf", docxStorageKey: "generated/x/y/resume.docx" },
         customerFinalVersions: ["rv-final-1"],
       },
     });
@@ -162,8 +193,8 @@ describe("customer resume generation", () => {
   it("refinement preserves old versions and allocates a new pipeline cycle", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
-    const engine = new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter());
-    const service = new CustomerGenerateService(repos, engine);
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
     const ctx = context(userId, tenantId, repos);
     const generated = await service.generate(ctx, { jobDescription: "A sufficiently detailed engineering job description.", idempotencyKey: "refine-original" });
     const app = await repos.applications.getByPublicId(tenantId, generated.applicationId);
@@ -178,9 +209,8 @@ describe("customer resume generation", () => {
   it("worker restart re-enqueues unfinished workflows safely", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
-    const queue = new InProcessQueueAdapter();
-    const engine = new DbWorkflowEngine(repos.workflows, queue);
-    const service = new CustomerGenerateService(repos, engine);
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
     const ctx = context(userId, tenantId, repos);
     const created = await service.generate(ctx, {
       jobDescription: "Durable generation must survive worker restarts.",

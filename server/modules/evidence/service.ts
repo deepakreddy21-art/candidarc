@@ -19,7 +19,8 @@ export class EvidenceService {
   }
 
   async list(ctx: AuthContext) {
-    return this.evidence.list(this.tenantId(ctx));
+    const user = requireUser(ctx);
+    return this.evidence.list(this.tenantId(ctx), { ownerUserId: user.id });
   }
 
   async get(ctx: AuthContext, evidencePublicId: string) {
@@ -46,10 +47,13 @@ export class EvidenceService {
   ) {
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
+    const user = requireUser(ctx);
     return this.evidence.create({
       id: newId("ev"),
       publicId: newId("evp"),
       tenantId,
+      ownerUserId: user.id,
+      candidateProfileId: null,
       title: input.title,
       organization: input.organization,
       situation: input.situation,

@@ -109,7 +109,7 @@ export class LocalFilesystemStorage implements ObjectStorage {
     return this.sign(tenantId, key, { ...opts, method: "GET" });
   }
 
-  async resolveSignedUrl(tokenizedPath: string): Promise<{ tenantId: string; key: string } | null> {
+  async resolveSignedUrl(tokenizedPath: string, requestMethod?: string): Promise<{ tenantId: string; key: string; method: "GET" | "PUT" } | null> {
     try {
       const url = new URL(tokenizedPath, getEnv().APP_URL);
       const token = url.searchParams.get("token");
@@ -125,7 +125,12 @@ export class LocalFilesystemStorage implements ObjectStorage {
         logger.debug({ exp: payload.exp }, "signed url expired");
         return null;
       }
-      return { tenantId: payload.tenantId, key: payload.key };
+      const method = payload.method ?? "GET";
+      if (requestMethod && requestMethod.toUpperCase() !== method) {
+        logger.debug({ requestMethod, signedMethod: method }, "signed url method mismatch");
+        return null;
+      }
+      return { tenantId: payload.tenantId, key: payload.key, method };
     } catch (err) {
       logger.debug({ err }, "signed url resolve failed");
       return null;

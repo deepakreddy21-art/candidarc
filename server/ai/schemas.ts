@@ -2,6 +2,21 @@ import { z } from "zod";
 
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 
+export const jobExtractionSchema = z.object({
+  title: z.string().optional(),
+  company: z.string().optional(),
+  role: z.string().optional(),
+  location: z.string().optional(),
+  employmentType: z.string().optional(),
+  seniority: z.string().optional(),
+  requiredQualifications: z.array(z.string()).default([]),
+  preferredQualifications: z.array(z.string()).default([]),
+  responsibilities: z.array(z.string()).default([]),
+  targetTechnologies: z.array(z.string()).default([]),
+});
+
+export type JobExtractionOutput = z.infer<typeof jobExtractionSchema>;
+
 export const researchSourceSchema = z.object({
   id: z.string(),
   url: z.string().url(),

@@ -5,9 +5,10 @@ config({ path: resolve(process.cwd(), ".env") });
 config({ path: resolve(process.cwd(), ".env.local") });
 
 async function main() {
-  const { getEnv } = await import("../config/env");
+  const { getEnv, assertRuntimeEnv } = await import("../config/env");
   const { BullMqQueueAdapter, setQueueAdapter } = await import("../workflows/queues");
   const env = getEnv();
+  assertRuntimeEnv(env);
   if (env.QUEUE_BACKEND === "redis" && env.WORKER_KIND !== "all") {
     const groups = {
       general: ["research", "evidence-matching", "resume-generation", "resume-audit", "notifications", "maintenance", "job-matching", "job-alerting", "job-expiration"],

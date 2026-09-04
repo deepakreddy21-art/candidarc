@@ -1,5 +1,3 @@
-import { promises as fs } from "fs";
-import path from "path";
 import {
   Document,
   ExternalHyperlink,
@@ -9,7 +7,6 @@ import {
   TextRun,
 } from "docx";
 import { chromium } from "playwright";
-import { getEnv } from "../config/env";
 import { newId } from "../database/repositories";
 import type { ResumeDocument, ResumeDocumentSection } from "@/types/resume-document";
 import {
@@ -170,10 +167,6 @@ export async function renderPdfAndDocx(input: {
 
   const pdfFileId = newId("file_pdf");
   const docxFileId = newId("file_docx");
-  const directory = path.join(getEnv().STORAGE_LOCAL_PATH, input.tenantId ?? "customer", "resumes", input.applicationId ?? input.resumeVersion.publicId);
-  await fs.mkdir(directory, { recursive: true });
-  const pdfPath = path.join(directory, `${pdfFileId}.pdf`);
-  const docxPath = path.join(directory, `${docxFileId}.docx`);
 
   const [pdfBuffer, docxBuffer] = await Promise.all([
     renderPdfFromDocument(document),
@@ -185,13 +178,14 @@ export async function renderPdfAndDocx(input: {
     throw new Error(`PDF content verification failed: missing ${verification.missing.join(", ")}`);
   }
 
-  await Promise.all([fs.writeFile(pdfPath, pdfBuffer), fs.writeFile(docxPath, docxBuffer)]);
+  const pageCount = layout.pageCountEstimate;
 
   return {
+    pdfBuffer,
+    docxBuffer,
     pdfFileId,
     docxFileId,
-    pdfPath,
-    docxPath,
+    pageCount,
     document,
     layout,
     plainText: resumeDocumentPlainText(document),

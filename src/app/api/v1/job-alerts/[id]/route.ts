@@ -4,12 +4,15 @@ import { jsonOk, jsonError, parseJsonBody } from "@server/http/response";
 import { requireUser } from "@server/auth/guards";
 import { jobAlertPatchSchema } from "@server/radar/http";
 import { toAlertView } from "@server/radar/mappers";
+import { assertCsrf } from "@server/http/csrf";
+import { getRadarService } from "@server/http/feature-guards";
 
 type Params = { params: Promise<{ id: string }> };
 
 export async function PATCH(request: Request, { params }: Params) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const { id } = await params;
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
@@ -17,7 +20,7 @@ export async function PATCH(request: Request, { params }: Params) {
     const body = await parseJsonBody(request, jobAlertPatchSchema);
     const runtime = await getRuntime();
     const alert = toAlertView(
-      runtime.services.radar.updateAlert(ctx, id, {
+      getRadarService(runtime.services.radar).updateAlert(ctx, id, {
         name: body.name,
         query: body.query,
         cadence: body.cadence,
@@ -35,12 +38,13 @@ export async function PATCH(request: Request, { params }: Params) {
 export async function DELETE(request: Request, { params }: Params) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const { id } = await params;
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
     requireUser(ctx);
     const runtime = await getRuntime();
-    const result = runtime.services.radar.deleteAlert(ctx, id);
+    const result = getRadarService(runtime.services.radar).deleteAlert(ctx, id);
     return jsonOk(result);
   } catch (err) {
     return jsonError(err, requestId || undefined);

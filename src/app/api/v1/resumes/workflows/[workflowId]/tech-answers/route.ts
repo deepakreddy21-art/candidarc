@@ -16,7 +16,14 @@ export async function POST(request: Request, { params }: Params) {
       requireUser(ctx);
       const { workflowId } = await params;
       const input = await parseJsonBody(request, techAnswersInputSchema);
-      return jsonOk(await (await getRuntime()).services.customerResumes.submitTechAnswers(ctx, workflowId, input.answers));
+      return jsonOk(
+        await (await getRuntime()).services.customerResumes.submitTechAnswers(
+          ctx,
+          workflowId,
+          input.answers,
+          { skip: input.skip },
+        ),
+      );
     });
   } catch (error) {
     return jsonError(error, requestId || undefined);

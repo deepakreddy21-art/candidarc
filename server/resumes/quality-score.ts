@@ -85,10 +85,13 @@ export function computeCandidArcQualityScore(input: {
   const bullets = bulletsFromSections(input.sections);
   const allText = bullets.join("\n");
   const requirements = (input.jobRequirements ?? []).map((r) => r.toLowerCase());
+  const hasRequirements = requirements.length > 0;
   const tech = new Set((input.knownTechnologies ?? []).map((t) => t.toLowerCase()));
 
-  const covered = requirements.filter((req) => allText.toLowerCase().includes(req)).length;
-  const coverage = requirements.length ? Math.round((covered / requirements.length) * 100) : 100;
+  const covered = hasRequirements
+    ? requirements.filter((req) => allText.toLowerCase().includes(req)).length
+    : 0;
+  const coverage = hasRequirements ? Math.round((covered / requirements.length) * 100) : 0;
 
   let verifiedClaimCount = 0;
   let unsupportedClaimCount = 0;
@@ -143,7 +146,17 @@ export function computeCandidArcQualityScore(input: {
     input.preferredLength === "two-page" ? pageCount <= 2 : pageCount <= 1 || bullets.length <= 18;
 
   const checks: QualityCheck[] = [
-    check("job_coverage", "Job-requirement coverage", true, coverage >= 60, coverage, `${covered}/${requirements.length || 0} requirements reflected`),
+    hasRequirements
+      ? check("job_coverage", "Job-requirement coverage", true, coverage >= 60, coverage, `${covered}/${requirements.length} requirements reflected`)
+      : {
+          id: "job_coverage",
+          label: "Job-requirement coverage",
+          kind: "verified" as const,
+          passed: true,
+          detail: "Not evaluated — no job requirements supplied",
+          weight: 0,
+          score: 0,
+        },
     check("verified_claims", "Verified-claim percentage", true, verifiedPct >= 70, verifiedPct, `${verifiedClaimCount} verified / ${unsupportedClaimCount} unsupported`),
     check("unsupported", "Unsupported claims", true, unsupportedClaimCount === 0, unsupportedClaimCount === 0 ? 100 : Math.max(0, 100 - unsupportedClaimCount * 15), unsupportedClaimCount === 0 ? "None detected" : `${unsupportedClaimCount} unsupported claim(s)`),
     check("quantified", "Quantified-result coverage", true, quantifiedPct >= 40, quantifiedPct, `${quantifiedPct}% of bullets include numbers`),
@@ -183,9 +196,14 @@ export function computeCandidArcQualityScore(input: {
     });
   }
 
-  const verifiedChecks = checks.filter((c) => c.kind === "verified");
+  const verifiedChecks = checks.filter((c) => c.kind === "verified" && c.weight > 0);
   const weightSum = verifiedChecks.reduce((sum, c) => sum + c.weight, 0) || 1;
-  const score = Math.round(verifiedChecks.reduce((sum, c) => sum + c.score * c.weight, 0) / weightSum);
+  const score = verifiedChecks.length
+    ? Math.round(verifiedChecks.reduce((sum, c) => sum + c.score * c.weight, 0) / weightSum)
+    : Math.round(
+        checks.filter((c) => c.kind === "verified" && c.id !== "job_coverage").reduce((sum, c) => sum + c.score * c.weight, 0) /
+          (checks.filter((c) => c.kind === "verified" && c.id !== "job_coverage").reduce((sum, c) => sum + c.weight, 0) || 1),
+      );
 
   const passed = checks.filter((c) => c.passed).map((c) => c.label);
   const missing = checks.filter((c) => !c.passed).map((c) => `${c.label}: ${c.detail}`);

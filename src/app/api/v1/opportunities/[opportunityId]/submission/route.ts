@@ -2,12 +2,15 @@ import { getRuntime } from "@server/bootstrap";
 import { buildAuthContext } from "@server/http/context";
 import { jsonError, jsonOk } from "@server/http/response";
 import { requireUser } from "@server/auth/guards";
+import { assertCsrf } from "@server/http/csrf";
+import { getCopilotService } from "@server/http/feature-guards";
 
 type Params = { params: Promise<{ opportunityId: string }> };
 
 export async function POST(request: Request, { params }: Params) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const { opportunityId } = await params;
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
@@ -19,7 +22,7 @@ export async function POST(request: Request, { params }: Params) {
       confirmationUrl?: string;
       verificationEvidence?: string;
     };
-    const copilot = (await getRuntime()).services.copilot;
+    const copilot = getCopilotService((await getRuntime()).services.copilot);
     if (body.attemptId) {
       const receipt = copilot.confirmReceipt(body.attemptId, body);
       return jsonOk({ opportunityId, receipt });

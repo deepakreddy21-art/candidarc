@@ -86,6 +86,8 @@ describe("tenant security", () => {
       id: newId("ev"),
       publicId: "ev-secret",
       tenantId: newId("ten"),
+      ownerUserId: null,
+      candidateProfileId: null,
       title: "Secret",
       organization: "X",
       situation: "s",

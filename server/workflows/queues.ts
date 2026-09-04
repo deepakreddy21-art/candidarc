@@ -25,9 +25,12 @@ export type EnqueueOptions = {
 
 export type QueueHandler<T = unknown> = (job: QueueJob<T>) => Promise<void>;
 
+export type ExhaustedRetriesHandler = (job: QueueJob, error?: unknown) => Promise<void>;
+
 export interface QueueAdapter {
   enqueue<T>(queue: QueueName, name: string, payload: T, opts?: EnqueueOptions): Promise<QueueJob<T>>;
   registerHandler<T>(queue: QueueName, handler: QueueHandler<T>): void;
+  onExhaustedRetries(handler: ExhaustedRetriesHandler): void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -75,6 +78,7 @@ export class InProcessQueueAdapter implements QueueAdapter {
   private running = false;
   private config: Record<QueueName, QueueConcurrencyConfig>;
   private seq = 0;
+  private exhaustedHandler: ExhaustedRetriesHandler | null = null;
 
   constructor(config: Partial<Record<QueueName, Partial<QueueConcurrencyConfig>>> = {}) {
     this.config = { ...DEFAULT_QUEUE_CONFIG };
@@ -119,6 +123,10 @@ export class InProcessQueueAdapter implements QueueAdapter {
 
   registerHandler<T>(queue: QueueName, handler: QueueHandler<T>): void {
     this.handlers.set(queue, handler as QueueHandler);
+  }
+
+  onExhaustedRetries(handler: ExhaustedRetriesHandler): void {
+    this.exhaustedHandler = handler;
   }
 
   async start(): Promise<void> {
@@ -167,6 +175,13 @@ export class InProcessQueueAdapter implements QueueAdapter {
         list.push(job);
       } else {
         logger.error({ queue, jobId: job.id }, "queue job exhausted retries");
+        if (this.exhaustedHandler) {
+          try {
+            await this.exhaustedHandler(job, err);
+          } catch (hookErr) {
+            logger.error({ err: hookErr, queue, jobId: job.id }, "exhausted-retries hook failed");
+          }
+        }
       }
     } finally {
       this.inflight.set(queue, Math.max(0, (this.inflight.get(queue) ?? 1) - 1));
@@ -184,6 +199,7 @@ export class BullMqQueueAdapter implements QueueAdapter {
   private readonly handlers = new Map<QueueName, QueueHandler>();
   private readonly workers: Worker[] = [];
   private dlq: Queue | null = null;
+  private exhaustedHandler: ExhaustedRetriesHandler | null = null;
 
   constructor(private readonly consumeQueues: ReadonlySet<QueueName> = new Set(QUEUE_NAMES)) {
     this.connection = new IORedis(getEnv().REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true });
@@ -220,6 +236,10 @@ export class BullMqQueueAdapter implements QueueAdapter {
     this.handlers.set(queue, handler as QueueHandler);
   }
 
+  onExhaustedRetries(handler: ExhaustedRetriesHandler): void {
+    this.exhaustedHandler = handler;
+  }
+
   async start(): Promise<void> {
     if (this.workers.length) return;
     for (const [name, handler] of this.handlers) {
@@ -250,6 +270,21 @@ export class BullMqQueueAdapter implements QueueAdapter {
           this.dlq ??= new Queue("candidarc-dlq", { connection: this.connection });
           void this.dlq.add(job.name, { queue: name, payload: job.data, error: error.message, sourceJobId: job.id });
           logger.error({ queue: name, jobId: job.id, err: error }, "job moved to dead letter queue");
+          if (this.exhaustedHandler) {
+            const wrapped: QueueJob = {
+              id: job.id ?? deterministicJobId(name, String(job.timestamp)),
+              queue: name,
+              name: job.name,
+              payload: job.data,
+              attempt: job.attemptsMade,
+              maxAttempts: job.opts.attempts ?? cfg.maxAttempts,
+              availableAt: job.timestamp + (job.delay ?? 0),
+              createdAt: job.timestamp,
+            };
+            void this.exhaustedHandler(wrapped, error).catch((hookErr) => {
+              logger.error({ err: hookErr, queue: name, jobId: job.id }, "exhausted-retries hook failed");
+            });
+          }
         }
       });
       this.workers.push(worker);

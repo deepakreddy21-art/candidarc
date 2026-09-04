@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { AppError } from "../domain/types";
 
 export type TechAnswerKind = "yes_professional" | "yes_project" | "similar" | "no" | "not_sure";
 export type TechEvidenceStatus = "user_attested" | "source_verified" | "rejected" | "unanswered";
@@ -37,26 +38,48 @@ export function extractTechQuestions(input: {
     }));
 }
 
+export function validateTechAnswers(
+  answers: Array<{ id: string; answer: TechAnswerKind; evidence?: string }>,
+): void {
+  for (const answer of answers) {
+    if ((answer.answer === "yes_professional" || answer.answer === "yes_project") && !answer.evidence?.trim()) {
+      throw new AppError(
+        "TECH_EVIDENCE_REQUIRED",
+        `Evidence is required when confirming experience with technology answer ${answer.id}`,
+        422,
+      );
+    }
+  }
+}
+
 export function applyTechAnswers(
   questions: TechQuestion[],
   answers: Array<{ id: string; answer: TechAnswerKind; evidence?: string }>,
 ): TechQuestion[] {
+  validateTechAnswers(answers);
   const byId = new Map(answers.map((answer) => [answer.id, answer]));
   return questions.map((question) => {
     const answer = byId.get(question.id);
     if (!answer) return question;
     const isYes = answer.answer === "yes_professional" || answer.answer === "yes_project";
+    const evidence = answer.evidence?.trim() || undefined;
     return {
       ...question,
       answer: answer.answer,
-      evidence: answer.evidence?.trim() || undefined,
+      evidence,
       evidenceStatus: isYes
-        ? "user_attested"
-        : answer.answer === "no"
+        ? evidence
+          ? "user_attested"
+          : "unanswered"
+        : answer.answer === "no" || answer.answer === "similar" || answer.answer === "not_sure"
           ? "rejected"
           : "unanswered",
     };
   });
+}
+
+export function hasUnansweredTechQuestions(questions: TechQuestion[]): boolean {
+  return questions.some((question) => question.evidenceStatus === "unanswered" || !question.evidenceStatus);
 }
 
 /** Exact technologies are claimable only after an affirmative answer with concrete evidence. */
@@ -72,16 +95,35 @@ export function claimableTechnologies(questions: TechQuestion[]): string[] {
 
 /** Technologies that must never be presented as the candidate’s experience. */
 export function excludedTechnologies(questions: TechQuestion[]): string[] {
+  const claimable = new Set(claimableTechnologies(questions));
+  return questions
+    .filter((question) => {
+      if (claimable.has(question.technology)) return false;
+      if (!question.answer) return true;
+      if (question.answer === "no" || question.answer === "not_sure" || question.answer === "similar") return true;
+      if ((question.answer === "yes_professional" || question.answer === "yes_project") && !question.evidence?.trim()) {
+        return true;
+      }
+      return question.evidenceStatus === "rejected" || question.evidenceStatus === "unanswered";
+    })
+    .map((question) => question.technology);
+}
+
+export function techAnswersFingerprint(
+  answers: Array<{ id: string; answer: TechAnswerKind; evidence?: string }>,
+): string {
+  const normalized = answers
+    .map((answer) => `${answer.id}:${answer.answer}:${answer.evidence?.trim() ?? ""}`)
+    .sort()
+    .join("|");
+  return createHash("sha256").update(normalized).digest("hex");
+}
+
+export function attestedEvidenceEntries(questions: TechQuestion[]): Array<{ technology: string; evidence: string }> {
   return questions
     .filter((question) =>
-      !question.answer ||
-      question.answer === "no" ||
-      question.answer === "not_sure" ||
-      question.answer === "similar" ||
-      question.evidenceStatus === "rejected" ||
-      question.evidenceStatus === "unanswered" ||
-      ((question.answer === "yes_professional" || question.answer === "yes_project") && !question.evidence?.trim()),
+      (question.answer === "yes_professional" || question.answer === "yes_project") &&
+      Boolean(question.evidence?.trim()),
     )
-    .map((question) => question.technology)
-    .filter((technology) => !claimableTechnologies(questions).includes(technology));
+    .map((question) => ({ technology: question.technology, evidence: question.evidence!.trim() }));
 }

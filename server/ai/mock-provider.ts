@@ -21,7 +21,7 @@ import {
 
 const DEFAULT_MODEL: ModelConfig = {
   provider: "mock",
-  model: "mock-cisco-v1",
+  model: "mock-generation-v1",
   temperature: 0,
   maxOutputTokens: 4096,
 };
@@ -131,6 +131,19 @@ function detectPromptId(request: { prompt: { id: string }; system: string }): Pr
   }
 }
 
+function evidenceIdsFromContext(context: Record<string, unknown>): string[] {
+  const fromEvidence = Array.isArray(context.evidence)
+    ? (context.evidence as Array<Record<string, unknown>>)
+        .map((item) => item.id)
+        .filter((id): id is string => typeof id === "string")
+    : [];
+  if (fromEvidence.length) return fromEvidence;
+  if (Array.isArray(context.allowedEvidenceIds)) {
+    return (context.allowedEvidenceIds as unknown[]).filter((id): id is string => typeof id === "string");
+  }
+  return [];
+}
+
 function fixtureForPrompt(promptId: PromptId, user: string): unknown {
   const versionMatch = /versionNumber["']?\s*[:=]\s*(\d)/i.exec(user);
   const versionNumber = versionMatch ? Number(versionMatch[1]) : 0;
@@ -143,17 +156,54 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
 
   switch (promptId) {
     case "job-extraction":
-      return {
-        title: "CX AI Software Engineer",
-        company: "Cisco",
-        requirements: [
-          "Production Python and ML systems experience",
-          "RAG / retrieval architecture",
-          "Distributed inference and evaluation",
-          "Kubernetes / cloud deployment familiarity",
-        ],
-        preferred: ["LangGraph or agent frameworks", "OpenSearch", "SageMaker"],
-      };
+      {
+        let jobText = user;
+        let contextCompany = "";
+        let contextRole = "";
+        try {
+          const parsed = JSON.parse(user) as Record<string, unknown>;
+          if (typeof parsed.jobText === "string") jobText = parsed.jobText;
+          if (typeof parsed.company === "string") contextCompany = parsed.company;
+          if (typeof parsed.role === "string") contextRole = parsed.role;
+        } catch {
+          // plain text fallback
+        }
+        const companyMatch =
+          /\b(?:at|for)\s+([A-Z][A-Za-z0-9&.\- ]{1,40})\b/.exec(jobText) ||
+          /^([A-Z][A-Za-z0-9&.\- ]{1,40})\s+seeks\b/i.exec(jobText) ||
+          /\bCompany:\s*([^\n]+)/i.exec(jobText);
+        const roleMatch =
+          /(Senior|Staff|Principal|Lead)?\s*(Software|Platform|AI|ML|Data)?\s*Engineer/i.exec(jobText) ||
+          /\bRole:\s*([^\n]+)/i.exec(jobText);
+        const extractedCompany =
+          contextCompany.trim() ||
+          companyMatch?.[1]?.trim() ||
+          "Unknown company";
+        const extractedRole =
+          contextRole.trim() ||
+          roleMatch?.[0]?.trim() ||
+          "Software Engineer";
+        return {
+          title: extractedRole,
+          company: extractedCompany === "Unknown company" ? extractedCompany : extractedCompany,
+          role: extractedRole,
+          location: /Remote|Hybrid|On-site|Austin|TX/i.exec(jobText)?.[0] ?? "Remote",
+          employmentType: "Full-time",
+          seniority: /Senior|Staff|Principal|Lead/i.exec(jobText)?.[0] ?? "Mid-level",
+          requiredQualifications: [
+            "Production systems experience",
+            "Cloud deployment familiarity",
+          ],
+          preferredQualifications: ["Observability", "On-call ownership"],
+          responsibilities: [
+            "Design and ship production features",
+            "Partner with product on reliability",
+          ],
+          targetTechnologies: ["Kubernetes", "Go", "Terraform"].filter((tech) =>
+            jobText.toLowerCase().includes(tech.toLowerCase()),
+          ),
+        };
+      }
     case "research-synthesis":
       {
         const company = typeof context.company === "string" ? context.company : "Target company";
@@ -187,41 +237,62 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
         overallConfidence: 84,
       };
       }
-    case "evidence-matching":
+    case "evidence-matching": {
+      const evidenceIds = evidenceIdsFromContext(context);
+      const primary = evidenceIds[0];
+      const secondary = evidenceIds[1] ?? primary;
       return {
         rows: [
           {
             requirement: "Production Python / ML systems",
             importance: "required",
-            evidenceIds: ["ev-usaa", "ev-rag"],
-            evidenceStrength: "high",
-            resumeUsage: "used",
+            evidenceIds: primary ? [primary] : [],
+            evidenceStrength: primary ? "high" : "low",
+            resumeUsage: primary ? "used" : "unused",
           },
           {
             requirement: "RAG / retrieval architecture",
             importance: "required",
-            evidenceIds: ["ev-rag", "ev-eval"],
-            evidenceStrength: "high",
-            resumeUsage: "used",
+            evidenceIds: primary && secondary ? [primary, secondary] : primary ? [primary] : [],
+            evidenceStrength: primary ? "high" : "low",
+            resumeUsage: primary ? "used" : "unused",
           },
           {
             requirement: "Kubernetes / cloud deployment",
             importance: "required",
-            evidenceIds: ["ev-usaa"],
-            evidenceStrength: "medium",
-            resumeUsage: "partial",
-            coverageGap: "Avoid unsupported cluster-ownership claims",
+            evidenceIds: secondary ? [secondary] : primary ? [primary] : [],
+            evidenceStrength: primary ? "medium" : "low",
+            resumeUsage: primary ? "partial" : "unused",
+            coverageGap: primary ? "Avoid unsupported cluster-ownership claims" : "No owned evidence supplied",
           },
         ],
-        evidenceCoverage: 86,
+        evidenceCoverage: primary ? 86 : 0,
       };
+    }
     case "resume-generation": {
       const scored = SCORE_BY_VERSION[versionNumber] ?? SCORE_BY_VERSION[0];
       const evidence = Array.isArray(context.evidence) ? context.evidence as Array<Record<string, unknown>> : [];
-      const evidenceId = typeof evidence[0]?.id === "string" ? evidence[0].id : "ev-unknown";
-      const technologies = Array.isArray(evidence[0]?.technologies)
+      const evidenceIds = evidenceIdsFromContext(context);
+      const firstId = evidenceIds[0];
+      const technologies = firstId && Array.isArray(evidence[0]?.technologies)
         ? (evidence[0].technologies as unknown[]).filter((value): value is string => typeof value === "string").slice(0, 3)
         : [];
+      if (!firstId) {
+        return {
+          versionNumber,
+          score: Math.min(scored.score, 55),
+          scoreBreakdown: scored.breakdown,
+          notes: "Awaiting owned career evidence before making evidenced claims.",
+          sections: [
+            {
+              type: "summary",
+              title: "Professional Summary",
+              order: 0,
+              content: "Profile pending verified career evidence.",
+            },
+          ],
+        };
+      }
       return {
         versionNumber,
         score: scored.score,
@@ -236,7 +307,7 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
               text: versionNumber === 0
                 ? "Engineer with experience grounded in the supplied career evidence."
                 : "Engineer applying accepted audit feedback to evidence-backed delivery experience.",
-              evidenceIds: [evidenceId],
+              evidenceIds: [firstId],
               matchedRequirements: [],
               technologies,
               confidence: "high",
@@ -276,7 +347,8 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
           },
         ],
       };
-    case "em-audit-1":
+    case "em-audit-1": {
+      const evidenceIds = evidenceIdsFromContext(context);
       return {
         lens: "em-1",
         reviewsVersion: 1,
@@ -294,10 +366,11 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
             suggestedText:
               "Owned RAG performance work that reduced response time from 2.1s to 820ms while keeping hallucinations below 2%...",
             expectedScoreImpact: 5,
-            evidenceSource: "ev-rag",
+            evidenceSource: evidenceIds[0],
           },
         ],
       };
+    }
     case "hr-audit-2":
       return {
         lens: "hr-2",
@@ -318,7 +391,8 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
           },
         ],
       };
-    case "em-audit-2":
+    case "em-audit-2": {
+      const evidenceIds = evidenceIdsFromContext(context);
       return {
         lens: "em-2",
         reviewsVersion: 3,
@@ -336,10 +410,11 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
             suggestedText:
               "Created a 500-question evaluation dataset and scoring harness used to gate RAG releases...",
             expectedScoreImpact: 3,
-            evidenceSource: "ev-eval",
+            evidenceSource: evidenceIds[0],
           },
         ],
       };
+    }
     case "mistake-memory":
       return {
         rules: [
@@ -369,10 +444,16 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
 
 export class MockGenerationProvider implements GenerationProvider {
   readonly name = "mock";
+  static structuredCallCount = 0;
+
+  static resetCallCounts() {
+    MockGenerationProvider.structuredCallCount = 0;
+  }
 
   async generateStructured<T>(
     request: StructuredGenerationRequest<T>,
   ): Promise<StructuredGenerationResult<T>> {
+    MockGenerationProvider.structuredCallCount += 1;
     const started = Date.now();
     if (request.abortSignal?.aborted) {
       throw new AiProviderError("ABORTED", "Generation aborted", false);

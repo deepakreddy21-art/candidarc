@@ -4,6 +4,7 @@ import { buildAuthContext } from "@server/http/context";
 import { jsonOk, jsonError, parseJsonBody } from "@server/http/response";
 import { requireUser, requireApplicationAccess } from "@server/auth/guards";
 import { startResearchRequestSchema } from "@server/contracts/api";
+import { assertCsrf } from "@server/http/csrf";
 
 type Params = { params: Promise<{ applicationId: string }> };
 
@@ -31,6 +32,7 @@ const postSchema = startResearchRequestSchema.extend({
 export async function POST(request: Request, { params }: Params) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const { applicationId } = await params;
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;

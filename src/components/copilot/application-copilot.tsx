@@ -1,64 +1,67 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, FileText, LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { allowDemoFallback } from "@/lib/app-mode";
 import type {
   ApplicationMode,
   FieldConfidence,
   ReusableAnswer,
 } from "@server/copilot/types";
 
-const demoAnswers: ReusableAnswer[] = [
-  {
-    id: "answer_full_name",
-    tenantId: "demo",
-    userId: "demo",
-    intent: "full_name",
-    label: "Full name",
-    answer: "Candidate legal name",
-    confidence: "VERIFIED",
-    source: "profile",
-    sensitive: false,
-    requiresApproval: false,
-    approvedForOpportunityIds: [],
-    updatedAt: "2026-09-04T12:00:00Z",
-  },
-  {
-    id: "answer_email",
-    tenantId: "demo",
-    userId: "demo",
-    intent: "email",
-    label: "Email",
-    answer: "deepak.kilaru@email.com",
-    confidence: "HIGH_CONFIDENCE",
-    source: "profile",
-    sensitive: false,
-    requiresApproval: false,
-    approvedForOpportunityIds: [],
-    updatedAt: "2026-09-04T12:00:00Z",
-  },
-  {
-    id: "answer_work_authorization",
-    tenantId: "demo",
-    userId: "demo",
-    intent: "work_authorization",
-    label: "US work authorization",
-    answer: true,
-    confidence: "SENSITIVE",
-    source: "user",
-    sensitive: true,
-    requiresApproval: true,
-    approvedForOpportunityIds: [],
-    updatedAt: "2026-09-04T12:00:00Z",
-  },
-];
+const demoAnswers: ReusableAnswer[] = allowDemoFallback()
+  ? [
+      {
+        id: "answer_full_name",
+        tenantId: "demo",
+        userId: "demo",
+        intent: "full_name",
+        label: "Full name",
+        answer: "Demo Candidate",
+        confidence: "VERIFIED",
+        source: "profile",
+        sensitive: false,
+        requiresApproval: false,
+        approvedForOpportunityIds: [],
+        updatedAt: "2026-09-04T12:00:00Z",
+      },
+      {
+        id: "answer_email",
+        tenantId: "demo",
+        userId: "demo",
+        intent: "email",
+        label: "Email",
+        answer: "candidate@example.com",
+        confidence: "HIGH_CONFIDENCE",
+        source: "profile",
+        sensitive: false,
+        requiresApproval: false,
+        approvedForOpportunityIds: [],
+        updatedAt: "2026-09-04T12:00:00Z",
+      },
+      {
+        id: "answer_work_authorization",
+        tenantId: "demo",
+        userId: "demo",
+        intent: "work_authorization",
+        label: "US work authorization",
+        answer: true,
+        confidence: "SENSITIVE",
+        source: "user",
+        sensitive: true,
+        requiresApproval: true,
+        approvedForOpportunityIds: [],
+        updatedAt: "2026-09-04T12:00:00Z",
+      },
+    ]
+  : [];
 
 export function ApplicationCopilot({
   opportunityId,
-  company = "Cisco",
-  role = "CX AI Software Engineer",
+  company = "Target company",
+  role = "Target role",
   duplicateWarning,
   answers = demoAnswers,
 }: {
@@ -91,7 +94,7 @@ export function ApplicationCopilot({
         <CardContent className="grid gap-4 sm:grid-cols-2">
           <Summary label="Company" value={company} />
           <Summary label="Role" value={role} />
-          <Summary label="Resume" value="Cisco tailored resume · V4" icon={<FileText />} />
+          <Summary label="Resume" value="Tailored resume package" icon={<FileText />} />
           <Summary label="Job status" value="Verified open" icon={<CheckCircle2 />} />
         </CardContent>
       </Card>

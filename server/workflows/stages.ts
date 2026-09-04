@@ -124,13 +124,41 @@ export function assertAuditOrder(opts: {
   }
 }
 
+/** Explicit stage → queue mapping. Completed / review / terminal stages enqueue nothing. */
+const STAGE_QUEUE_MAP: Partial<Record<WorkflowStage, string>> = {
+  RESEARCH_QUEUED: "research",
+  RESEARCH_RUNNING: "research",
+  EVIDENCE_MATCHING_RUNNING: "evidence-matching",
+  V0_GENERATING: "resume-generation",
+  V1_GENERATING: "resume-generation",
+  V2_GENERATING: "resume-generation",
+  V3_GENERATING: "resume-generation",
+  V4_GENERATING: "resume-generation",
+  HR_AUDIT_1_RUNNING: "resume-audit",
+  EM_AUDIT_1_RUNNING: "resume-audit",
+  HR_AUDIT_2_RUNNING: "resume-audit",
+  EM_AUDIT_2_RUNNING: "resume-audit",
+  FINAL_QA_RUNNING: "resume-audit",
+};
+
 export function queueForStage(stage: WorkflowStage): string | null {
-  if (stage.startsWith("RESEARCH_")) return "research";
-  if (stage.startsWith("EVIDENCE_")) return "evidence-matching";
-  if (stage.includes("AUDIT") && stage.endsWith("_RUNNING")) return "resume-audit";
-  if (stage.includes("_GENERATING") || stage === "V0_GENERATING") return "resume-generation";
-  if (stage === "FINAL_QA_RUNNING") return "resume-audit";
-  return null;
+  return STAGE_QUEUE_MAP[stage] ?? null;
+}
+
+/** When a job claims a *_QUEUED stage, the run may already be on the running counterpart. */
+export function runningCounterpartForQueuedStage(stage: WorkflowStage): WorkflowStage | null {
+  if (!stage.endsWith("_QUEUED")) return null;
+  return stage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage;
+}
+
+export function stageMatchesJobClaim(actual: WorkflowStage, claimed: WorkflowStage): boolean {
+  if (actual === claimed) return true;
+  const running = runningCounterpartForQueuedStage(claimed);
+  return running !== null && actual === running;
+}
+
+export function stageClaimKey(stage: WorkflowStage): string {
+  return `claimed:${stage}`;
 }
 
 export function isTerminalStage(stage: WorkflowStage): boolean {

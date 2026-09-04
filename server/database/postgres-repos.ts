@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { getDb } from "./client";
 import * as s from "./schema";
 import {
@@ -10,7 +10,8 @@ import {
   type WorkflowEventRecord,
   type WorkflowRunRecord,
 } from "./repositories";
-import { AppError } from "../domain/types";
+import { AppError, type WorkflowStage } from "../domain/types";
+import { withTenant } from "./with-tenant";
 import {
   buildEvidenceMatchMap,
   mapApplication,
@@ -169,23 +170,11 @@ export class PostgresRepositories implements Repositories {
 
     this.applications = {
       create: async (input) =>
-        mapApplication((await db.insert(s.applications).values(toApplicationValues(input)).returning())[0])!,
+        withTenant(input.tenantId, async (db) =>
+          mapApplication((await db.insert(s.applications).values(toApplicationValues(input)).returning())[0])!,
+        ),
       list: async (tenantId, opts) =>
-        (
-          await db
-            .select()
-            .from(s.applications)
-            .where(
-              and(
-                eq(s.applications.tenantId, tenantId),
-                isNull(s.applications.deletedAt),
-                opts?.includeArchived ? undefined : eq(s.applications.archived, false),
-              ),
-            )
-            .orderBy(desc(s.applications.updatedAt))
-        ).map((row) => mapApplication(row)!),
-      getByPublicId: async (tenantId, publicId) =>
-        mapApplication(
+        withTenant(tenantId, async (db) =>
           (
             await db
               .select()
@@ -193,12 +182,30 @@ export class PostgresRepositories implements Repositories {
               .where(
                 and(
                   eq(s.applications.tenantId, tenantId),
-                  eq(s.applications.publicId, publicId),
                   isNull(s.applications.deletedAt),
+                  opts?.includeArchived ? undefined : eq(s.applications.archived, false),
                 ),
               )
-              .limit(1)
-          )[0],
+              .orderBy(desc(s.applications.updatedAt))
+          ).map((row) => mapApplication(row)!),
+        ),
+      getByPublicId: async (tenantId, publicId) =>
+        withTenant(tenantId, async (db) =>
+          mapApplication(
+            (
+              await db
+                .select()
+                .from(s.applications)
+                .where(
+                  and(
+                    eq(s.applications.tenantId, tenantId),
+                    eq(s.applications.publicId, publicId),
+                    isNull(s.applications.deletedAt),
+                  ),
+                )
+                .limit(1)
+            )[0],
+          ),
         ),
       getByPublicIdGlobal: async (publicId) =>
         mapApplication(
@@ -210,39 +217,41 @@ export class PostgresRepositories implements Repositories {
               .limit(1)
           )[0],
         ),
-      update: async (tenantId, publicId, patch) => {
-        const row = (
+      update: async (tenantId, publicId, patch) =>
+        withTenant(tenantId, async (db) => {
+          const row = (
+            await db
+              .update(s.applications)
+              .set(toApplicationPatch(patch))
+              .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.publicId, publicId)))
+              .returning()
+          )[0];
+          if (!row) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
+          return mapApplication(row)!;
+        }),
+      softDelete: async (tenantId, publicId) =>
+        withTenant(tenantId, async (db) => {
           await db
             .update(s.applications)
-            .set(toApplicationPatch(patch))
-            .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.publicId, publicId)))
-            .returning()
-        )[0];
-        if (!row) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
-        return mapApplication(row)!;
-      },
-      softDelete: async (tenantId, publicId) => {
-        await db
-          .update(s.applications)
-          .set({ deletedAt: new Date(), archived: true })
-          .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.publicId, publicId)));
-      },
+            .set({ deletedAt: new Date(), archived: true })
+            .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.publicId, publicId)));
+        }),
     };
 
-    this.evidence = createEvidenceRepository(db);
-    this.resumes = createResumeRepository(db);
-    this.audits = createAuditRepository(db);
-    this.research = createResearchRepository(db);
+    this.evidence = createEvidenceRepository();
+    this.resumes = createResumeRepository();
+    this.audits = createAuditRepository();
+    this.research = createResearchRepository();
     this.workflows = createWorkflowRepository(db);
     this.usage = createUsageRepository(db);
-    this.files = createFileRepository(db);
+    this.files = createFileRepository();
     this.interviews = createInterviewRepository();
-    this.candidateProfiles = createCandidateProfileRepository(db);
+    this.candidateProfiles = createCandidateProfileRepository();
   }
 }
 
-function createEvidenceRepository(db: Db): Repositories["evidence"] {
-  async function loadMatchMap(tenantId: string, evidenceIds?: string[]) {
+function createEvidenceRepository(): Repositories["evidence"] {
+  async function loadMatchMap(db: Db, tenantId: string, evidenceIds?: string[]) {
     const rows = await db
       .select({
         evidenceItemId: s.evidenceApplicationMatches.evidenceItemId,
@@ -262,6 +271,7 @@ function createEvidenceRepository(db: Db): Repositories["evidence"] {
   }
 
   async function syncMatches(
+    db: Db,
     tenantId: string,
     evidenceItemId: string,
     matchedApplicationIds: string[],
@@ -304,36 +314,49 @@ function createEvidenceRepository(db: Db): Repositories["evidence"] {
   }
 
   return {
-    list: async (tenantId) => {
-      const rows = await db
-        .select()
-        .from(s.evidenceItems)
-        .where(and(eq(s.evidenceItems.tenantId, tenantId), isNull(s.evidenceItems.deletedAt)));
-      const matchMap = await loadMatchMap(
-        tenantId,
-        rows.map((row) => row.id),
-      );
-      return rows.map((row) => mapEvidence(row, matchMap.get(row.id)));
-    },
-    getByPublicId: async (tenantId, publicId) => {
-      const row = (
-        await db
+    list: async (tenantId, opts) =>
+      withTenant(tenantId, async (db) => {
+        const conditions = [eq(s.evidenceItems.tenantId, tenantId), isNull(s.evidenceItems.deletedAt)];
+        if (opts?.ownerUserId) {
+          conditions.push(eq(s.evidenceItems.ownerUserId, opts.ownerUserId));
+        }
+        const rows = await db
           .select()
           .from(s.evidenceItems)
-          .where(
-            and(
-              eq(s.evidenceItems.tenantId, tenantId),
-              eq(s.evidenceItems.publicId, publicId),
-              isNull(s.evidenceItems.deletedAt),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!row) return null;
-      const matchMap = await loadMatchMap(tenantId, [row.id]);
-      return mapEvidence(row, matchMap.get(row.id));
-    },
+          .where(and(...conditions));
+        const matchMap = await loadMatchMap(
+          db,
+          tenantId,
+          rows.map((row) => row.id),
+        );
+        let items = rows.map((row) => mapEvidence(row, matchMap.get(row.id)));
+        if (opts?.applicationPublicId) {
+          items = items.filter((item) => !item.excludedFromApplicationIds.includes(opts.applicationPublicId!));
+        }
+        return items;
+      }),
+    getByPublicId: async (tenantId, publicId) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .select()
+            .from(s.evidenceItems)
+            .where(
+              and(
+                eq(s.evidenceItems.tenantId, tenantId),
+                eq(s.evidenceItems.publicId, publicId),
+                isNull(s.evidenceItems.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!row) return null;
+        const matchMap = await loadMatchMap(db, tenantId, [row.id]);
+        return mapEvidence(row, matchMap.get(row.id));
+      }),
     getByPublicIdGlobal: async (publicId) => {
+      const db = getDb();
+      if (!db) return null;
       const row = (
         await db
           .select()
@@ -342,122 +365,132 @@ function createEvidenceRepository(db: Db): Repositories["evidence"] {
           .limit(1)
       )[0];
       if (!row) return null;
-      const matchMap = await loadMatchMap(row.tenantId, [row.id]);
-      return mapEvidence(row, matchMap.get(row.id));
+      return withTenant(row.tenantId, async (tx) => {
+        const matchMap = await loadMatchMap(tx, row.tenantId, [row.id]);
+        return mapEvidence(row, matchMap.get(row.id));
+      });
     },
-    create: async (item) => {
-      const row = (
-        await db
-          .insert(s.evidenceItems)
-          .values({
-            id: item.id,
-            publicId: item.publicId,
-            tenantId: item.tenantId,
-            title: item.title,
-            organization: item.organization,
-            situation: item.situation,
-            task: item.task,
-            actions: item.actions,
-            result: item.result,
-            technologies: item.technologies,
-            confidence: item.confidence as typeof s.evidenceItems.$inferInsert.confidence,
-            verificationStatus: item.verificationStatus as typeof s.evidenceItems.$inferInsert.verificationStatus,
-            privacyLevel: item.privacyLevel as typeof s.evidenceItems.$inferInsert.privacyLevel,
-            payload: item.payload ?? {},
-            version: item.version ?? 1,
-          })
-          .returning()
-      )[0]!;
-      if (item.matchedApplicationIds.length || item.excludedFromApplicationIds.length) {
-        await syncMatches(item.tenantId, row.id, item.matchedApplicationIds, item.excludedFromApplicationIds);
-      }
-      const matchMap = await loadMatchMap(item.tenantId, [row.id]);
-      return mapEvidence(row, matchMap.get(row.id));
-    },
-    update: async (tenantId, publicId, patch) => {
-      const existing = (
-        await db
-          .select()
-          .from(s.evidenceItems)
-          .where(
-            and(
-              eq(s.evidenceItems.tenantId, tenantId),
-              eq(s.evidenceItems.publicId, publicId),
-              isNull(s.evidenceItems.deletedAt),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!existing) throw new AppError("EVIDENCE_NOT_FOUND", "Evidence not found", 404);
+    create: async (item) =>
+      withTenant(item.tenantId, async (db) => {
+        const row = (
+          await db
+            .insert(s.evidenceItems)
+            .values({
+              id: item.id,
+              publicId: item.publicId,
+              tenantId: item.tenantId,
+              ownerUserId: item.ownerUserId,
+              candidateProfileId: item.candidateProfileId,
+              title: item.title,
+              organization: item.organization,
+              situation: item.situation,
+              task: item.task,
+              actions: item.actions,
+              result: item.result,
+              technologies: item.technologies,
+              confidence: item.confidence as typeof s.evidenceItems.$inferInsert.confidence,
+              verificationStatus: item.verificationStatus as typeof s.evidenceItems.$inferInsert.verificationStatus,
+              privacyLevel: item.privacyLevel as typeof s.evidenceItems.$inferInsert.privacyLevel,
+              payload: item.payload ?? {},
+              version: item.version ?? 1,
+            })
+            .returning()
+        )[0]!;
+        if (item.matchedApplicationIds.length || item.excludedFromApplicationIds.length) {
+          await syncMatches(db, item.tenantId, row.id, item.matchedApplicationIds, item.excludedFromApplicationIds);
+        }
+        const matchMap = await loadMatchMap(db, item.tenantId, [row.id]);
+        return mapEvidence(row, matchMap.get(row.id));
+      }),
+    update: async (tenantId, publicId, patch) =>
+      withTenant(tenantId, async (db) => {
+        const existing = (
+          await db
+            .select()
+            .from(s.evidenceItems)
+            .where(
+              and(
+                eq(s.evidenceItems.tenantId, tenantId),
+                eq(s.evidenceItems.publicId, publicId),
+                isNull(s.evidenceItems.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!existing) throw new AppError("EVIDENCE_NOT_FOUND", "Evidence not found", 404);
 
-      const { matchedApplicationIds, excludedFromApplicationIds, ...rest } = patch;
-      const itemPatch: Record<string, unknown> = {};
-      for (const key of [
-        "title",
-        "organization",
-        "situation",
-        "task",
-        "actions",
-        "result",
-        "technologies",
-        "confidence",
-        "verificationStatus",
-        "privacyLevel",
-        "payload",
-      ] as const) {
-        if (rest[key] !== undefined) itemPatch[key] = rest[key];
-      }
-      const row = (
+        const { matchedApplicationIds, excludedFromApplicationIds, ...rest } = patch;
+        const itemPatch: Record<string, unknown> = {};
+        for (const key of [
+          "title",
+          "organization",
+          "situation",
+          "task",
+          "actions",
+          "result",
+          "technologies",
+          "confidence",
+          "verificationStatus",
+          "privacyLevel",
+          "payload",
+          "ownerUserId",
+          "candidateProfileId",
+        ] as const) {
+          if (rest[key] !== undefined) itemPatch[key] = rest[key];
+        }
+        const row = (
+          await db
+            .update(s.evidenceItems)
+            .set({
+              ...itemPatch,
+              version: existing.version + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(s.evidenceItems.id, existing.id))
+            .returning()
+        )[0]!;
+
+        if (matchedApplicationIds !== undefined || excludedFromApplicationIds !== undefined) {
+          const matchMap = await loadMatchMap(db, tenantId, [existing.id]);
+          const current = matchMap.get(existing.id) ?? { matched: [], excluded: [] };
+          await syncMatches(
+            db,
+            tenantId,
+            existing.id,
+            matchedApplicationIds ?? current.matched,
+            excludedFromApplicationIds ?? current.excluded,
+          );
+        }
+
+        const matchMap = await loadMatchMap(db, tenantId, [row.id]);
+        return mapEvidence(row, matchMap.get(row.id));
+      }),
+    softDelete: async (tenantId, publicId) =>
+      withTenant(tenantId, async (db) => {
+        const existing = (
+          await db
+            .select()
+            .from(s.evidenceItems)
+            .where(
+              and(
+                eq(s.evidenceItems.tenantId, tenantId),
+                eq(s.evidenceItems.publicId, publicId),
+                isNull(s.evidenceItems.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!existing) throw new AppError("EVIDENCE_NOT_FOUND", "Evidence not found", 404);
         await db
           .update(s.evidenceItems)
-          .set({
-            ...itemPatch,
-            version: existing.version + 1,
-            updatedAt: new Date(),
-          })
-          .where(eq(s.evidenceItems.id, existing.id))
-          .returning()
-      )[0]!;
-
-      if (matchedApplicationIds !== undefined || excludedFromApplicationIds !== undefined) {
-        const matchMap = await loadMatchMap(tenantId, [existing.id]);
-        const current = matchMap.get(existing.id) ?? { matched: [], excluded: [] };
-        await syncMatches(
-          tenantId,
-          existing.id,
-          matchedApplicationIds ?? current.matched,
-          excludedFromApplicationIds ?? current.excluded,
-        );
-      }
-
-      const matchMap = await loadMatchMap(tenantId, [row.id]);
-      return mapEvidence(row, matchMap.get(row.id));
-    },
-    softDelete: async (tenantId, publicId) => {
-      const existing = (
-        await db
-          .select()
-          .from(s.evidenceItems)
-          .where(
-            and(
-              eq(s.evidenceItems.tenantId, tenantId),
-              eq(s.evidenceItems.publicId, publicId),
-              isNull(s.evidenceItems.deletedAt),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!existing) throw new AppError("EVIDENCE_NOT_FOUND", "Evidence not found", 404);
-      await db
-        .update(s.evidenceItems)
-        .set({ deletedAt: new Date(), version: existing.version + 1 })
-        .where(eq(s.evidenceItems.id, existing.id));
-    },
+          .set({ deletedAt: new Date(), version: existing.version + 1 })
+          .where(eq(s.evidenceItems.id, existing.id));
+      }),
   };
 }
 
-function createResumeRepository(db: Db): Repositories["resumes"] {
-  async function loadSections(versionId: string) {
+function createResumeRepository(): Repositories["resumes"] {
+  async function loadSections(db: Db, versionId: string) {
     const rows = await db
       .select()
       .from(s.resumeSections)
@@ -466,7 +499,7 @@ function createResumeRepository(db: Db): Repositories["resumes"] {
     return rows.map(sectionFromRow);
   }
 
-  async function resolveApplicationPublicId(tenantId: string, applicationId: string) {
+  async function resolveApplicationPublicId(db: Db, tenantId: string, applicationId: string) {
     const app = (
       await db
         .select({ publicId: s.applications.publicId })
@@ -477,7 +510,7 @@ function createResumeRepository(db: Db): Repositories["resumes"] {
     return app?.publicId ?? "";
   }
 
-  async function resolveCurrentVersionPublicId(resume: typeof s.resumes.$inferSelect) {
+  async function resolveCurrentVersionPublicId(db: Db, resume: typeof s.resumes.$inferSelect) {
     if (!resume.currentVersionId) return null;
     const version = (
       await db
@@ -490,172 +523,179 @@ function createResumeRepository(db: Db): Repositories["resumes"] {
   }
 
   return {
-    getByApplication: async (tenantId, applicationPublicId) => {
-      const app = (
-        await db
-          .select({ id: s.applications.id })
-          .from(s.applications)
-          .where(
-            and(
-              eq(s.applications.tenantId, tenantId),
-              eq(s.applications.publicId, applicationPublicId),
-              isNull(s.applications.deletedAt),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!app) return null;
-      const row = (
-        await db
-          .select()
-          .from(s.resumes)
-          .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.applicationId, app.id), isNull(s.resumes.deletedAt)))
-          .limit(1)
-      )[0];
-      if (!row) return null;
-      return mapResume(row, applicationPublicId, await resolveCurrentVersionPublicId(row));
-    },
-    listVersions: async (tenantId, resumePublicId) => {
-      const resume = (
-        await db
-          .select()
-          .from(s.resumes)
-          .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.publicId, resumePublicId), isNull(s.resumes.deletedAt)))
-          .limit(1)
-      )[0];
-      if (!resume) return [];
-      const versions = await db
-        .select()
-        .from(s.resumeVersions)
-        .where(and(eq(s.resumeVersions.resumeId, resume.id), eq(s.resumeVersions.tenantId, tenantId)))
-        .orderBy(asc(s.resumeVersions.versionNumber));
-      return Promise.all(
-        versions.map(async (version) => mapResumeVersion(version, await loadSections(version.id))),
-      );
-    },
-    getVersion: async (tenantId, versionPublicId) => {
-      const version = (
-        await db
+    getByApplication: async (tenantId, applicationPublicId) =>
+      withTenant(tenantId, async (db) => {
+        const app = (
+          await db
+            .select({ id: s.applications.id })
+            .from(s.applications)
+            .where(
+              and(
+                eq(s.applications.tenantId, tenantId),
+                eq(s.applications.publicId, applicationPublicId),
+                isNull(s.applications.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!app) return null;
+        const row = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.applicationId, app.id), isNull(s.resumes.deletedAt)))
+            .limit(1)
+        )[0];
+        if (!row) return null;
+        return mapResume(row, applicationPublicId, await resolveCurrentVersionPublicId(db, row));
+      }),
+    listVersions: async (tenantId, resumePublicId) =>
+      withTenant(tenantId, async (db) => {
+        const resume = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.publicId, resumePublicId), isNull(s.resumes.deletedAt)))
+            .limit(1)
+        )[0];
+        if (!resume) return [];
+        const versions = await db
           .select()
           .from(s.resumeVersions)
-          .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.publicId, versionPublicId)))
-          .limit(1)
-      )[0];
-      if (!version) return null;
-      return mapResumeVersion(version, await loadSections(version.id));
-    },
-    findVersionByIdempotency: async (tenantId, idempotencyKey) => {
-      const version = (
-        await db
-          .select()
-          .from(s.resumeVersions)
-          .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.idempotencyKey, idempotencyKey)))
-          .limit(1)
-      )[0];
-      if (!version) return null;
-      return mapResumeVersion(version, await loadSections(version.id));
-    },
-    createResume: async (resume) => {
-      const row = (
-        await db
-          .insert(s.resumes)
-          .values({
-            id: resume.id,
-            publicId: resume.publicId,
-            tenantId: resume.tenantId,
-            applicationId: resume.applicationId,
-            title: resume.title,
-            templateId: resume.templateId,
-            length: resume.length,
-          })
-          .returning()
-      )[0]!;
-      return mapResume(row, resume.applicationPublicId, resume.currentVersionPublicId);
-    },
-    appendVersion: async (version) => {
-      const existing = (
-        await db
-          .select()
-          .from(s.resumeVersions)
-          .where(
-            and(eq(s.resumeVersions.tenantId, version.tenantId), eq(s.resumeVersions.idempotencyKey, version.idempotencyKey)),
-          )
-          .limit(1)
-      )[0];
-      if (existing) return mapResumeVersion(existing, await loadSections(existing.id));
-
-      const row = (
-        await db
-          .insert(s.resumeVersions)
-          .values({
-            id: version.id,
-            publicId: version.publicId,
-            tenantId: version.tenantId,
-            resumeId: version.resumeId,
-            versionNumber: version.versionNumber,
-            versionLabel: version.versionLabel,
-            score: version.score,
-            scoreBreakdown: version.scoreBreakdown,
-            notes: version.notes,
-            triggeredBy: version.triggeredBy,
-            idempotencyKey: version.idempotencyKey,
-            promptVersion: version.promptVersion,
-          })
-          .returning()
-      )[0]!;
-
-      const sections = Array.isArray(version.sections) ? version.sections : [];
-      if (sections.length) {
-        await db.insert(s.resumeSections).values(
-          sections.map((section, index) => {
-            const payload = section as Record<string, unknown>;
-            return {
-              publicId: String(payload.id ?? newId("rs")),
-              tenantId: version.tenantId,
-              resumeVersionId: row.id,
-              type: String(payload.type ?? "summary"),
-              title: String(payload.title ?? "Section"),
-              order: typeof payload.order === "number" ? payload.order : index,
-              payload,
-            };
-          }),
+          .where(and(eq(s.resumeVersions.resumeId, resume.id), eq(s.resumeVersions.tenantId, tenantId)))
+          .orderBy(asc(s.resumeVersions.versionNumber));
+        return Promise.all(
+          versions.map(async (version) => mapResumeVersion(version, await loadSections(db, version.id))),
         );
-      }
+      }),
+    getVersion: async (tenantId, versionPublicId) =>
+      withTenant(tenantId, async (db) => {
+        const version = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.publicId, versionPublicId)))
+            .limit(1)
+        )[0];
+        if (!version) return null;
+        return mapResumeVersion(version, await loadSections(db, version.id));
+      }),
+    findVersionByIdempotency: async (tenantId, idempotencyKey) =>
+      withTenant(tenantId, async (db) => {
+        const version = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.idempotencyKey, idempotencyKey)))
+            .limit(1)
+        )[0];
+        if (!version) return null;
+        return mapResumeVersion(version, await loadSections(db, version.id));
+      }),
+    createResume: async (resume) =>
+      withTenant(resume.tenantId, async (db) => {
+        const row = (
+          await db
+            .insert(s.resumes)
+            .values({
+              id: resume.id,
+              publicId: resume.publicId,
+              tenantId: resume.tenantId,
+              applicationId: resume.applicationId,
+              title: resume.title,
+              templateId: resume.templateId,
+              length: resume.length,
+            })
+            .returning()
+        )[0]!;
+        return mapResume(row, resume.applicationPublicId, resume.currentVersionPublicId);
+      }),
+    appendVersion: async (version) =>
+      withTenant(version.tenantId, async (db) => {
+        const existing = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(
+              and(eq(s.resumeVersions.tenantId, version.tenantId), eq(s.resumeVersions.idempotencyKey, version.idempotencyKey)),
+            )
+            .limit(1)
+        )[0];
+        if (existing) return mapResumeVersion(existing, await loadSections(db, existing.id));
 
-      return mapResumeVersion(row, sections);
-    },
-    setCurrentVersion: async (tenantId, resumePublicId, versionPublicId) => {
-      const resume = (
-        await db
-          .select()
-          .from(s.resumes)
-          .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.publicId, resumePublicId), isNull(s.resumes.deletedAt)))
-          .limit(1)
-      )[0];
-      if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
-      const version = (
-        await db
-          .select()
-          .from(s.resumeVersions)
-          .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.publicId, versionPublicId)))
-          .limit(1)
-      )[0];
-      if (!version) throw new AppError("RESUME_VERSION_NOT_FOUND", "Resume version not found", 404);
-      const row = (
-        await db
-          .update(s.resumes)
-          .set({ currentVersionId: version.id, updatedAt: new Date() })
-          .where(eq(s.resumes.id, resume.id))
-          .returning()
-      )[0]!;
-      const applicationPublicId = await resolveApplicationPublicId(tenantId, row.applicationId);
-      return mapResume(row, applicationPublicId, versionPublicId);
-    },
+        const row = (
+          await db
+            .insert(s.resumeVersions)
+            .values({
+              id: version.id,
+              publicId: version.publicId,
+              tenantId: version.tenantId,
+              resumeId: version.resumeId,
+              versionNumber: version.versionNumber,
+              versionLabel: version.versionLabel,
+              score: version.score,
+              scoreBreakdown: version.scoreBreakdown,
+              notes: version.notes,
+              triggeredBy: version.triggeredBy,
+              idempotencyKey: version.idempotencyKey,
+              promptVersion: version.promptVersion,
+            })
+            .returning()
+        )[0]!;
+
+        const sections = Array.isArray(version.sections) ? version.sections : [];
+        if (sections.length) {
+          await db.insert(s.resumeSections).values(
+            sections.map((section, index) => {
+              const payload = section as Record<string, unknown>;
+              return {
+                publicId: String(payload.id ?? newId("rs")),
+                tenantId: version.tenantId,
+                resumeVersionId: row.id,
+                type: String(payload.type ?? "summary"),
+                title: String(payload.title ?? "Section"),
+                order: typeof payload.order === "number" ? payload.order : index,
+                payload,
+              };
+            }),
+          );
+        }
+
+        return mapResumeVersion(row, sections);
+      }),
+    setCurrentVersion: async (tenantId, resumePublicId, versionPublicId) =>
+      withTenant(tenantId, async (db) => {
+        const resume = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.publicId, resumePublicId), isNull(s.resumes.deletedAt)))
+            .limit(1)
+        )[0];
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+        const version = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.publicId, versionPublicId)))
+            .limit(1)
+        )[0];
+        if (!version) throw new AppError("RESUME_VERSION_NOT_FOUND", "Resume version not found", 404);
+        const row = (
+          await db
+            .update(s.resumes)
+            .set({ currentVersionId: version.id, updatedAt: new Date() })
+            .where(eq(s.resumes.id, resume.id))
+            .returning()
+        )[0]!;
+        const applicationPublicId = await resolveApplicationPublicId(db, tenantId, row.applicationId);
+        return mapResume(row, applicationPublicId, versionPublicId);
+      }),
   };
 }
 
-function createAuditRepository(db: Db): Repositories["audits"] {
-  async function resolveRunPublicId(auditRunId: string) {
+function createAuditRepository(): Repositories["audits"] {
+  async function resolveRunPublicId(db: Db, auditRunId: string) {
     const run = (
       await db.select({ publicId: s.auditRuns.publicId }).from(s.auditRuns).where(eq(s.auditRuns.id, auditRunId)).limit(1)
     )[0];
@@ -663,129 +703,167 @@ function createAuditRepository(db: Db): Repositories["audits"] {
   }
 
   return {
-    listRuns: async (tenantId, applicationPublicId) => {
-      const app = (
-        await db
-          .select({ id: s.applications.id })
-          .from(s.applications)
-          .where(
-            and(
-              eq(s.applications.tenantId, tenantId),
-              eq(s.applications.publicId, applicationPublicId),
-              isNull(s.applications.deletedAt),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!app) return [];
-      const rows = await db
-        .select()
-        .from(s.auditRuns)
-        .where(and(eq(s.auditRuns.tenantId, tenantId), eq(s.auditRuns.applicationId, app.id), isNull(s.auditRuns.deletedAt)))
-        .orderBy(asc(s.auditRuns.createdAt));
-      return rows.map((row) => mapAuditRun(row, applicationPublicId));
-    },
-    listFindings: async (tenantId, auditRunPublicId) => {
-      const run = (
-        await db
+    listRuns: async (tenantId, applicationPublicId) =>
+      withTenant(tenantId, async (db) => {
+        const app = (
+          await db
+            .select({ id: s.applications.id })
+            .from(s.applications)
+            .where(
+              and(
+                eq(s.applications.tenantId, tenantId),
+                eq(s.applications.publicId, applicationPublicId),
+                isNull(s.applications.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!app) return [];
+        const rows = await db
           .select()
           .from(s.auditRuns)
-          .where(and(eq(s.auditRuns.tenantId, tenantId), eq(s.auditRuns.publicId, auditRunPublicId)))
-          .limit(1)
-      )[0];
-      if (!run) return [];
-      const rows = await db
-        .select()
-        .from(s.auditFindings)
-        .where(and(eq(s.auditFindings.tenantId, tenantId), eq(s.auditFindings.auditRunId, run.id), isNull(s.auditFindings.deletedAt)));
-      return rows.map((row) => mapAuditFinding(row, auditRunPublicId));
-    },
-    getFinding: async (tenantId, findingPublicId) => {
-      const row = (
-        await db
+          .where(and(eq(s.auditRuns.tenantId, tenantId), eq(s.auditRuns.applicationId, app.id), isNull(s.auditRuns.deletedAt)))
+          .orderBy(asc(s.auditRuns.createdAt));
+        return rows.map((row) => mapAuditRun(row, applicationPublicId));
+      }),
+    listFindings: async (tenantId, auditRunPublicId) =>
+      withTenant(tenantId, async (db) => {
+        const run = (
+          await db
+            .select()
+            .from(s.auditRuns)
+            .where(and(eq(s.auditRuns.tenantId, tenantId), eq(s.auditRuns.publicId, auditRunPublicId)))
+            .limit(1)
+        )[0];
+        if (!run) return [];
+        const rows = await db
           .select()
           .from(s.auditFindings)
-          .where(and(eq(s.auditFindings.tenantId, tenantId), eq(s.auditFindings.publicId, findingPublicId)))
-          .limit(1)
-      )[0];
-      if (!row) return null;
-      return mapAuditFinding(row, await resolveRunPublicId(row.auditRunId));
-    },
-    updateFindingDecision: async (tenantId, findingPublicId, decision, editedText) => {
-      const finding = (
-        await db
-          .select()
-          .from(s.auditFindings)
-          .where(and(eq(s.auditFindings.tenantId, tenantId), eq(s.auditFindings.publicId, findingPublicId)))
-          .limit(1)
-      )[0];
-      if (!finding) throw new AppError("FINDING_NOT_FOUND", "Audit finding not found", 404);
-      const row = (
-        await db
-          .update(s.auditFindings)
-          .set({
-            status: decision,
-            suggestedText: decision === "edited" && editedText ? editedText : finding.suggestedText,
-            editedText: decision === "edited" ? editedText : finding.editedText,
-            updatedAt: new Date(),
-          })
-          .where(eq(s.auditFindings.id, finding.id))
-          .returning()
-      )[0]!;
-      return mapAuditFinding(row, await resolveRunPublicId(row.auditRunId));
-    },
-    createRun: async (run) => {
-      const row = (
-        await db
-          .insert(s.auditRuns)
-          .values({
-            id: run.id,
-            publicId: run.publicId,
-            tenantId: run.tenantId,
-            applicationId: run.applicationId,
-            lens: run.lens as typeof s.auditRuns.$inferInsert.lens,
-            label: run.label,
-            reviewsVersion: run.reviewsVersion,
-            producesVersion: run.producesVersion,
-            status: run.status,
-            scoreBefore: run.scoreBefore,
-            scoreAfter: run.scoreAfter,
-            summary: run.summary,
-            completedAt: run.completedAt ? new Date(run.completedAt) : undefined,
-            createdAt: run.createdAt ? new Date(run.createdAt) : undefined,
-          })
-          .returning()
-      )[0]!;
-      return mapAuditRun(row, run.applicationPublicId);
-    },
+          .where(and(eq(s.auditFindings.tenantId, tenantId), eq(s.auditFindings.auditRunId, run.id), isNull(s.auditFindings.deletedAt)));
+        return rows.map((row) => mapAuditFinding(row, auditRunPublicId));
+      }),
+    getFinding: async (tenantId, findingPublicId) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .select()
+            .from(s.auditFindings)
+            .where(and(eq(s.auditFindings.tenantId, tenantId), eq(s.auditFindings.publicId, findingPublicId)))
+            .limit(1)
+        )[0];
+        if (!row) return null;
+        return mapAuditFinding(row, await resolveRunPublicId(db, row.auditRunId));
+      }),
+    updateFindingDecision: async (tenantId, findingPublicId, decision, editedText) =>
+      withTenant(tenantId, async (db) => {
+        const finding = (
+          await db
+            .select()
+            .from(s.auditFindings)
+            .where(and(eq(s.auditFindings.tenantId, tenantId), eq(s.auditFindings.publicId, findingPublicId)))
+            .limit(1)
+        )[0];
+        if (!finding) throw new AppError("FINDING_NOT_FOUND", "Audit finding not found", 404);
+        const row = (
+          await db
+            .update(s.auditFindings)
+            .set({
+              status: decision,
+              suggestedText: decision === "edited" && editedText ? editedText : finding.suggestedText,
+              editedText: decision === "edited" ? editedText : finding.editedText,
+              updatedAt: new Date(),
+            })
+            .where(eq(s.auditFindings.id, finding.id))
+            .returning()
+        )[0]!;
+        return mapAuditFinding(row, await resolveRunPublicId(db, row.auditRunId));
+      }),
+    createRun: async (run) =>
+      withTenant(run.tenantId, async (db) => {
+        const row = (
+          await db
+            .insert(s.auditRuns)
+            .values({
+              id: run.id,
+              publicId: run.publicId,
+              tenantId: run.tenantId,
+              applicationId: run.applicationId,
+              lens: run.lens as typeof s.auditRuns.$inferInsert.lens,
+              label: run.label,
+              reviewsVersion: run.reviewsVersion,
+              producesVersion: run.producesVersion,
+              status: run.status,
+              scoreBefore: run.scoreBefore,
+              scoreAfter: run.scoreAfter,
+              summary: run.summary,
+              completedAt: run.completedAt ? new Date(run.completedAt) : undefined,
+              createdAt: run.createdAt ? new Date(run.createdAt) : undefined,
+            })
+            .returning()
+        )[0]!;
+        return mapAuditRun(row, run.applicationPublicId);
+      }),
+    updateRun: async (tenantId, publicId, patch) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .update(s.auditRuns)
+            .set({
+              ...(patch.lens ? { lens: patch.lens as typeof s.auditRuns.$inferInsert.lens } : {}),
+              ...(patch.label !== undefined ? { label: patch.label } : {}),
+              ...(patch.status !== undefined ? { status: patch.status } : {}),
+              ...(patch.scoreBefore !== undefined ? { scoreBefore: patch.scoreBefore } : {}),
+              ...(patch.scoreAfter !== undefined ? { scoreAfter: patch.scoreAfter } : {}),
+              ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+              ...(patch.completedAt !== undefined
+                ? { completedAt: patch.completedAt ? new Date(patch.completedAt) : null }
+                : {}),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(s.auditRuns.tenantId, tenantId), eq(s.auditRuns.publicId, publicId), isNull(s.auditRuns.deletedAt)))
+            .returning()
+        )[0];
+        if (!row) throw new AppError("AUDIT_NOT_FOUND", "Audit run not found", 404);
+        const app = (
+          await db
+            .select({ publicId: s.applications.publicId })
+            .from(s.applications)
+            .where(eq(s.applications.id, row.applicationId))
+            .limit(1)
+        )[0];
+        return mapAuditRun(row, app?.publicId ?? "");
+      }),
     createFindings: async (findings) => {
       if (!findings.length) return [];
-      const rows = await db
-        .insert(s.auditFindings)
-        .values(
-          findings.map((finding) => ({
-            id: finding.id,
-            publicId: finding.publicId,
-            tenantId: finding.tenantId,
-            auditRunId: finding.auditRunId,
-            severity: finding.severity as typeof s.auditFindings.$inferInsert.severity,
-            status: finding.status as typeof s.auditFindings.$inferInsert.status,
-            section: finding.section,
-            title: finding.title,
-            explanation: finding.explanation,
-            beforeText: finding.beforeText,
-            suggestedText: finding.suggestedText,
-            evidenceSource: finding.evidenceSource,
-            expectedScoreImpact: finding.expectedScoreImpact,
-          })),
-        )
-        .returning();
-      return rows.map((row) =>
-        mapAuditFinding(
-          row,
-          findings.find((finding) => finding.auditRunId === row.auditRunId)?.auditRunPublicId ?? "",
-        ),
-      );
+      const tenantId = findings[0]!.tenantId;
+      return withTenant(tenantId, async (db) => {
+        const rows = await db
+          .insert(s.auditFindings)
+          .values(
+            findings.map((finding) => ({
+              id: finding.id,
+              publicId: finding.publicId,
+              tenantId: finding.tenantId,
+              auditRunId: finding.auditRunId,
+              severity: finding.severity as typeof s.auditFindings.$inferInsert.severity,
+              status: finding.status as typeof s.auditFindings.$inferInsert.status,
+              section: finding.section,
+              title: finding.title,
+              explanation: finding.explanation,
+              beforeText: finding.beforeText,
+              suggestedText: finding.suggestedText,
+              evidenceSource: finding.evidenceSource,
+              expectedScoreImpact: finding.expectedScoreImpact,
+            })),
+          )
+          .returning();
+        return rows.map((row) =>
+          mapAuditFinding(
+            row,
+            findings.find((finding) => finding.auditRunId === row.auditRunId)?.auditRunPublicId ?? "",
+          ),
+        );
+      });
     },
   };
 }
@@ -873,122 +951,125 @@ async function loadResearchArtifacts(db: Db, tenantId: string, researchRunId: st
   };
 }
 
-function createResearchRepository(db: Db): Repositories["research"] {
+function createResearchRepository(): Repositories["research"] {
   return {
-    createRun: async (run) => {
-      const row = (
-        await db
-          .insert(s.researchRuns)
-          .values({
-            id: run.id,
-            publicId: run.publicId,
-            tenantId: run.tenantId,
-            applicationId: run.applicationId,
-            status: run.status,
-            depth: run.depth,
-            confidence: run.confidence,
-            completedAt: run.completedAt ? new Date(run.completedAt) : undefined,
-            createdAt: run.createdAt ? new Date(run.createdAt) : undefined,
-          })
-          .returning()
-      )[0]!;
-      await persistResearchArtifacts(db, {
-        tenantId: run.tenantId,
-        applicationId: run.applicationId,
-        researchRunId: row.id,
-        findings: run.findings,
-        sources: run.sources,
-      });
-      const artifacts = await loadResearchArtifacts(db, run.tenantId, row.id);
-      return mapResearchRun(row, run.applicationPublicId, artifacts.findings, artifacts.sources);
-    },
-    getLatest: async (tenantId, applicationPublicId) => {
-      const app = (
-        await db
-          .select({ id: s.applications.id })
-          .from(s.applications)
-          .where(
-            and(
-              eq(s.applications.tenantId, tenantId),
-              eq(s.applications.publicId, applicationPublicId),
-              isNull(s.applications.deletedAt),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (!app) return null;
-      const row = (
-        await db
-          .select()
-          .from(s.researchRuns)
-          .where(
-            and(
-              eq(s.researchRuns.tenantId, tenantId),
-              eq(s.researchRuns.applicationId, app.id),
-              isNull(s.researchRuns.deletedAt),
-            ),
-          )
-          .orderBy(desc(s.researchRuns.createdAt))
-          .limit(1)
-      )[0];
-      if (!row) return null;
-      const artifacts = await loadResearchArtifacts(db, tenantId, row.id);
-      return mapResearchRun(row, applicationPublicId, artifacts.findings, artifacts.sources);
-    },
-    updateRun: async (tenantId, publicId, patch) => {
-      const existing = (
-        await db
-          .select()
-          .from(s.researchRuns)
-          .where(and(eq(s.researchRuns.tenantId, tenantId), eq(s.researchRuns.publicId, publicId)))
-          .limit(1)
-      )[0];
-      if (!existing) throw new AppError("RESEARCH_NOT_FOUND", "Research run not found", 404);
-
-      const {
-        findings,
-        sources,
-        applicationPublicId: patchApplicationPublicId,
-        completedAt,
-      } = patch;
-      const row = (
-        await db
-          .update(s.researchRuns)
-          .set({
-            status: patch.status,
-            depth: patch.depth,
-            confidence: patch.confidence,
-            completedAt: completedAt ? new Date(completedAt) : undefined,
-            updatedAt: new Date(),
-          })
-          .where(eq(s.researchRuns.id, existing.id))
-          .returning()
-      )[0]!;
-
-      if (findings !== undefined || sources !== undefined) {
-        const artifacts = await loadResearchArtifacts(db, tenantId, existing.id);
-        await persistResearchArtifacts(db, {
-          tenantId,
-          applicationId: existing.applicationId,
-          researchRunId: existing.id,
-          findings: findings ?? artifacts.findings,
-          sources: sources ?? artifacts.sources,
-        });
-      }
-
-      const appPublicId =
-        patchApplicationPublicId ??
-        (
+    createRun: async (run) =>
+      withTenant(run.tenantId, async (db) => {
+        const row = (
           await db
-            .select({ publicId: s.applications.publicId })
+            .insert(s.researchRuns)
+            .values({
+              id: run.id,
+              publicId: run.publicId,
+              tenantId: run.tenantId,
+              applicationId: run.applicationId,
+              status: run.status,
+              depth: run.depth,
+              confidence: run.confidence,
+              completedAt: run.completedAt ? new Date(run.completedAt) : undefined,
+              createdAt: run.createdAt ? new Date(run.createdAt) : undefined,
+            })
+            .returning()
+        )[0]!;
+        await persistResearchArtifacts(db, {
+          tenantId: run.tenantId,
+          applicationId: run.applicationId,
+          researchRunId: row.id,
+          findings: run.findings,
+          sources: run.sources,
+        });
+        const artifacts = await loadResearchArtifacts(db, run.tenantId, row.id);
+        return mapResearchRun(row, run.applicationPublicId, artifacts.findings, artifacts.sources);
+      }),
+    getLatest: async (tenantId, applicationPublicId) =>
+      withTenant(tenantId, async (db) => {
+        const app = (
+          await db
+            .select({ id: s.applications.id })
             .from(s.applications)
-            .where(eq(s.applications.id, existing.applicationId))
+            .where(
+              and(
+                eq(s.applications.tenantId, tenantId),
+                eq(s.applications.publicId, applicationPublicId),
+                isNull(s.applications.deletedAt),
+              ),
+            )
             .limit(1)
-        )[0]?.publicId ??
-        "";
-      const artifacts = await loadResearchArtifacts(db, tenantId, row.id);
-      return mapResearchRun(row, appPublicId, artifacts.findings, artifacts.sources);
-    },
+        )[0];
+        if (!app) return null;
+        const row = (
+          await db
+            .select()
+            .from(s.researchRuns)
+            .where(
+              and(
+                eq(s.researchRuns.tenantId, tenantId),
+                eq(s.researchRuns.applicationId, app.id),
+                isNull(s.researchRuns.deletedAt),
+              ),
+            )
+            .orderBy(desc(s.researchRuns.createdAt))
+            .limit(1)
+        )[0];
+        if (!row) return null;
+        const artifacts = await loadResearchArtifacts(db, tenantId, row.id);
+        return mapResearchRun(row, applicationPublicId, artifacts.findings, artifacts.sources);
+      }),
+    updateRun: async (tenantId, publicId, patch) =>
+      withTenant(tenantId, async (db) => {
+        const existing = (
+          await db
+            .select()
+            .from(s.researchRuns)
+            .where(and(eq(s.researchRuns.tenantId, tenantId), eq(s.researchRuns.publicId, publicId)))
+            .limit(1)
+        )[0];
+        if (!existing) throw new AppError("RESEARCH_NOT_FOUND", "Research run not found", 404);
+
+        const {
+          findings,
+          sources,
+          applicationPublicId: patchApplicationPublicId,
+          completedAt,
+        } = patch;
+        const row = (
+          await db
+            .update(s.researchRuns)
+            .set({
+              status: patch.status,
+              depth: patch.depth,
+              confidence: patch.confidence,
+              completedAt: completedAt ? new Date(completedAt) : undefined,
+              updatedAt: new Date(),
+            })
+            .where(eq(s.researchRuns.id, existing.id))
+            .returning()
+        )[0]!;
+
+        if (findings !== undefined || sources !== undefined) {
+          const artifacts = await loadResearchArtifacts(db, tenantId, existing.id);
+          await persistResearchArtifacts(db, {
+            tenantId,
+            applicationId: existing.applicationId,
+            researchRunId: existing.id,
+            findings: findings ?? artifacts.findings,
+            sources: sources ?? artifacts.sources,
+          });
+        }
+
+        const appPublicId =
+          patchApplicationPublicId ??
+          (
+            await db
+              .select({ publicId: s.applications.publicId })
+              .from(s.applications)
+              .where(eq(s.applications.id, existing.applicationId))
+              .limit(1)
+          )[0]?.publicId ??
+          "";
+        const artifacts = await loadResearchArtifacts(db, tenantId, row.id);
+        return mapResearchRun(row, appPublicId, artifacts.findings, artifacts.sources);
+      }),
   };
 }
 
@@ -999,28 +1080,30 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
         (await db.insert(s.workflowRuns).values(toWorkflowValues(input)).returning())[0],
         input.applicationPublicId,
       )!,
-    findByIdempotency: async (tenantId, key) => {
-      const row = (
-        await db
-          .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
-          .from(s.workflowRuns)
-          .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
-          .where(and(eq(s.workflowRuns.tenantId, tenantId), eq(s.workflowRuns.idempotencyKey, key)))
-          .limit(1)
-      )[0];
-      return row ? mapWorkflow(row.run, row.applicationPublicId) : null;
-    },
-    getByPublicId: async (tenantId, publicId) => {
-      const row = (
-        await db
-          .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
-          .from(s.workflowRuns)
-          .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
-          .where(and(eq(s.workflowRuns.tenantId, tenantId), eq(s.workflowRuns.publicId, publicId)))
-          .limit(1)
-      )[0];
-      return row ? mapWorkflow(row.run, row.applicationPublicId) : null;
-    },
+    findByIdempotency: async (tenantId, key) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
+            .from(s.workflowRuns)
+            .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
+            .where(and(eq(s.workflowRuns.tenantId, tenantId), eq(s.workflowRuns.idempotencyKey, key)))
+            .limit(1)
+        )[0];
+        return row ? mapWorkflow(row.run, row.applicationPublicId) : null;
+      }),
+    getByPublicId: async (tenantId, publicId) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
+            .from(s.workflowRuns)
+            .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
+            .where(and(eq(s.workflowRuns.tenantId, tenantId), eq(s.workflowRuns.publicId, publicId)))
+            .limit(1)
+        )[0];
+        return row ? mapWorkflow(row.run, row.applicationPublicId) : null;
+      }),
     getById: async (id) => {
       const row = (
         await db
@@ -1144,6 +1227,50 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
         })
         .filter((row): row is WorkflowRunRecord => Boolean(row));
     },
+    claimStage: async (runId, expectedStage) => {
+      const claimKey = `claimed:${expectedStage}`;
+      const running = expectedStage.endsWith("_QUEUED")
+        ? (expectedStage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage)
+        : null;
+      const rowData = (
+        await db
+          .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
+          .from(s.workflowRuns)
+          .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
+          .where(eq(s.workflowRuns.id, runId))
+          .limit(1)
+      )[0];
+      if (!rowData) return null;
+      const { run: row, applicationPublicId } = rowData;
+      const payload = (row.payload ?? {}) as Record<string, unknown>;
+      const stageOk = row.stage === expectedStage || (running !== null && row.stage === running);
+      if (!stageOk || payload[claimKey]) return null;
+
+      let nextStage = row.stage as WorkflowStage;
+      if (row.stage === expectedStage && running) {
+        nextStage = running;
+      }
+
+      const updated = (
+        await db
+          .update(s.workflowRuns)
+          .set({
+            stage: nextStage,
+            status: "running",
+            payload: { ...payload, [claimKey]: new Date().toISOString() },
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(s.workflowRuns.id, runId),
+              or(eq(s.workflowRuns.stage, expectedStage), running ? eq(s.workflowRuns.stage, running) : sql`false`),
+              sql`NOT (COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ? ${claimKey})`,
+            ),
+          )
+          .returning()
+      )[0];
+      return updated ? mapWorkflow(updated, applicationPublicId) : null;
+    },
   };
 }
 
@@ -1191,50 +1318,65 @@ function createUsageRepository(db: Db): Repositories["usage"] {
       if (!row) throw new AppError("USAGE_NOT_FOUND", "Usage ledger entry not found", 404);
       return mapUsage(row);
     },
+    releaseReservedForWorkflowRun: async (workflowRunId) => {
+      const rows = await db
+        .update(s.usageLedger)
+        .set({ status: "released" })
+        .where(and(eq(s.usageLedger.workflowRunId, workflowRunId), eq(s.usageLedger.status, "reserved")))
+        .returning();
+      return rows.length;
+    },
   };
 }
 
-function createFileRepository(db: Db): Repositories["files"] {
+function createFileRepository(): Repositories["files"] {
   return {
-    create: async (input) => mapStoredFile((await db.insert(s.storedFiles).values(toStoredFileValues(input)).returning())[0])!,
-    getByPublicId: async (tenantId, publicId) =>
-      mapStoredFile(
-        (
-          await db
-            .select()
-            .from(s.storedFiles)
-            .where(
-              and(eq(s.storedFiles.tenantId, tenantId), eq(s.storedFiles.publicId, publicId), isNull(s.storedFiles.deletedAt)),
-            )
-            .limit(1)
-        )[0],
+    create: async (input) =>
+      withTenant(input.tenantId, async (db) =>
+        mapStoredFile((await db.insert(s.storedFiles).values(toStoredFileValues(input)).returning())[0])!,
       ),
-    update: async (tenantId, publicId, patch) => {
-      const row = (
-        await db
-          .update(s.storedFiles)
-          .set(toStoredFilePatch(patch))
-          .where(and(eq(s.storedFiles.tenantId, tenantId), eq(s.storedFiles.publicId, publicId)))
-          .returning()
-      )[0];
-      if (!row) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
-      return mapStoredFile(row)!;
-    },
-    softDelete: async (tenantId, publicId, physicalDeleteAt) => {
-      const row = (
-        await db
-          .update(s.storedFiles)
-          .set({
-            deletedAt: new Date(),
-            retentionState: "pending_delete",
-            physicalDeleteAt: new Date(physicalDeleteAt),
-          })
-          .where(and(eq(s.storedFiles.tenantId, tenantId), eq(s.storedFiles.publicId, publicId)))
-          .returning()
-      )[0];
-      if (!row) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
-      return mapStoredFile(row)!;
-    },
+    getByPublicId: async (tenantId, publicId) =>
+      withTenant(tenantId, async (db) =>
+        mapStoredFile(
+          (
+            await db
+              .select()
+              .from(s.storedFiles)
+              .where(
+                and(eq(s.storedFiles.tenantId, tenantId), eq(s.storedFiles.publicId, publicId), isNull(s.storedFiles.deletedAt)),
+              )
+              .limit(1)
+          )[0],
+        ),
+      ),
+    update: async (tenantId, publicId, patch) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .update(s.storedFiles)
+            .set(toStoredFilePatch(patch))
+            .where(and(eq(s.storedFiles.tenantId, tenantId), eq(s.storedFiles.publicId, publicId)))
+            .returning()
+        )[0];
+        if (!row) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
+        return mapStoredFile(row)!;
+      }),
+    softDelete: async (tenantId, publicId, physicalDeleteAt) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .update(s.storedFiles)
+            .set({
+              deletedAt: new Date(),
+              retentionState: "pending_delete",
+              physicalDeleteAt: new Date(physicalDeleteAt),
+            })
+            .where(and(eq(s.storedFiles.tenantId, tenantId), eq(s.storedFiles.publicId, publicId)))
+            .returning()
+        )[0];
+        if (!row) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
+        return mapStoredFile(row)!;
+      }),
   };
 }
 
@@ -1252,14 +1394,78 @@ function createInterviewRepository(): Repositories["interviews"] {
   };
 }
 
-function createCandidateProfileRepository(db: Db): Repositories["candidateProfiles"] {
+function createCandidateProfileRepository(): Repositories["candidateProfiles"] {
   return {
     getByUser: async (tenantId, userId) =>
-      mapCandidateProfile(
-        (
+      withTenant(tenantId, async (db) =>
+        mapCandidateProfile(
+          (
+            await db
+              .select()
+              .from(s.candidateProfiles)
+              .where(
+                and(
+                  eq(s.candidateProfiles.tenantId, tenantId),
+                  eq(s.candidateProfiles.userId, userId),
+                  isNull(s.candidateProfiles.deletedAt),
+                ),
+              )
+              .limit(1)
+          )[0],
+        ),
+      ),
+    findBySourceResumeFile: async (tenantId, filePublicId) =>
+      withTenant(tenantId, async (db) =>
+        mapCandidateProfile(
+          (
+            await db
+              .select()
+              .from(s.candidateProfiles)
+              .where(
+                and(
+                  eq(s.candidateProfiles.tenantId, tenantId),
+                  eq(s.candidateProfiles.sourceResumeFilePublicId, filePublicId),
+                  isNull(s.candidateProfiles.deletedAt),
+                ),
+              )
+              .limit(1)
+          )[0],
+        ),
+      ),
+    upsert: async (input) =>
+      withTenant(input.tenantId, async (db) => {
+        const existing = (
           await db
             .select()
             .from(s.candidateProfiles)
+            .where(
+              and(
+                eq(s.candidateProfiles.tenantId, input.tenantId),
+                eq(s.candidateProfiles.userId, input.userId ?? ""),
+                isNull(s.candidateProfiles.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (existing) {
+          const row = (
+            await db
+              .update(s.candidateProfiles)
+              .set(toCandidateProfilePatch(input))
+              .where(eq(s.candidateProfiles.id, existing.id))
+              .returning()
+          )[0]!;
+          return mapCandidateProfile(row)!;
+        }
+        const row = (await db.insert(s.candidateProfiles).values(toCandidateProfileValues(input)).returning())[0]!;
+        return mapCandidateProfile(row)!;
+      }),
+    updateOnboarding: async (tenantId, userId, patch) =>
+      withTenant(tenantId, async (db) => {
+        const row = (
+          await db
+            .update(s.candidateProfiles)
+            .set(toCandidateProfilePatch(patch))
             .where(
               and(
                 eq(s.candidateProfiles.tenantId, tenantId),
@@ -1267,86 +1473,29 @@ function createCandidateProfileRepository(db: Db): Repositories["candidateProfil
                 isNull(s.candidateProfiles.deletedAt),
               ),
             )
-            .limit(1)
-        )[0],
-      ),
-    findBySourceResumeFile: async (tenantId, filePublicId) =>
-      mapCandidateProfile(
-        (
-          await db
-            .select()
-            .from(s.candidateProfiles)
-            .where(
-              and(
-                eq(s.candidateProfiles.tenantId, tenantId),
-                eq(s.candidateProfiles.sourceResumeFilePublicId, filePublicId),
-                isNull(s.candidateProfiles.deletedAt),
-              ),
-            )
-            .limit(1)
-        )[0],
-      ),
-    upsert: async (input) => {
-      const existing = (
-        await db
-          .select()
-          .from(s.candidateProfiles)
-          .where(
-            and(
-              eq(s.candidateProfiles.tenantId, input.tenantId),
-              eq(s.candidateProfiles.userId, input.userId ?? ""),
-              isNull(s.candidateProfiles.deletedAt),
-            ),
-          )
-          .limit(1)
-      )[0];
-      if (existing) {
+            .returning()
+        )[0];
+        if (!row) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
+        return mapCandidateProfile(row)!;
+      }),
+    update: async (tenantId, userId, patch) =>
+      withTenant(tenantId, async (db) => {
         const row = (
           await db
             .update(s.candidateProfiles)
-            .set(toCandidateProfilePatch(input))
-            .where(eq(s.candidateProfiles.id, existing.id))
+            .set(toCandidateProfilePatch(patch))
+            .where(
+              and(
+                eq(s.candidateProfiles.tenantId, tenantId),
+                eq(s.candidateProfiles.userId, userId),
+                isNull(s.candidateProfiles.deletedAt),
+              ),
+            )
             .returning()
-        )[0]!;
+        )[0];
+        if (!row) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
         return mapCandidateProfile(row)!;
-      }
-      const row = (await db.insert(s.candidateProfiles).values(toCandidateProfileValues(input)).returning())[0]!;
-      return mapCandidateProfile(row)!;
-    },
-    updateOnboarding: async (tenantId, userId, patch) => {
-      const row = (
-        await db
-          .update(s.candidateProfiles)
-          .set(toCandidateProfilePatch(patch))
-          .where(
-            and(
-              eq(s.candidateProfiles.tenantId, tenantId),
-              eq(s.candidateProfiles.userId, userId),
-              isNull(s.candidateProfiles.deletedAt),
-            ),
-          )
-          .returning()
-      )[0];
-      if (!row) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
-      return mapCandidateProfile(row)!;
-    },
-    update: async (tenantId, userId, patch) => {
-      const row = (
-        await db
-          .update(s.candidateProfiles)
-          .set(toCandidateProfilePatch(patch))
-          .where(
-            and(
-              eq(s.candidateProfiles.tenantId, tenantId),
-              eq(s.candidateProfiles.userId, userId),
-              isNull(s.candidateProfiles.deletedAt),
-            ),
-          )
-          .returning()
-      )[0];
-      if (!row) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
-      return mapCandidateProfile(row)!;
-    },
+      }),
   };
 }
 

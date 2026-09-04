@@ -3,6 +3,7 @@ import { buildAuthContext } from "@server/http/context";
 import { jsonOk, jsonError, parseJsonBody } from "@server/http/response";
 import { requireUser } from "@server/auth/guards";
 import { updateOnboardingRequestSchema } from "@server/contracts/api";
+import { assertCsrf } from "@server/http/csrf";
 
 export async function GET(request: Request) {
   let requestId = "";
@@ -25,6 +26,7 @@ export async function GET(request: Request) {
 export async function PATCH(request: Request) {
   let requestId = "";
   try {
+    assertCsrf(request);
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
     requireUser(ctx);
