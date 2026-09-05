@@ -31,7 +31,14 @@ export function GenerateForm() {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json", "x-csrf-token": csrfToken() },
-        body: JSON.stringify({ ...form, idempotencyKey }),
+        body: JSON.stringify({
+          jobDescription: form.jobDescription.trim() || undefined,
+          jobUrl: form.jobUrl.trim() || undefined,
+          company: form.company.trim() || undefined,
+          role: form.role.trim() || undefined,
+          location: form.location.trim() || undefined,
+          idempotencyKey,
+        }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error?.message ?? "Could not start resume generation");

@@ -315,6 +315,36 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
               sourceVersion: versionNumber === 0 ? "career-evidence" : `V${versionNumber - 1}`,
             }],
           },
+          {
+            type: "experience",
+            title: "Experience",
+            order: 1,
+            bullets: [{
+              text: technologies.length
+                ? `Delivered production outcomes using ${technologies.join(", ")} with measurable ownership.`
+                : "Delivered production platform outcomes with measurable ownership.",
+              evidenceIds: [firstId],
+              matchedRequirements: [],
+              technologies,
+              confidence: "high",
+              claimRisk: "low",
+              sourceVersion: versionNumber === 0 ? "career-evidence" : `V${versionNumber - 1}`,
+            }],
+          },
+          {
+            type: "education",
+            title: "Education",
+            order: 2,
+            bullets: [{
+              text: "Bachelor's degree in Computer Science or equivalent applied education.",
+              evidenceIds: [firstId],
+              matchedRequirements: [],
+              technologies: [],
+              confidence: "medium",
+              claimRisk: "low",
+              sourceVersion: "career-evidence",
+            }],
+          },
         ],
       };
     }

@@ -133,9 +133,36 @@ export function TechConfirmCard({ workflowId, questions }: { workflowId: string;
             </div>
           );
         })}
-        <Button type="button" variant="secondary" onClick={save} disabled={saving || Object.keys(values).length === 0}>
-          {saving ? "Saving…" : "Save confirmations"}
-        </Button>
+        <div className="flex flex-wrap gap-3">
+          <Button type="button" variant="secondary" onClick={save} disabled={saving || Object.keys(values).length === 0}>
+            {saving ? "Saving…" : "Save confirmations"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              try {
+                const csrf = decodeURIComponent(document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "");
+                const response = await fetch(`/api/v1/resumes/workflows/${workflowId}/tech-answers`, {
+                  method: "POST",
+                  credentials: "include",
+                  headers: { "content-type": "application/json", "x-csrf-token": csrf },
+                  body: JSON.stringify({ answers: [], skip: true }),
+                });
+                if (!response.ok) throw new Error("Could not continue");
+                toast.success("Continuing without tech confirmations");
+              } catch (error) {
+                toast.error(error instanceof Error ? error.message : "Could not continue");
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            Continue without answering
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

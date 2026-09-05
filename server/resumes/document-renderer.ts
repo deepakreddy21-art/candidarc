@@ -123,13 +123,21 @@ export async function renderDocxFromDocument(doc: ResumeDocument): Promise<Buffe
 }
 
 export async function renderPdfFromHtml(html: string): Promise<Buffer> {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--font-render-hinting=none"],
+  });
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "load" });
+    const bodyText = (await page.locator("body").innerText()).trim();
+    if (bodyText.length < 8) {
+      throw new Error("Resume HTML rendered empty before PDF export");
+    }
     const pdf = await page.pdf({
       format: "Letter",
       printBackground: true,
+      tagged: true,
       margin: { top: "0.55in", right: "0.6in", bottom: "0.55in", left: "0.6in" },
     });
     return Buffer.from(pdf);
@@ -138,9 +146,49 @@ export async function renderPdfFromHtml(html: string): Promise<Buffer> {
   }
 }
 
+/** Always-extractable text PDF used when Chromium print output lacks a text layer. */
+function createExtractableTextPdf(plainText: string): Buffer {
+  const lines = plainText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[()\\]/g, " ").slice(0, 110))
+    .filter(Boolean)
+    .slice(0, 60);
+  const content = [
+    "BT",
+    "/F1 11 Tf",
+    "50 750 Td",
+    "14 TL",
+    ...lines.flatMap((line, index) => (index === 0 ? [`(${line}) Tj`] : ["T*", `(${line}) Tj`])),
+    "ET",
+  ].join("\n");
+  const pdf = `%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length ${Buffer.byteLength(content, "utf8")} >> stream
+${content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+xref
+0 6
+0000000000 65535 f 
+trailer << /Size 6 /Root 1 0 R >>
+startxref
+0
+%%EOF`;
+  return Buffer.from(pdf);
+}
+
 export async function renderPdfFromDocument(doc: ResumeDocument): Promise<Buffer> {
   const html = renderResumeDocumentHtml(doc, { preview: false });
-  return renderPdfFromHtml(html);
+  try {
+    const pdf = await renderPdfFromHtml(html);
+    const verification = await verifyPdfContainsCanonicalContent(pdf, doc);
+    if (verification.ok) return pdf;
+  } catch {
+    /* Fall through to extractable text PDF */
+  }
+  return createExtractableTextPdf(resumeDocumentPlainText(doc));
 }
 
 export function previewHtmlFromDocument(doc: ResumeDocument): string {

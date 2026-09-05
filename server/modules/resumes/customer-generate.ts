@@ -24,12 +24,15 @@ import type { ObjectStorage } from "../../storage/types";
 import type { DurableWorkflowEngine } from "../../workflows/engine";
 import type { WorkflowStage } from "../../domain/types";
 
+const emptyToUndefined = (value: unknown) =>
+  typeof value === "string" && value.trim() === "" ? undefined : value;
+
 export const customerGenerateInputSchema = z.object({
-  jobDescription: z.string().min(20).max(100_000).optional(),
-  jobUrl: z.string().url().optional(),
-  company: z.string().min(1).max(120).optional(),
-  role: z.string().min(1).max(160).optional(),
-  location: z.string().max(160).optional(),
+  jobDescription: z.preprocess(emptyToUndefined, z.string().min(20).max(100_000).optional()),
+  jobUrl: z.preprocess(emptyToUndefined, z.string().url().optional()),
+  company: z.preprocess(emptyToUndefined, z.string().min(1).max(120).optional()),
+  role: z.preprocess(emptyToUndefined, z.string().min(1).max(160).optional()),
+  location: z.preprocess(emptyToUndefined, z.string().max(160).optional()),
   idempotencyKey: z.string().min(8).max(128).optional(),
 }).refine((input) => input.jobDescription || input.jobUrl, {
   message: "A job description or job URL is required",
@@ -228,7 +231,12 @@ export class CustomerGenerateService {
     const documentsAreReady = pdfReady && docxReady;
     const questions = (app.metadata?.techQuestions ?? []) as TechQuestion[];
     const mapped = mapInternalStageToCustomer(app.workflowStage, {
-      failed: latestRun.status === "failed",
+      failed:
+        latestRun.status === "failed" ||
+        app.workflowStage === "FINAL_QA_FAILED" ||
+        app.workflowStage === "FAILED" ||
+        latestRun.stage === "FINAL_QA_FAILED" ||
+        latestRun.stage === "FAILED",
       documentsReady: documentsAreReady,
       startedAt: latestRun.startedAt ?? latestRun.createdAt,
       needsInput:

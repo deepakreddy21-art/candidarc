@@ -43,11 +43,17 @@ Requirements: 5+ years experience, strong ownership, measurable impact.`;
     await page.getByRole("button", { name: /create|generate|tailor/i }).first().click();
 
     await expect(
-      page.getByText(/Understanding role|Tailoring experience|Preparing documents|Working on your resume/i).first(),
+      page.getByText(/Understanding role|Tailoring experience|Preparing documents|Working on your resume|We need a few details/i).first(),
     ).toBeVisible({
       timeout: 30_000,
     });
     await expect(page.locator("body")).not.toContainText(/HR_AUDIT|EM_AUDIT|V0_GENERATING/);
+
+    // Optional tech prompts must not block the customer journey
+    const continueWithout = page.getByRole("button", { name: /continue without answering/i });
+    if (await continueWithout.isVisible().catch(() => false)) {
+      await continueWithout.click();
+    }
 
     // Wait for completion (mock pipeline is fast)
     await expect(

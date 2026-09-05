@@ -92,9 +92,13 @@ export function runDeterministicFinalQa(input: {
 
   const hasContact = /@|linkedin\.com|github\.com|\+?\d[\d\s().-]{7,}/i.test(text);
 
-  const hasExperience = /experience/i.test(text);
+  const hasExperience =
+    input.sections.some((section) => typeof section === "object" && section && (section as { type?: string }).type === "experience") ||
+    /experience/i.test(text);
 
-  const hasEducation = /education/i.test(text);
+  const hasEducation =
+    input.sections.some((section) => typeof section === "object" && section && (section as { type?: string }).type === "education") ||
+    /education/i.test(text);
 
   const chronologyDates = [...text.matchAll(/\b(19|20)\d{2}\b/g)].map((match) => Number(match[0]));
 

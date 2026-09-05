@@ -200,6 +200,12 @@ export class ResumePipeline {
     return key;
   }
 
+  /** Customer-facing flows treat tech confirmation as optional and never pause the pipeline. */
+  private shouldPauseForTechConfirmation(run: WorkflowRunRecord, questions: TechQuestion[]): boolean {
+    if (run.payload?.customerFacing === true) return false;
+    return hasUnansweredTechQuestions(questions);
+  }
+
   private async commit(key: string, costCents: string) {
     const entry = await this.deps.usage.findByIdempotency(key);
     if (!entry) return;
@@ -391,9 +397,10 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const existing = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     if (existing && existing.status === "completed") {
       await this.commit(usageKey, String(result.usage.estimatedCostCents));
+      const pauseForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
       await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
-        status: hasUnansweredTechQuestions(techQuestions) ? "waiting_review" : undefined,
-        message: hasUnansweredTechQuestions(techQuestions)
+        status: pauseForTech ? "waiting_review" : undefined,
+        message: pauseForTech
           ? "Waiting for technology confirmation before evidence matching"
           : "Research already completed (idempotent)",
       });
@@ -402,9 +409,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         workflowStage: "RESEARCH_COMPLETED",
         researchConfidence: result.data.overallConfidence,
         status: "evidence",
-        nextAction: hasUnansweredTechQuestions(techQuestions) ? "Confirm technologies" : "Match evidence",
+        nextAction: pauseForTech ? "Confirm technologies" : "Match evidence",
       });
-      if (hasUnansweredTechQuestions(techQuestions)) {
+      if (pauseForTech) {
         return;
       }
       await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
@@ -444,7 +451,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     }
 
     await this.commit(usageKey, String(result.usage.estimatedCostCents));
-    const waitingForTech = hasUnansweredTechQuestions(techQuestions);
+    const waitingForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
     await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
       status: waitingForTech ? "waiting_review" : undefined,
       message: waitingForTech
@@ -933,7 +940,16 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     });
 
     if (!result.passed) {
-      await this.deps.engine.transition(run.id, "FINAL_QA_FAILED", { message: "Final QA failed" });
+      await this.deps.engine.transition(run.id, "FINAL_QA_FAILED", {
+        status: "failed",
+        message: "Final QA failed",
+      });
+      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+        stage: "FINAL_QA_FAILED",
+        workflowStage: "FINAL_QA_FAILED",
+        status: "failed",
+        nextAction: "Retry resume generation",
+      });
       throw new AppError("FINAL_QA_FAILED", "Final QA checks failed", 422, result.checks);
     }
 
