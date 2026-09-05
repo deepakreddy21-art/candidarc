@@ -161,8 +161,39 @@ export function stageClaimKey(stage: WorkflowStage): string {
   return `claimed:${stage}`;
 }
 
+/** Stage claims are attempt-scoped leases, not permanent flags. */
+export const STAGE_CLAIM_LEASE_MS = 5 * 60 * 1000;
+
+export type StageClaimLease = {
+  at: string;
+  expiresAt: string;
+  attempt: number;
+};
+
+export function buildStageClaimLease(attempt = 1, now = Date.now()): StageClaimLease {
+  return {
+    at: new Date(now).toISOString(),
+    expiresAt: new Date(now + STAGE_CLAIM_LEASE_MS).toISOString(),
+    attempt,
+  };
+}
+
+export function isStageClaimActive(value: unknown, now = Date.now()): boolean {
+  if (!value) return false;
+  if (typeof value === "string") {
+    const at = Date.parse(value);
+    if (!Number.isFinite(at)) return false;
+    return now - at < STAGE_CLAIM_LEASE_MS;
+  }
+  if (typeof value === "object" && value && "expiresAt" in value) {
+    const expiresAt = Date.parse(String((value as StageClaimLease).expiresAt));
+    return Number.isFinite(expiresAt) && expiresAt > now;
+  }
+  return false;
+}
+
 export function isTerminalStage(stage: WorkflowStage): boolean {
-  return stage === "FINAL_READY" || stage === "CANCELLED" || stage === "FAILED";
+  return stage === "FINAL_READY" || stage === "CANCELLED" || stage === "FAILED" || stage === "FINAL_QA_FAILED";
 }
 
 export function isReviewPause(stage: WorkflowStage): boolean {

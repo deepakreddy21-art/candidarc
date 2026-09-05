@@ -93,12 +93,15 @@ async function waitForStage(
   timeoutMs = 15_000,
 ) {
   const started = Date.now();
+  let last: WorkflowRunRecord | null = null;
   while (Date.now() - started < timeoutMs) {
-    const run = await repos.workflows.getByPublicId(tenantId, workflowPublicId);
-    if (run && predicate(run.stage)) return run;
+    last = await repos.workflows.getByPublicId(tenantId, workflowPublicId);
+    if (last && predicate(last.stage)) return last;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("Timed out waiting for workflow stage");
+  throw new Error(
+    `Timed out waiting for workflow stage (last=${last?.stage ?? "missing"} status=${last?.status ?? "n/a"})`,
+  );
 }
 
 describe("workflow concurrency", () => {

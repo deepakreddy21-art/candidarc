@@ -35,6 +35,8 @@ import {
   extractJobFromText,
   fetchJobDescriptionFromUrl,
   isPlaceholderIdentity,
+  PLACEHOLDER_COMPANY,
+  PLACEHOLDER_ROLE,
 } from "../resumes/job-extraction";
 
 export type ResumePipelineDeps = {
@@ -283,7 +285,10 @@ export class ResumePipeline {
         }
       }
       if (jobDescription.trim()) {
-        const extraction = await extractJobFromText(jobDescription);
+        const extraction = await extractJobFromText(jobDescription, {
+          company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
+          role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
+        });
         const applied = applyJobExtractionToApplication(application, extraction);
         application = await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
           company: applied.company,
@@ -593,7 +598,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       system: prompt.system,
       user: JSON.stringify({
         applicationPublicId: run.applicationPublicId,
-        versionNumber: storedVersionNumber,
+        versionNumber,
+        cycleBase,
+        storedVersionNumber,
         jobDescription: application?.metadata?.jobDescription,
         application: application?.metadata,
         researchFindings: research?.findings ?? [],
@@ -608,6 +615,10 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           result: item.result,
           technologies: item.technologies,
           confidence: item.confidence,
+          sourceType: item.sourceType,
+          claimText: item.claimText,
+          employerAssociation: item.employerAssociation,
+          projectAssociation: item.projectAssociation,
           ...item.payload,
         })),
         previousVersion,
@@ -943,6 +954,13 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       await this.deps.engine.transition(run.id, "FINAL_QA_FAILED", {
         status: "failed",
         message: "Final QA failed",
+        patch: {
+          payload: {
+            ...run.payload,
+            failedAtStage: "FINAL_QA_RUNNING",
+            finalQaChecks: result.checks,
+          },
+        },
       });
       await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
         stage: "FINAL_QA_FAILED",

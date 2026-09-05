@@ -219,11 +219,14 @@ export class CustomerGenerateService {
   }
 
   async getCustomerWorkflow(ctx: AuthContext, workflowId: string) {
-    const { tenantId } = this.tenant(ctx);
+    const { tenantId, user } = this.tenant(ctx);
     const requested = await this.repos.workflows.getByPublicId(tenantId, workflowId);
     if (!requested) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
     const app = await this.repos.applications.getByPublicId(tenantId, requested.applicationPublicId);
     if (!app || app.metadata?.customerFacing !== true) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
+    if (app.ownerUserId && app.ownerUserId !== user.id) {
+      throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
+    }
     const runs = await this.repos.workflows.listByApplication(tenantId, app.publicId);
     const latestRun = runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? requested;
     const files = (app.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
@@ -331,21 +334,43 @@ export class CustomerGenerateService {
   }
 
   async retry(ctx: AuthContext, workflowId: string) {
-    const { tenantId } = this.tenant(ctx);
+    const { tenantId, user } = this.tenant(ctx);
     const run = await this.repos.workflows.getByPublicId(tenantId, workflowId);
     if (!run) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
-    if (run.status !== "failed" && run.stage !== "FAILED") {
-      throw new AppError("WORKFLOW_NOT_RETRYABLE", "Only failed workflows can be retried", 409);
-    }
     const app = await this.repos.applications.getByPublicId(tenantId, run.applicationPublicId);
     if (!app || app.metadata?.customerFacing !== true) {
       throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
     }
+    if (app.ownerUserId && app.ownerUserId !== user.id) {
+      throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
+    }
+    const retryable =
+      run.status === "failed" ||
+      run.stage === "FAILED" ||
+      run.stage === "FINAL_QA_FAILED" ||
+      app.workflowStage === "FINAL_QA_FAILED" ||
+      app.workflowStage === "FAILED";
+    if (!retryable) {
+      throw new AppError("WORKFLOW_NOT_RETRYABLE", "Only failed workflows can be retried", 409);
+    }
 
-    const resumeStage = (
-      typeof run.payload.failedAtStage === "string" ? run.payload.failedAtStage : "RESEARCH_QUEUED"
-    ) as WorkflowStage;
+    const failedAtStage =
+      typeof run.payload.failedAtStage === "string"
+        ? run.payload.failedAtStage
+        : run.stage === "FINAL_QA_FAILED" || app.workflowStage === "FINAL_QA_FAILED"
+          ? "FINAL_QA_RUNNING"
+          : "RESEARCH_QUEUED";
+    const resumeStage = failedAtStage as WorkflowStage;
     const status = resumeStage.endsWith("_QUEUED") ? "queued" : "running";
+
+    const clearedPayload: Record<string, unknown> = {
+      ...run.payload,
+      lastRetryAt: new Date().toISOString(),
+      failedAtStage: resumeStage,
+    };
+    for (const key of Object.keys(clearedPayload)) {
+      if (key.startsWith("claimed:")) delete clearedPayload[key];
+    }
 
     await this.engine.transition(run.id, resumeStage, {
       status,
@@ -354,7 +379,7 @@ export class CustomerGenerateService {
         attempt: 1,
         errorClass: undefined,
         completedAt: undefined,
-        payload: { ...run.payload, lastRetryAt: new Date().toISOString() },
+        payload: clearedPayload,
       },
     });
     await this.repos.applications.update(tenantId, app.publicId, {
@@ -378,6 +403,9 @@ export class CustomerGenerateService {
     if (!run) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
     const app = await this.repos.applications.getByPublicId(tenantId, run.applicationPublicId);
     if (!app) throw new AppError("APPLICATION_NOT_FOUND", "Resume application not found", 404);
+    if (app.ownerUserId && app.ownerUserId !== user.id) {
+      throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
+    }
 
     const existingQuestions = (app.metadata?.techQuestions ?? []) as TechQuestion[];
     const fingerprint = techAnswersFingerprint(answers);
@@ -484,11 +512,14 @@ export class CustomerGenerateService {
   }
 
   async refine(ctx: AuthContext, workflowId: string, input: { instruction: string; quickAction?: string }) {
-    const { tenantId } = this.tenant(ctx);
+    const { tenantId, user } = this.tenant(ctx);
     const original = await this.repos.workflows.getByPublicId(tenantId, workflowId);
     if (!original) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
     const app = await this.repos.applications.getByPublicId(tenantId, original.applicationPublicId);
     if (!app) throw new AppError("APPLICATION_NOT_FOUND", "Resume application not found", 404);
+    if (app.ownerUserId && app.ownerUserId !== user.id) {
+      throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
+    }
     const resume = await this.repos.resumes.getByApplication(tenantId, app.publicId);
     const versions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
     const cycleBase = (versions.at(-1)?.versionNumber ?? -1) + 1;
@@ -518,11 +549,15 @@ export class CustomerGenerateService {
   }
 
   async getDownload(ctx: AuthContext, workflowId: string, format: "pdf" | "docx") {
-    const { tenantId } = this.tenant(ctx);
+    const { tenantId, user } = this.tenant(ctx);
     const run = await this.repos.workflows.getByPublicId(tenantId, workflowId);
     if (!run) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
     const app = await this.repos.applications.getByPublicId(tenantId, run.applicationPublicId);
-    const files = app?.metadata?.customerFiles as CustomerFilesMeta | undefined;
+    if (!app) throw new AppError("APPLICATION_NOT_FOUND", "Resume application not found", 404);
+    if (app.ownerUserId && app.ownerUserId !== user.id) {
+      throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
+    }
+    const files = app.metadata?.customerFiles as CustomerFilesMeta | undefined;
     const storageKey = format === "pdf" ? files?.pdfStorageKey : files?.docxStorageKey;
     if (!storageKey) throw new AppError("DOCUMENT_NOT_READY", "That document is not ready yet", 409);
     const object = await this.storage.getObject(tenantId, storageKey);
@@ -530,7 +565,7 @@ export class CustomerGenerateService {
     return {
       body: object.body,
       contentType: format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      filename: `${app?.role ?? "tailored-resume"}.${format}`,
+      filename: `${app.role ?? "tailored-resume"}.${format}`,
     };
   }
 }

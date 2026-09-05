@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type { FindingDecision, TenantRole, WorkflowStage } from "../domain/types";
 import { AppError } from "../domain/types";
+import { buildStageClaimLease, isStageClaimActive } from "../workflows/stages";
 
 export type Id = string;
 
@@ -93,6 +94,12 @@ export type EvidenceRecord = {
   excludedFromApplicationIds: string[];
   matchedApplicationIds: string[];
   payload: Record<string, unknown>;
+  sourceType?: string | null;
+  claimText?: string | null;
+  evidenceStatus?: string;
+  candidateConfirmationStatus?: string;
+  employerAssociation?: string | null;
+  projectAssociation?: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -358,8 +365,15 @@ export interface MemoryStoreLike {
   ensureSeeded?(): Promise<void> | void;
 }
 
-export function newId(prefix: string): string {
-  return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+export function newId(_prefix = "id"): string {
+  // Primary-key columns are UUID; never emit prefixed non-UUID strings.
+  void _prefix;
+  return randomUUID();
+}
+
+/** Human-readable public identifiers (text columns, not UUID PKs). */
+export function newPublicId(prefix: string): string {
+  return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
 
 export function nowIso(): string {
@@ -1013,7 +1027,7 @@ export class MemoryRepositories implements Repositories {
           const existing = store.workflowRuns.get(runId);
           if (!existing) return null;
           const stageOk = existing.stage === expectedStage || (running !== null && existing.stage === running);
-          if (!stageOk || existing.payload[claimKey]) return null;
+          if (!stageOk || isStageClaimActive(existing.payload[claimKey])) return null;
 
           let nextStage = existing.stage;
           if (existing.stage === expectedStage && running) {
@@ -1024,7 +1038,7 @@ export class MemoryRepositories implements Repositories {
             ...existing,
             stage: nextStage,
             status: "running",
-            payload: { ...existing.payload, [claimKey]: nowIso() },
+            payload: { ...existing.payload, [claimKey]: buildStageClaimLease(existing.attempt ?? 1) },
             updatedAt: nowIso(),
           };
           store.workflowRuns.set(runId, updated);

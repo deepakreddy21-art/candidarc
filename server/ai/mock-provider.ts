@@ -169,18 +169,19 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
           // plain text fallback
         }
         const companyMatch =
+          /\b([A-Z][A-Za-z0-9&.\- ]{1,60}?)\s+is seeking\b/i.exec(jobText) ||
           /\b(?:at|for)\s+([A-Z][A-Za-z0-9&.\- ]{1,40})\b/.exec(jobText) ||
           /^([A-Z][A-Za-z0-9&.\- ]{1,40})\s+seeks\b/i.exec(jobText) ||
           /\bCompany:\s*([^\n]+)/i.exec(jobText);
         const roleMatch =
-          /(Senior|Staff|Principal|Lead)?\s*(Software|Platform|AI|ML|Data)?\s*Engineer/i.exec(jobText) ||
+          /\b((?:Senior|Staff|Principal|Lead)\s+)?(?:AI|ML|Machine Learning|Platform|Software|Data)?\s*Engineer(?:ing)?\b/i.exec(jobText) ||
           /\bRole:\s*([^\n]+)/i.exec(jobText);
         const extractedCompany =
-          contextCompany.trim() ||
+          (contextCompany.trim() && contextCompany !== "Target company" ? contextCompany.trim() : "") ||
           companyMatch?.[1]?.trim() ||
           "Unknown company";
         const extractedRole =
-          contextRole.trim() ||
+          (contextRole.trim() && contextRole !== "Target role" ? contextRole.trim() : "") ||
           roleMatch?.[0]?.trim() ||
           "Software Engineer";
         return {
@@ -209,6 +210,36 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
         const company = typeof context.company === "string" ? context.company : "Target company";
         const role = typeof context.role === "string" ? context.role : "target role";
         const collected = Array.isArray(context.collectedSources) ? context.collectedSources as Array<Record<string, unknown>> : [];
+        const fictional =
+          /asteria|example\.com|fictional|acme robotics/i.test(company) ||
+          (typeof context.jobUrl === "string" && /example\.com/i.test(context.jobUrl));
+        if (fictional || collected.length === 0) {
+          return {
+            findings: [
+              {
+                category: "company",
+                title: "Company research unavailable",
+                summary: `Independent company research is unavailable for ${company}. Resume tailoring will use only the supplied job description and candidate evidence.`,
+                confidence: "low",
+                status: "unverified",
+                sourceIds: [],
+              },
+              {
+                category: "role",
+                title: `${role} priorities from job description`,
+                summary: typeof context.jobDescription === "string"
+                  ? context.jobDescription.slice(0, 300)
+                  : `Role requirements supplied for ${company}.`,
+                confidence: "high",
+                status: "verified",
+                sourceIds: [],
+              },
+            ],
+            sources: [],
+            overallConfidence: 40,
+            companyResearchStatus: "unavailable",
+          };
+        }
         const sources = collected.map((source, index) => ({
           id: typeof source.id === "string" ? source.id : `src-${index + 1}`,
           url: typeof source.url === "string" ? source.url : "https://example.com",
@@ -293,6 +324,71 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
           ],
         };
       }
+      const employmentEvidence = evidence.filter((item) =>
+        item.sourceType === "employment" || item.kind === "employment" || item.source === "resume-import",
+      );
+      const educationEvidence = evidence.filter((item) =>
+        item.sourceType === "education" || /institute|university|college|school/i.test(String(item.organization ?? item.title ?? "")),
+      );
+      const experienceBullets = (employmentEvidence.length ? employmentEvidence : evidence.slice(0, 2)).map((item) => {
+        const claim = String(item.claimText ?? item.situation ?? item.title ?? "Evidence-backed delivery");
+        const org = typeof item.organization === "string" && item.organization
+          ? item.organization
+          : typeof item.employerAssociation === "string" && item.employerAssociation
+            ? item.employerAssociation
+            : "";
+        const text = org && !claim.includes(org) ? `${org}: ${claim}` : claim;
+        const techs = Array.isArray(item.technologies)
+          ? (item.technologies as unknown[]).filter((value): value is string => typeof value === "string").slice(0, 4)
+          : technologies;
+        return {
+          text,
+          evidenceIds: [typeof item.id === "string" ? item.id : firstId],
+          matchedRequirements: [],
+          technologies: techs,
+          confidence: "high" as const,
+          claimRisk: "low" as const,
+          sourceVersion: versionNumber === 0 ? "career-evidence" : `V${versionNumber - 1}`,
+        };
+      });
+      const educationBullets: Array<{
+        text: string;
+        evidenceIds: string[];
+        matchedRequirements: string[];
+        technologies: string[];
+        confidence: "high" | "medium" | "low";
+        claimRisk: "low" | "medium" | "high";
+        sourceVersion: string;
+      }> = (educationEvidence.length ? educationEvidence : []).map((item) => {
+        const claim = String(item.claimText ?? item.situation ?? item.title ?? "Education");
+        const org = typeof item.organization === "string" && item.organization ? item.organization : "";
+        const text = org && !claim.includes(org) ? `${org}: ${claim}` : claim;
+        return {
+          text,
+          evidenceIds: [typeof item.id === "string" ? item.id : firstId],
+          matchedRequirements: [],
+          technologies: [],
+          confidence: "high" as const,
+          claimRisk: "low" as const,
+          sourceVersion: "career-evidence",
+        };
+      });
+      if (!educationBullets.length) {
+        educationBullets.push({
+          text: "Education details from candidate evidence.",
+          evidenceIds: [firstId],
+          matchedRequirements: [],
+          technologies: [],
+          confidence: "medium",
+          claimRisk: "low",
+          sourceVersion: "career-evidence",
+        });
+      }
+      const skillTech = [...new Set(evidence.flatMap((item) =>
+        Array.isArray(item.technologies)
+          ? (item.technologies as unknown[]).filter((value): value is string => typeof value === "string")
+          : [],
+      ))].slice(0, 12);
       return {
         versionNumber,
         score: scored.score,
@@ -316,34 +412,30 @@ function fixtureForPrompt(promptId: PromptId, user: string): unknown {
             }],
           },
           {
-            type: "experience",
-            title: "Experience",
+            type: "skills",
+            title: "Skills",
             order: 1,
             bullets: [{
-              text: technologies.length
-                ? `Delivered production outcomes using ${technologies.join(", ")} with measurable ownership.`
-                : "Delivered production platform outcomes with measurable ownership.",
+              text: skillTech.length ? skillTech.join(" · ") : "Python · TypeScript · AWS",
               evidenceIds: [firstId],
               matchedRequirements: [],
-              technologies,
+              technologies: skillTech,
               confidence: "high",
               claimRisk: "low",
-              sourceVersion: versionNumber === 0 ? "career-evidence" : `V${versionNumber - 1}`,
+              sourceVersion: "career-evidence",
             }],
+          },
+          {
+            type: "experience",
+            title: "Experience",
+            order: 2,
+            bullets: experienceBullets,
           },
           {
             type: "education",
             title: "Education",
-            order: 2,
-            bullets: [{
-              text: "Bachelor's degree in Computer Science or equivalent applied education.",
-              evidenceIds: [firstId],
-              matchedRequirements: [],
-              technologies: [],
-              confidence: "medium",
-              claimRisk: "low",
-              sourceVersion: "career-evidence",
-            }],
+            order: 3,
+            bullets: educationBullets,
           },
         ],
       };

@@ -38,6 +38,10 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm test
+        env:
+          APP_MODE: demo
+          AI_MODE: mock
+          CANDIDARC_DATA_MODE: memory
 
   integration:
     runs-on: ubuntu-latest
@@ -55,11 +59,23 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       DATABASE_URL: postgres://candidarc:candidarc@localhost:5432/candidarc_test
+      REDIS_URL: redis://localhost:6379
       CANDIDARC_DATA_MODE: postgres
       APP_MODE: demo
       AI_MODE: mock
+      CANDIDARC_REQUIRE_INFRA: "1"
+      QUEUE_BACKEND: redis
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,8 +83,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm run db:migrate
       - run: npm run test:integration
+      - run: npm run test:production
 
   e2e:
     runs-on: ubuntu-latest
@@ -98,11 +116,39 @@ jobs:
       - run: npm ci
       - run: npm run build
         env:
-          APP_MODE: demo
-          NEXT_PUBLIC_APP_MODE: demo
+          APP_MODE: production
+          NEXT_PUBLIC_APP_MODE: production
 
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t candidarc:ci .
+      - run: docker build --target web -t candidarc:web .
+      - run: docker build --target worker -t candidarc:worker .
+      - name: Ensure secrets and private fixtures are not in image
+        run: |
+          docker create --name candidarc-web-check candidarc:web
+          docker export candidarc-web-check | tar -t | tee /tmp/image-files.txt
+          docker rm candidarc-web-check
+          ! grep -E '(^|/)\.env($|\.)' /tmp/image-files.txt
+          ! grep -E '\.local-fixtures' /tmp/image-files.txt
+          ! grep -E '(^|/)\.git(/|$)' /tmp/image-files.txt
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for private contact fixtures and secret patterns
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '^\.local-fixtures/'; then
+            echo "Private fixtures must not be tracked"
+            exit 1
+          fi
+          if git grep -n -I -E '312-459-9869|kilarudeepakreddy@gmail\.com|sk-[A-Za-z0-9]{20,}|ANTHROPIC_API_KEY[[:space:]]*=[[:space:]]*['\''\"]?sk-' -- . ':!.github/workflows/ci.yml'; then
+            echo "Forbidden secret or private contact pattern found in tracked files"
+            exit 1
+          fi
+          echo "Secret scan passed"

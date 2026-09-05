@@ -11,6 +11,7 @@ import {
   type WorkflowRunRecord,
 } from "./repositories";
 import { AppError, type WorkflowStage } from "../domain/types";
+import { buildStageClaimLease, isStageClaimActive } from "../workflows/stages";
 import { withTenant } from "./with-tenant";
 import {
   buildEvidenceMatchMap,
@@ -392,6 +393,12 @@ function createEvidenceRepository(): Repositories["evidence"] {
               verificationStatus: item.verificationStatus as typeof s.evidenceItems.$inferInsert.verificationStatus,
               privacyLevel: item.privacyLevel as typeof s.evidenceItems.$inferInsert.privacyLevel,
               payload: item.payload ?? {},
+              sourceType: item.sourceType ?? null,
+              claimText: item.claimText ?? null,
+              evidenceStatus: item.evidenceStatus ?? "active",
+              candidateConfirmationStatus: item.candidateConfirmationStatus ?? "pending",
+              employerAssociation: item.employerAssociation ?? null,
+              projectAssociation: item.projectAssociation ?? null,
               version: item.version ?? 1,
             })
             .returning()
@@ -1244,7 +1251,7 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
       const { run: row, applicationPublicId } = rowData;
       const payload = (row.payload ?? {}) as Record<string, unknown>;
       const stageOk = row.stage === expectedStage || (running !== null && row.stage === running);
-      if (!stageOk || payload[claimKey]) return null;
+      if (!stageOk || isStageClaimActive(payload[claimKey])) return null;
 
       let nextStage = row.stage as WorkflowStage;
       if (row.stage === expectedStage && running) {
@@ -1257,7 +1264,7 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
           .set({
             stage: nextStage,
             status: "running",
-            payload: { ...payload, [claimKey]: new Date().toISOString() },
+            payload: { ...payload, [claimKey]: buildStageClaimLease(row.attempt ?? 1) },
             updatedAt: new Date(),
           })
           .where(

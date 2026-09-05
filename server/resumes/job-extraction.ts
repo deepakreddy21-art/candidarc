@@ -11,6 +11,16 @@ export function isPlaceholderIdentity(company: string, role: string): boolean {
   return company.trim() === PLACEHOLDER_COMPANY || role.trim() === PLACEHOLDER_ROLE;
 }
 
+function isUsableExtractedIdentity(value: string | undefined | null): boolean {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return false;
+  const lowered = trimmed.toLowerCase();
+  return lowered !== "unknown company"
+    && lowered !== "unknown role"
+    && trimmed !== PLACEHOLDER_COMPANY
+    && trimmed !== PLACEHOLDER_ROLE;
+}
+
 export function jobRequirementsFromExtraction(extraction: JobExtractionOutput): string[] {
   return [
     ...extraction.requiredQualifications,
@@ -28,13 +38,20 @@ export async function fetchJobDescriptionFromUrl(jobUrl: string): Promise<string
   return text.slice(0, 100_000);
 }
 
-export async function extractJobFromText(jobText: string): Promise<JobExtractionOutput> {
+export async function extractJobFromText(
+  jobText: string,
+  hints?: { company?: string; role?: string },
+): Promise<JobExtractionOutput> {
   const provider = getProviderForRole("generation");
   const prompt = getPrompt("job-extraction");
   const result = await provider.generateStructured({
     prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
     system: prompt.system,
-    user: JSON.stringify({ jobText: jobText.slice(0, 100_000) }),
+    user: JSON.stringify({
+      jobText: jobText.slice(0, 100_000),
+      ...(hints?.company ? { company: hints.company } : {}),
+      ...(hints?.role ? { role: hints.role } : {}),
+    }),
     schema: jobExtractionSchema,
   });
   return {
@@ -62,21 +79,26 @@ export function applyJobExtractionToApplication(
   const extractedCompany = extraction.company?.trim();
   const extractedRole = extraction.role?.trim();
   const extractedTitle = extraction.title?.trim();
+  const hasUsableExtractedCompany = isUsableExtractedIdentity(extractedCompany);
+  const hasUsableExtractedRole = isUsableExtractedIdentity(extractedRole) || isUsableExtractedIdentity(extractedTitle);
+  const hasProvidedCompany = Boolean(currentCompany) && currentCompany !== PLACEHOLDER_COMPANY;
+  const hasProvidedRole = Boolean(currentRole) && currentRole !== PLACEHOLDER_ROLE;
 
   const company =
-    extractedCompany ||
-    (isPlaceholderIdentity(currentCompany, currentRole) ? "" : currentCompany) ||
+    (hasUsableExtractedCompany ? extractedCompany! : "") ||
+    (hasProvidedCompany ? currentCompany : "") ||
     currentCompany;
   const role =
-    extractedRole ||
-    extractedTitle ||
-    (isPlaceholderIdentity(currentCompany, currentRole) ? "" : currentRole) ||
+    (hasUsableExtractedRole ? (isUsableExtractedIdentity(extractedRole) ? extractedRole! : extractedTitle!) : "") ||
+    (hasProvidedRole ? currentRole : "") ||
     currentRole;
 
   const resolvedCompany = company || PLACEHOLDER_COMPANY;
   const resolvedRole = role || PLACEHOLDER_ROLE;
   const needsIdentityReview =
-    !extractedCompany && !extractedRole && !extractedTitle && isPlaceholderIdentity(resolvedCompany, resolvedRole);
+    !hasUsableExtractedCompany
+    && !hasUsableExtractedRole
+    && isPlaceholderIdentity(resolvedCompany, resolvedRole);
 
   const jobRequirements = jobRequirementsFromExtraction(extraction);
   const metadata = {

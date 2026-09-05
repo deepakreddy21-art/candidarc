@@ -82,6 +82,9 @@ export async function requireApplicationAccess(ctx: AuthContext, applicationPubl
       throw new AppError("FORBIDDEN_TENANT", "Active tenant cannot access this application", 403);
     }
   }
+  if (app.ownerUserId && app.ownerUserId !== user.id) {
+    throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this application", 403);
+  }
   return { user, application: app };
 }
 
@@ -95,6 +98,9 @@ export async function requireEvidenceAccess(ctx: AuthContext, evidencePublicId: 
     throw new AppError("EVIDENCE_NOT_FOUND", "Evidence not found", 404);
   }
   requireTenantMembership(ctx, evidence.tenantId);
+  if (evidence.ownerUserId && evidence.ownerUserId !== user.id) {
+    throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this evidence", 403);
+  }
   return { user, evidence };
 }
 

@@ -49,7 +49,7 @@ export type ResumeUploadInput = {
 
 
 
-function importEvidencePublicId(filePublicId: string, kind: "emp" | "proj", index: number): string {
+function importEvidencePublicId(filePublicId: string, kind: "emp" | "proj" | "cert" | "edu", index: number): string {
 
   const digest = createHash("sha256").update(`${filePublicId}:${kind}:${index}`).digest("hex").slice(0, 20);
 
@@ -502,6 +502,92 @@ export class ResumeImportService {
           index,
 
         },
+
+        sourceType: "resume-import-project",
+
+        claimText: description,
+
+        evidenceStatus: "active",
+
+        candidateConfirmationStatus: "confirmed",
+
+        projectAssociation: title,
+
+      });
+
+    }
+
+
+
+    for (const [index, certification] of (extraction.certifications ?? []).entries()) {
+      const name = typeof certification === "string" ? certification.trim() : "";
+      if (!name) continue;
+
+      const publicId = importEvidencePublicId(filePublicId, "cert", index);
+
+      const existing = await this.repos.evidence.getByPublicId(tenantId, publicId);
+
+      if (existing) continue;
+
+
+
+      await this.repos.evidence.create({
+
+        id: newId("ev"),
+
+        publicId,
+
+        tenantId,
+
+        ownerUserId: userId,
+
+        candidateProfileId,
+
+        title: name.trim(),
+
+        organization: "Certification attestation",
+
+        situation: `Candidate reported certification: ${name.trim()}`,
+
+        task: "Provide supporting evidence or keep as attestation-only until confirmed",
+
+        actions: ["Candidate attestation recorded during resume import"],
+
+        result: "Pending independent verification; treat as candidate attestation only",
+
+        technologies: [],
+
+        confidence: "low",
+
+        verificationStatus: "user_attested",
+
+        privacyLevel: "share-safe",
+
+        excludedFromApplicationIds: [],
+
+        matchedApplicationIds: [],
+
+        payload: {
+
+          source: "resume-import",
+
+          filePublicId,
+
+          kind: "certification",
+
+          index,
+
+          attestationRequired: true,
+
+        },
+
+        sourceType: "certification-attestation",
+
+        claimText: name.trim(),
+
+        evidenceStatus: "attestation_pending",
+
+        candidateConfirmationStatus: "attested",
 
       });
 

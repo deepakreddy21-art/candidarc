@@ -41,6 +41,7 @@ export const researchSchema = z.object({
   ),
   sources: z.array(researchSourceSchema),
   overallConfidence: z.number().min(0).max(100),
+  companyResearchStatus: z.enum(["available", "unavailable"]).optional(),
 });
 
 export const evidenceMatchSchema = z.object({
