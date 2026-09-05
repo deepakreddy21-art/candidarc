@@ -131,13 +131,45 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev]"
+      - name: Install pinned requirements
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install --require-hashes -r requirements.txt || pip install -r requirements.txt
+          fi
+          pip install -e ".[dev]"
       - run: ruff check app tests
       - run: mypy app
       - run: pytest -q
       - name: OpenAPI contract drift check
+        run: python scripts/check_openapi_drift.py
+
+  python-mode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - name: Create Python venv and install pinned deps
+        working-directory: services/python-backend
         run: |
-          python -c "import hashlib,json,pathlib; from app.main import app; p=pathlib.Path('openapi.json'); assert p.exists(), 'openapi.json missing — run npm run contract:python'; committed=json.loads(p.read_text()); runtime=app.openapi(); assert set(committed['paths'])==set(runtime['paths']), 'OpenAPI path drift'; ch=hashlib.sha256(json.dumps(committed['paths'],sort_keys=True).encode()).hexdigest(); rh=hashlib.sha256(json.dumps(runtime['paths'],sort_keys=True).encode()).hexdigest(); assert ch==rh"
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            .venv/bin/pip install --require-hashes -r requirements.txt || .venv/bin/pip install -r requirements.txt
+          fi
+          .venv/bin/pip install -e ".[dev]"
+      - run: npm run test:python-mode
+        env:
+          APP_MODE: demo
+          AI_MODE: mock
+          PYTHON_BACKEND_TOKEN: dev-python-backend-token-change-me
 
   docker:
     runs-on: ubuntu-latest
