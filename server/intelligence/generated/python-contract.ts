@@ -11,6 +11,7 @@ import { PYTHON_OPENAPI_SCHEMA_NAMES } from "./python-schemas";
 export const pythonPathCatalogSchema = z.object({
   healthLive: z.literal(PYTHON_BACKEND_PATHS.healthLive),
   healthReady: z.literal(PYTHON_BACKEND_PATHS.healthReady),
+  metrics: z.literal(PYTHON_BACKEND_PATHS.metrics),
   resumesParse: z.literal(PYTHON_BACKEND_PATHS.resumesParse),
   jobsParse: z.literal(PYTHON_BACKEND_PATHS.jobsParse),
   researchSynthesize: z.literal(PYTHON_BACKEND_PATHS.researchSynthesize),

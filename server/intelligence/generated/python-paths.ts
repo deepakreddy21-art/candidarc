@@ -7,6 +7,7 @@
 export const PYTHON_BACKEND_PATHS = {
   healthLive: "/health/live",
   healthReady: "/health/ready",
+  metrics: "/metrics",
   resumesParse: "/v1/resumes/parse",
   jobsParse: "/v1/jobs/parse",
   researchSynthesize: "/v1/research/synthesize",
@@ -28,6 +29,7 @@ export const PYTHON_SCHEMA_VERSION =
 export const PYTHON_OPENAPI_PATHS = [
   "/health/live",
   "/health/ready",
+  "/metrics",
   "/v1/evidence/index",
   "/v1/evidence/match",
   "/v1/evidence/search",

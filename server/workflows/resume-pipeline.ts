@@ -644,6 +644,23 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       const evidenceMatches = Array.isArray(application?.metadata?.evidenceMatches)
         ? (application.metadata.evidenceMatches as Array<Record<string, unknown>>)
         : [];
+      const techQuestions = (application?.metadata?.techQuestions ?? []) as TechQuestion[];
+      const userConfirmations = techQuestions
+        .filter(
+          (question) =>
+            question.answer === "yes_professional" ||
+            question.answer === "yes_project" ||
+            question.answer === "no" ||
+            question.answer === "similar" ||
+            question.answer === "not_sure",
+        )
+        .map((question) => ({
+          topic: question.technology,
+          confirmed: question.answer === "yes_professional" || question.answer === "yes_project",
+          evidenceDescription: question.evidence?.trim() || null,
+          sourceKind: "user_confirmation",
+          relatedEvidenceIds: [],
+        }));
       const generateInput = {
         context,
         absoluteVersion: storedVersionNumber,
@@ -670,6 +687,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           typeof run.payload.refinementInstruction === "string" ? run.payload.refinementInstruction : null,
         jobRequirements,
         evidenceMatches,
+        userConfirmations,
         idempotencyKey,
       };
       try {

@@ -267,5 +267,6 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "ResumeSection-Input",
   "ResumeSection-Output",
   "ScoreBreakdown",
+  "UserConfirmation",
   "ValidationError",
 ] as const;

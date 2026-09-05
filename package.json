@@ -13,6 +13,8 @@
     "test:python": "node scripts/python.mjs -m pytest -q",
     "test:python-mode": "node scripts/python-mode-test.mjs",
     "contract:python": "node scripts/python.mjs scripts/export_openapi.py && node scripts/python.mjs scripts/generate_ts_contract.py",
+    "eval:resume": "node scripts/python.mjs -m evals.run_eval",
+    "smoke:docker": "node scripts/smoke-docker.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",

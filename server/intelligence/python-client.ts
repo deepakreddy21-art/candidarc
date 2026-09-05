@@ -392,6 +392,7 @@ export type GenerateResumeInput = {
   refinementInstruction?: string | null;
   jobRequirements?: string[];
   evidenceMatches?: Array<Record<string, unknown>>;
+  userConfirmations?: Array<Record<string, unknown>>;
   idempotencyKey?: string;
 };
 
@@ -418,6 +419,13 @@ function buildGenerateBody(input: GenerateResumeInput) {
       evidence_strength: row.evidenceStrength ?? row.evidence_strength ?? "none",
       resume_usage: row.resumeUsage ?? row.resume_usage ?? "use",
       coverage_gap: (row.coverageGap ?? row.coverage_gap ?? null) as string | null,
+    })),
+    user_confirmations: (input.userConfirmations ?? []).map((item) => ({
+      topic: String(item.topic ?? item.technology ?? ""),
+      confirmed: Boolean(item.confirmed ?? item.answer === "yes"),
+      evidence_description: (item.evidenceDescription ?? item.evidence_description ?? null) as string | null,
+      source_kind: item.sourceKind ?? item.source_kind ?? "user_confirmation",
+      related_evidence_ids: (item.relatedEvidenceIds ?? item.related_evidence_ids ?? []) as string[],
     })),
   };
 }
