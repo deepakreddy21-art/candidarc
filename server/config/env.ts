@@ -36,6 +36,10 @@ export const envSchema = z.object({
   OPENAI_GENERATION_MODEL: z.string().default("gpt-4o-mini"),
   ANTHROPIC_AUDIT_MODEL: z.string().default("claude-sonnet-4-20250514"),
   OPENAI_FINAL_MODEL: z.string().default("gpt-4o-mini"),
+  /** typescript = current TS pipeline; shadow = compare Python without customer effect; python = Python authoritative for intelligence. */
+  RESUME_INTELLIGENCE_BACKEND: z.enum(["typescript", "python", "shadow"]).default("typescript"),
+  PYTHON_BACKEND_URL: z.string().default("http://127.0.0.1:8090"),
+  PYTHON_BACKEND_TOKEN: z.string().default("dev-python-backend-token-change-me"),
   WORKFLOW_ENGINE: z.enum(["db", "temporal"]).default("db"),
   TEMPORAL_ADDRESS: z.string().default("localhost:7233"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
@@ -78,6 +82,9 @@ export function assertSafeRuntime(env: Env): void {
     if (env.SESSION_SECRET === DEMO_SESSION_SECRET) unsafe.push("demo SESSION_SECRET");
     if (env.SESSION_SECRET.length < 32) unsafe.push("SESSION_SECRET must be at least 32 characters");
     if (env.MALWARE_SCANNER !== "clamav") unsafe.push("MALWARE_SCANNER must be clamav in production");
+    if (env.RESUME_INTELLIGENCE_BACKEND === "python" && env.PYTHON_BACKEND_TOKEN.startsWith("dev-")) {
+      unsafe.push("PYTHON_BACKEND_TOKEN must be set for production python mode");
+    }
   }
   if (production || env.AI_MODE === "live") {
     const selected = [

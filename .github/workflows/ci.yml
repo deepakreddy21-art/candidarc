@@ -119,12 +119,33 @@ jobs:
           APP_MODE: production
           NEXT_PUBLIC_APP_MODE: production
 
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/python-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check app tests
+      - run: mypy app
+      - run: pytest -q
+      - name: OpenAPI contract drift check
+        run: |
+          python -c "import hashlib,json,pathlib; from app.main import app; p=pathlib.Path('openapi.json'); assert p.exists(), 'openapi.json missing — run npm run contract:python'; committed=json.loads(p.read_text()); runtime=app.openapi(); assert set(committed['paths'])==set(runtime['paths']), 'OpenAPI path drift'; ch=hashlib.sha256(json.dumps(committed['paths'],sort_keys=True).encode()).hexdigest(); rh=hashlib.sha256(json.dumps(runtime['paths'],sort_keys=True).encode()).hexdigest(); assert ch==rh"
+
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker build --target web -t candidarc:web .
       - run: docker build --target worker -t candidarc:worker .
+      - run: docker build -t candidarc:python-backend ./services/python-backend
       - name: Ensure secrets and private fixtures are not in image
         run: |
           docker create --name candidarc-web-check candidarc:web

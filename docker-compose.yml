@@ -34,6 +34,21 @@ services:
     volumes:
       - candidarc_minio:/data
 
+  python-backend:
+    build:
+      context: ./services/python-backend
+    environment:
+      APP_MODE: demo
+      AI_MODE: mock
+      PYTHON_BACKEND_TOKEN: dev-python-backend-token-change-me
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/live')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
   # Optional Temporal (uncomment when WORKFLOW_ENGINE=temporal)
   # temporal:
   #   image: temporalio/auto-setup:1.25.2

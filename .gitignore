@@ -16,3 +16,12 @@ tmp-redirect.txt
 test-results/
 playwright-report/
 .ci-artifacts*
+services/python-backend/.venv/
+services/python-backend/**/__pycache__/
+services/python-backend/**/*.egg-info/
+services/python-backend/.mypy_cache/
+services/python-backend/.ruff_cache/
+services/python-backend/.pytest_cache/
+**/.venv/
+**/__pycache__/
+*.pyc
