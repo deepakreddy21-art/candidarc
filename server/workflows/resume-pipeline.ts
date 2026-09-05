@@ -1021,8 +1021,13 @@ This is a supplement to deterministic checks. Do not claim deterministic or visu
       {
         tenantId: run.tenantId,
         applicationId: run.applicationPublicId,
+        applicationPublicId: run.applicationPublicId,
         versionId: latest.publicId,
+        versionPublicId: latest.publicId,
         workflowId: run.publicId,
+        workflowPublicId: run.publicId,
+        workflowRunId: run.id,
+        ownerUserId: application?.ownerUserId,
       },
       { idempotencyKey: `customer-render:${run.applicationPublicId}:${latest.publicId}` },
     );

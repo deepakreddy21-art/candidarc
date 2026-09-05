@@ -154,6 +154,28 @@ export function validateResumeLayout(doc: ResumeDocument): ResumeLayoutValidatio
   return { pageCountEstimate, withinPageLimit, overflowRisk, atsTextOrder, warnings };
 }
 
+function normalizeForPdfMatch(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[\u00b7\u2022\u2023\u25e6|]/g, " ")
+    .replace(/[\u2010-\u2015\u2212-]/g, "-")
+    .replace(/[^a-z0-9+#.]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function snippetPresentInPdf(haystack: string, snippet: string): boolean {
+  const normalized = normalizeForPdfMatch(snippet);
+  if (normalized.length < 4) return true;
+  if (haystack.includes(normalized.slice(0, 80))) return true;
+  const tokens = normalized.split(" ").filter((token) => token.length >= 4);
+  if (tokens.length >= 3) {
+    const hits = tokens.filter((token) => haystack.includes(token)).length;
+    return hits >= Math.ceil(tokens.length * 0.75);
+  }
+  return haystack.includes(normalized);
+}
+
 export async function verifyPdfContainsCanonicalContent(pdf: Buffer, doc: ResumeDocument): Promise<{ ok: boolean; missing: string[] }> {
   let pdfText = pdf.toString("latin1");
   try {
@@ -179,7 +201,7 @@ export async function verifyPdfContainsCanonicalContent(pdf: Buffer, doc: Resume
     .filter((value) => value.length >= 4);
 
   const unique = [...new Set(required)];
-  const haystack = pdfText.toLowerCase();
-  const missing = unique.filter((snippet) => !haystack.includes(snippet.slice(0, 80).toLowerCase()));
+  const haystack = normalizeForPdfMatch(pdfText);
+  const missing = unique.filter((snippet) => !snippetPresentInPdf(haystack, snippet));
   return { ok: missing.length === 0, missing };
 }

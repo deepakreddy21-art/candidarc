@@ -23,6 +23,10 @@ import { fetchJobDescriptionFromUrl } from "../../resumes/job-extraction";
 import type { ObjectStorage } from "../../storage/types";
 import type { DurableWorkflowEngine } from "../../workflows/engine";
 import type { WorkflowStage } from "../../domain/types";
+import {
+  CUSTOMER_DOCUMENT_FAILURE_MESSAGE,
+  failStaleDocumentPreparation,
+} from "../../workflows/failure-handler";
 
 const emptyToUndefined = (value: unknown) =>
   typeof value === "string" && value.trim() === "" ? undefined : value;
@@ -229,30 +233,50 @@ export class CustomerGenerateService {
     }
     const runs = await this.repos.workflows.listByApplication(tenantId, app.publicId);
     const latestRun = runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? requested;
-    const files = (app.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
+    let currentApp = app;
+    const files = (currentApp.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
     const { pdfReady, docxReady } = await documentsReady(this.storage, tenantId, files);
     const documentsAreReady = pdfReady && docxReady;
-    const questions = (app.metadata?.techQuestions ?? []) as TechQuestion[];
-    const mapped = mapInternalStageToCustomer(app.workflowStage, {
+
+    if (
+      currentApp.workflowStage === "FINAL_READY" &&
+      !documentsAreReady &&
+      currentApp.metadata?.documentRenderFailed !== true
+    ) {
+      const timedOut = await failStaleDocumentPreparation(this.repos, this.engine, {
+        tenantId,
+        applicationPublicId: currentApp.publicId,
+        workflowPublicId: latestRun.publicId,
+        startedAt: latestRun.updatedAt ?? latestRun.startedAt ?? latestRun.createdAt,
+      });
+      if (timedOut) {
+        currentApp = (await this.repos.applications.getByPublicId(tenantId, currentApp.publicId)) ?? currentApp;
+      }
+    }
+
+    const questions = (currentApp.metadata?.techQuestions ?? []) as TechQuestion[];
+    const mapped = mapInternalStageToCustomer(currentApp.workflowStage, {
       failed:
         latestRun.status === "failed" ||
-        app.workflowStage === "FINAL_QA_FAILED" ||
-        app.workflowStage === "FAILED" ||
+        currentApp.workflowStage === "FINAL_QA_FAILED" ||
+        currentApp.workflowStage === "FAILED" ||
         latestRun.stage === "FINAL_QA_FAILED" ||
-        latestRun.stage === "FAILED",
+        latestRun.stage === "FAILED" ||
+        currentApp.metadata?.documentRenderFailed === true ||
+        currentApp.status === "failed",
       documentsReady: documentsAreReady,
       startedAt: latestRun.startedAt ?? latestRun.createdAt,
       needsInput:
-        needsInputForTechQuestions(app.workflowStage, questions) ||
-        app.workflowStage === "RESEARCH_REVIEW_REQUIRED",
+        needsInputForTechQuestions(currentApp.workflowStage, questions) ||
+        currentApp.workflowStage === "RESEARCH_REVIEW_REQUIRED",
       needsInputMessage:
-        app.workflowStage === "RESEARCH_REVIEW_REQUIRED"
+        currentApp.workflowStage === "RESEARCH_REVIEW_REQUIRED"
           ? "Please confirm the company and role details."
           : "Confirm a few technologies from the job description to improve accuracy.",
     });
     const response: Record<string, unknown> = {
       workflowId: requested.publicId,
-      applicationId: app.publicId,
+      applicationId: currentApp.publicId,
       status: mapped.status,
       message: mapped.message,
       pipelineStage: mapped.pipelineStage,
@@ -260,13 +284,16 @@ export class CustomerGenerateService {
       elapsedMs: mapped.elapsedMs,
       downloads: { pdfReady, docxReady },
     };
-    if (mapped.status !== "completed" && mapped.status !== "failed" && questions.length) response.techQuestions = questions;
+    // Optional tech confirmation only while generation is waiting on input — hide after advance.
+    if (mapped.status === "needs_input" && questions.length) {
+      response.techQuestions = questions.filter((question) => question.evidenceStatus === "unanswered" || !question.evidenceStatus);
+    }
 
     if (mapped.status === "completed") {
-      const persistedQuality = app.metadata?.qualityReport as Record<string, unknown> | undefined;
-      const resume = await this.repos.resumes.getByApplication(tenantId, app.publicId);
+      const persistedQuality = currentApp.metadata?.qualityReport as Record<string, unknown> | undefined;
+      const resume = await this.repos.resumes.getByApplication(tenantId, currentApp.publicId);
       const allVersions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
-      const finalIds = (app.metadata?.customerFinalVersions ?? []) as string[];
+      const finalIds = (currentApp.metadata?.customerFinalVersions ?? []) as string[];
       const finalVersions = finalIds.map((id) => allVersions.find((version) => version.publicId === id)).filter(Boolean) as ResumeVersionRecord[];
       const current = finalVersions.at(-1) ?? allVersions.at(-1);
       if (current) {
@@ -275,16 +302,16 @@ export class CustomerGenerateService {
         const quality = computeCandidArcQualityScore({
           sections: current.sections as Array<Record<string, unknown>>,
           contact: {
-            email: typeof app.metadata?.candidateEmail === "string" ? app.metadata.candidateEmail : undefined,
-            phone: typeof app.metadata?.candidatePhone === "string" ? app.metadata.candidatePhone : undefined,
-            location: app.location,
-            linkedIn: typeof app.metadata?.candidateLinkedIn === "string" ? app.metadata.candidateLinkedIn : undefined,
+            email: typeof currentApp.metadata?.candidateEmail === "string" ? currentApp.metadata.candidateEmail : undefined,
+            phone: typeof currentApp.metadata?.candidatePhone === "string" ? currentApp.metadata.candidatePhone : undefined,
+            location: currentApp.location,
+            linkedIn: typeof currentApp.metadata?.candidateLinkedIn === "string" ? currentApp.metadata.candidateLinkedIn : undefined,
           },
-          jobRequirements: Array.isArray(app.metadata?.jobRequirements)
-            ? (app.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+          jobRequirements: Array.isArray(currentApp.metadata?.jobRequirements)
+            ? (currentApp.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
             : [],
-          knownTechnologies: Array.isArray(app.metadata?.knownTechnologies)
-            ? (app.metadata.knownTechnologies as unknown[]).filter((item): item is string => typeof item === "string")
+          knownTechnologies: Array.isArray(currentApp.metadata?.knownTechnologies)
+            ? (currentApp.metadata.knownTechnologies as unknown[]).filter((item): item is string => typeof item === "string")
             : [],
           preferredLength: "one-page",
           aiRoleAlignment: breakdown.jobAlignment ?? current.score,
@@ -295,16 +322,16 @@ export class CustomerGenerateService {
           versionLabel: `Version ${customerNumber}`,
           previewHtml: previewHtml(
             current,
-            typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : "Candidate",
-            app.role,
-            app.company,
-            app.metadata,
+            typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
+            currentApp.role,
+            currentApp.company,
+            currentApp.metadata,
           ),
           sections: current.sections,
           createdAt: current.createdAt,
-          role: app.role,
-          company: app.company,
-          candidateName: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : "Candidate",
+          role: currentApp.role,
+          company: currentApp.company,
+          candidateName: typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
         };
         response.versions = finalVersions.map((version, index) => ({
           id: version.publicId,
@@ -318,7 +345,7 @@ export class CustomerGenerateService {
           roleAlignment: quality.roleAlignment,
           atsReadability: quality.atsReadability,
           verifiedClaims: quality.verifiedClaims,
-          researchSourcesUsed: typeof app.metadata?.researchSourceCount === "number" ? app.metadata.researchSourceCount : undefined,
+          researchSourcesUsed: typeof currentApp.metadata?.researchSourceCount === "number" ? currentApp.metadata.researchSourceCount : undefined,
           remainingSkillGaps: quality.remainingSkillGaps ?? [],
           passed: quality.passed,
           missing: quality.missing,
@@ -327,9 +354,16 @@ export class CustomerGenerateService {
           nextSteps: quality.nextSteps,
         };
       }
-      if (app.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;
+      if (currentApp.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;
     }
-    if (mapped.status === "failed") response.error = "We couldn’t finish this resume. Your job details are saved; please retry.";
+    if (mapped.status === "failed") {
+      response.error =
+        typeof currentApp.metadata?.customerError === "string"
+          ? currentApp.metadata.customerError
+          : currentApp.metadata?.documentRenderFailed
+            ? CUSTOMER_DOCUMENT_FAILURE_MESSAGE
+            : "We couldn’t finish this resume. Your job details are saved; please retry.";
+    }
     return response;
   }
 
@@ -349,7 +383,9 @@ export class CustomerGenerateService {
       run.stage === "FAILED" ||
       run.stage === "FINAL_QA_FAILED" ||
       app.workflowStage === "FINAL_QA_FAILED" ||
-      app.workflowStage === "FAILED";
+      app.workflowStage === "FAILED" ||
+      app.status === "failed" ||
+      app.metadata?.documentRenderFailed === true;
     if (!retryable) {
       throw new AppError("WORKFLOW_NOT_RETRYABLE", "Only failed workflows can be retried", 409);
     }
@@ -357,8 +393,12 @@ export class CustomerGenerateService {
     const failedAtStage =
       typeof run.payload.failedAtStage === "string"
         ? run.payload.failedAtStage
+        : typeof app.metadata?.failedAtStage === "string"
+          ? app.metadata.failedAtStage
         : run.stage === "FINAL_QA_FAILED" || app.workflowStage === "FINAL_QA_FAILED"
           ? "FINAL_QA_RUNNING"
+          : app.metadata?.documentRenderFailed
+            ? "FINAL_QA_RUNNING"
           : "RESEARCH_QUEUED";
     const resumeStage = failedAtStage as WorkflowStage;
     const status = resumeStage.endsWith("_QUEUED") ? "queued" : "running";
@@ -367,6 +407,7 @@ export class CustomerGenerateService {
       ...run.payload,
       lastRetryAt: new Date().toISOString(),
       failedAtStage: resumeStage,
+      documentRenderFailed: undefined,
     };
     for (const key of Object.keys(clearedPayload)) {
       if (key.startsWith("claimed:")) delete clearedPayload[key];
@@ -387,6 +428,15 @@ export class CustomerGenerateService {
       workflowStage: resumeStage,
       status: resumeStage.startsWith("RESEARCH") ? "researching" : resumeStage.includes("EVIDENCE") ? "evidence" : "resume",
       nextAction: "Retrying resume generation",
+      metadata: {
+        ...app.metadata,
+        customerFiles: undefined,
+        documentRenderFailed: undefined,
+        customerError: undefined,
+        documentRenderErrorClass: undefined,
+        documentRenderFailedAt: undefined,
+        failedAtStage: undefined,
+      },
     });
 
     return { workflowId: run.publicId, applicationId: app.publicId, status: "queued" as const };

@@ -139,10 +139,51 @@ describe("resume document model", () => {
     const docx = await createMinimalDocx(["Alex Example", "Platform Engineer"]);
     expect(pdf.length).toBeGreaterThan(500);
     expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
+    expect(pdf.toString("latin1")).toMatch(/startxref\n[1-9]/);
+    expect(pdf.toString("latin1")).not.toMatch(/startxref\n0\n/);
     expect(docx.length).toBeGreaterThan(500);
     expect(docx.readUInt32LE(0)).toBe(0x04034b50);
     const verification = await verifyPdfContainsCanonicalContent(pdf, doc);
     expect(verification.ok).toBe(true);
+  }, 60_000);
+
+  it("preserves long skills lines, dates, and companies in extractable PDF text", async () => {
+    const { createExtractableTextPdf, wrapPdfLines } = await import("../../server/resumes/extractable-pdf");
+    const longSkills =
+      "Python · PyTorch · Hugging Face · OpenSearch · EKS · LangGraph · SageMaker · RAG · Evaluation pipelines";
+    const doc = buildResumeDocument({
+      sections: [
+        {
+          id: "skills",
+          type: "skills",
+          title: "Skills",
+          order: 0,
+          bullets: [{ id: "b0", text: longSkills }],
+        },
+        {
+          id: "exp",
+          type: "experience",
+          title: "Experience",
+          order: 1,
+          bullets: [{ id: "b1", text: "Software Engineer at USAA, January 2024 – Present" }],
+        },
+      ],
+      candidateName: "Deepak QA Candidate",
+      role: "Senior AI Platform Engineer",
+      company: "Asteria AI Systems",
+    });
+    const wrapped = wrapPdfLines(`${longSkills}\nSoftware Engineer at USAA, January 2024 – Present`);
+    expect(wrapped.join(" ")).toContain("PyTorch");
+    expect(wrapped.join(" ")).toContain("January 2024");
+    expect(wrapped.every((line) => line.length <= 95 || line.length === 0)).toBe(true);
+
+    const { resumeDocumentPlainText } = await import("@/lib/resume-document");
+    const pdf = createExtractableTextPdf(resumeDocumentPlainText(doc));
+    expect(pdf.toString("latin1")).toMatch(/startxref\n[1-9]/);
+    expect(pdf.toString("latin1")).not.toMatch(/startxref\n0\n/);
+    const verification = await verifyPdfContainsCanonicalContent(pdf, doc);
+    expect(verification.ok).toBe(true);
+    expect(verification.missing).toEqual([]);
   }, 60_000);
 
   it("keeps legacy minimal helpers async-compatible", async () => {

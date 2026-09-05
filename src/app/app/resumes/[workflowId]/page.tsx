@@ -92,7 +92,9 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
         elapsedMs={data?.elapsedMs}
         needsInput={data?.status === "needs_input"}
       >
-        {data?.techQuestions?.length ? <TechConfirmCard workflowId={workflowId} questions={data.techQuestions} /> : null}
+        {data?.status === "needs_input" && data?.techQuestions?.length ? (
+          <TechConfirmCard workflowId={workflowId} questions={data.techQuestions} />
+        ) : null}
       </CreatingState>
     );
   }
@@ -100,7 +102,7 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
     return (
       <div className="mx-auto max-w-2xl space-y-4">
         <ErrorState title="We couldn’t create your resume" description={data.error ?? data.message} />
-        <Button onClick={retry} disabled={retrying}>{retrying ? "Retrying…" : "Retry"}</Button>
+        <Button onClick={retry} disabled={retrying}>{retrying ? "Retrying…" : "Retry Generation"}</Button>
       </div>
     );
   }

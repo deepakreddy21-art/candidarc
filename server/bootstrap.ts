@@ -443,6 +443,10 @@ async function buildRuntime(): Promise<Runtime> {
       nextAction: "Download resume",
       metadata: {
         ...app.metadata,
+        documentRenderFailed: undefined,
+        customerError: undefined,
+        documentRenderErrorClass: undefined,
+        documentRenderFailedAt: undefined,
         customerFiles: {
           pdfFileId: rendered.pdfFileId,
           docxFileId: rendered.docxFileId,

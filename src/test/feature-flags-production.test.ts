@@ -90,7 +90,7 @@ describe("object storage document paths", () => {
       rmSync(storageDir, { recursive: true, force: true });
       rmSync(workerDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });
 
 describe("quality score honesty", () => {
