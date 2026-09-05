@@ -90,7 +90,8 @@ export const resumeSectionSchema = z.object({
 });
 
 export const resumeSchema = z.object({
-  versionNumber: z.number().int().min(0).max(4),
+  /** Unbounded absolute version (>=0). Cycle step 0–4 is owned by the pipeline, not this field. */
+  versionNumber: z.number().int().min(0),
   score: z.number().min(0).max(100),
   scoreBreakdown: z.object({
     atsCompatibility: z.number().min(0).max(100),

@@ -1,0 +1,60 @@
+[project]
+name = "candidarc-python-backend"
+version = "0.1.0"
+description = "CandidArc resume-intelligence FastAPI service"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.32.1",
+  "pydantic==2.10.3",
+  "pydantic-settings==2.6.1",
+  "httpx==0.28.1",
+  "openai==1.57.4",
+  "anthropic==0.40.0",
+  "pypdf==5.1.0",
+  "python-docx==1.1.2",
+  "python-multipart==0.0.20",
+  "redis==5.2.1",
+  "asyncpg==0.30.0",
+  "pgvector==0.3.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "pytest-asyncio==0.24.0",
+  "ruff==0.8.4",
+  "mypy==1.13.0",
+  "types-requests==2.32.0.20241016",
+]
+ranker = [
+  "sentence-transformers==3.3.1",
+  "torch==2.5.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+packages = ["app"]

@@ -20,6 +20,14 @@ docs
 agent-transcripts
 **/*.md
 !README.md
+!services/python-backend/README.md
+services/python-backend/.venv
+services/python-backend/**/__pycache__
+services/python-backend/.pytest_cache
+services/python-backend/.mypy_cache
+services/python-backend/.ruff_cache
+services/python-backend/pytest-cache-files-*
+services/python-backend/**/*.pyc
 .dockerignore
 Dockerfile
 docker-compose.yml
