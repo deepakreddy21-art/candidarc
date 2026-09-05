@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.core.errors import (
     CROSS_OWNER_EVIDENCE,
     CROSS_TENANT_EVIDENCE,
-    EXPERIMENTAL_DISABLED,
+    EVIDENCE_STORE_UNAVAILABLE,
     IDEMPOTENCY_KEY_REUSED,
     ProviderError,
     http_status_for,
 )
 from app.core.idempotency import idempotency_redis_key, request_hash
+from app.core.metrics import IDEMPOTENCY_HITS, METRICS, PROVIDER_FAILURES, STAGE_LATENCY, TOKENS_IN, TOKENS_OUT
 from app.core.security import require_service_token
 from app.domain.schemas import (
     AuditRequest,
@@ -35,6 +36,9 @@ from app.domain.schemas import (
     ResumeParseResponse,
 )
 from app.modules.audits import service as audits
+from app.modules.evidence.service import index_evidence_items, search_evidence_store
+from app.modules.evidence.store.factory import get_embedding_provider, get_evidence_store
+from app.modules.evidence.store.protocol import EvidenceStoreError
 from app.modules.guardrails.service import validate_resume_claims
 from app.modules.parsing.service import parse_job_text, parse_resume_bytes
 from app.modules.research import service as research_svc
@@ -100,14 +104,23 @@ async def _with_idempotency(
         raise HTTPException(status_code=http_status_for(exc.code), detail={"code": exc.code, "message": exc.message}) from exc
 
     if cached is not None:
+        METRICS.incr(IDEMPOTENCY_HITS)
         return cached
 
     try:
-        result = await handler()
+        with METRICS.time_block(f"{STAGE_LATENCY}.{operation}"):
+            result = await handler()
         payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        usage = getattr(result, "usage", None)
+        if usage is not None:
+            if getattr(usage, "input_tokens", None):
+                METRICS.incr(TOKENS_IN, int(usage.input_tokens or 0))
+            if getattr(usage, "output_tokens", None):
+                METRICS.incr(TOKENS_OUT, int(usage.output_tokens or 0))
         await store.complete(key, digest, payload, settings.idempotency_ttl_seconds)
         return result
     except Exception:
+        METRICS.incr(PROVIDER_FAILURES)
         await store.release(key)
         raise
 
@@ -147,40 +160,95 @@ async def research_synthesize(request: Request, body: ResearchSynthesizeRequest)
     return typed
 
 
+def _store_backend(request: Request) -> Literal["memory", "postgres"]:
+    settings = request.app.state.settings
+    return cast(Literal["memory", "postgres"], settings.evidence_store_backend())
+
+
 @router.post("/evidence/index", response_model=EvidenceIndexResponse)
 async def evidence_index(request: Request, body: EvidenceIndexRequest) -> EvidenceIndexResponse:
+    """Index evidence via EvidenceStore. Production uses postgres; demo may use memory.
+
+    Process-global `_INDEX` is never authoritative in production (no silent memory fallback).
+    """
     settings = request.app.state.settings
-    if settings.app_mode == "production":
+    backend = settings.evidence_store_backend()
+    if settings.app_mode == "production" and backend != "postgres":
         raise HTTPException(
-            status_code=403,
-            detail={"code": EXPERIMENTAL_DISABLED, "message": "Experimental evidence index disabled in production"},
+            status_code=503,
+            detail={
+                "code": EVIDENCE_STORE_UNAVAILABLE,
+                "message": "Production requires postgres evidence store",
+            },
         )
     _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
-    indexed = retrieval.index_evidence(body.context.tenant_id, body.context.user_id, body.evidence)
+    try:
+        store = get_evidence_store()
+        embedder = get_embedding_provider()
+        indexed = await index_evidence_items(
+            store,
+            embedder,
+            tenant_id=body.context.tenant_id,
+            owner_user_id=body.context.user_id,
+            evidence=body.evidence,
+        )
+    except EvidenceStoreError as exc:
+        raise HTTPException(
+            status_code=http_status_for(exc.code),
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    # Keep demo process-local cache in sync for legacy unit tests only (never in production)
+    if settings.app_mode != "production" and backend == "memory":
+        retrieval.index_evidence(body.context.tenant_id, body.context.user_id, body.evidence)
     return EvidenceIndexResponse(
         indexed=indexed,
         tenant_id=body.context.tenant_id,
         owner_user_id=body.context.user_id,
-        experimental=True,
+        experimental=backend == "memory",
+        store_backend=backend,
     )
 
 
 @router.post("/evidence/search", response_model=EvidenceSearchResponse)
 async def evidence_search(request: Request, body: EvidenceSearchRequest) -> EvidenceSearchResponse:
     settings = request.app.state.settings
-    if settings.app_mode == "production":
+    backend = settings.evidence_store_backend()
+    if settings.app_mode == "production" and backend != "postgres":
         raise HTTPException(
-            status_code=403,
-            detail={"code": EXPERIMENTAL_DISABLED, "message": "Experimental evidence search disabled in production"},
+            status_code=503,
+            detail={
+                "code": EVIDENCE_STORE_UNAVAILABLE,
+                "message": "Production requires postgres evidence store",
+            },
         )
     if body.owner_user_id != body.context.user_id:
         raise HTTPException(status_code=403, detail={"code": "CROSS_OWNER_SEARCH", "message": "Cannot search another candidate"})
-    hits = retrieval.search_evidence(body.context.tenant_id, body.owner_user_id, body.query, body.limit)
-    return EvidenceSearchResponse(hits=hits, experimental=True)
+    try:
+        store = get_evidence_store()
+        embedder = get_embedding_provider()
+        hits = await search_evidence_store(
+            store,
+            embedder,
+            tenant_id=body.context.tenant_id,
+            owner_user_id=body.owner_user_id,
+            query=body.query,
+            limit=body.limit,
+        )
+    except EvidenceStoreError as exc:
+        raise HTTPException(
+            status_code=http_status_for(exc.code),
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return EvidenceSearchResponse(
+        hits=hits,
+        experimental=backend == "memory",
+        store_backend=backend,
+    )
 
 
 @router.post("/evidence/match", response_model=EvidenceMatchResponse)
 async def evidence_match(request: Request, body: EvidenceMatchRequest) -> EvidenceMatchResponse:
+    """Authoritative request-scoped match. Optionally enrich notes via store search (non-authoritative)."""
     _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
     _ = body.research_findings  # intentionally ignored for claim formation
     try:
@@ -194,7 +262,7 @@ async def evidence_match(request: Request, body: EvidenceMatchRequest) -> Eviden
 
 async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> ResumeGenerateResponse:
     _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
-    _ = body.research_findings
+    _ = body.research_findings  # untrusted — questions only via generation path
     absolute = body.absolute_version if body.absolute_version is not None else 0
     cycle = body.cycle_step if body.cycle_step is not None else absolute % 5
     try:
@@ -211,6 +279,8 @@ async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> Re
             accepted_findings=body.accepted_findings,
             rejected_findings=body.rejected_findings,
             mistake_memory=body.mistake_memory,
+            research_findings=body.research_findings,
+            user_confirmations=body.user_confirmations,
         )
     except Exception as exc:
         _raise_provider(exc)
@@ -222,6 +292,8 @@ async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> Re
         tenant_id=body.context.tenant_id,
         owner_user_id=body.context.user_id,
         job_description=body.job_description,
+        research_findings=body.research_findings,
+        user_confirmations=body.user_confirmations,
     )
     if violations:
         raise HTTPException(

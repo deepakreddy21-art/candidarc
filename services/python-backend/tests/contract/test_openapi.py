@@ -12,6 +12,7 @@ from app.main import app
 REQUIRED_PATHS = {
     "/health/live",
     "/health/ready",
+    "/metrics",
     "/v1/resumes/parse",
     "/v1/jobs/parse",
     "/v1/research/synthesize",

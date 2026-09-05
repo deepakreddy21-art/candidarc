@@ -41,10 +41,15 @@ class Settings(BaseSettings):
     openai_final_model: str = "gpt-4o-mini"
     embedding_provider: Literal["mock", "openai"] = "mock"
     embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = Field(default=64, ge=8, le=3072, alias="EMBEDDING_DIMENSIONS")
     ranker_backend: Literal["hybrid", "cross_encoder"] = "hybrid"
     ranker_artifact_path: str | None = Field(default=None, alias="RANKER_ARTIFACT_PATH")
     ranker_artifact_checksum: str | None = Field(default=None, alias="RANKER_ARTIFACT_CHECKSUM")
     enable_cross_encoder: bool = Field(default=False, alias="ENABLE_CROSS_ENCODER")
+
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
+    evidence_store: Literal["memory", "postgres"] = Field(default="memory", alias="EVIDENCE_STORE")
+    evidence_store_timeout_ms: int = Field(default=5_000, ge=500, le=60_000, alias="EVIDENCE_STORE_TIMEOUT_MS")
 
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
     idempotency_ttl_seconds: int = Field(default=86_400, ge=60, le=604_800)
@@ -106,6 +111,14 @@ class Settings(BaseSettings):
         if self.final_review_provider == "openai" and not self.final_review_api_key():
             errors.append("Final-review role missing OpenAI API key")
 
+        # Production evidence store: fail closed — never silent memory fallback
+        if self.evidence_store == "memory":
+            errors.append("EVIDENCE_STORE=memory is forbidden in production")
+        if not self.database_url:
+            errors.append("DATABASE_URL is required for production evidence store (postgres/pgvector)")
+        elif self.evidence_store != "postgres":
+            errors.append("EVIDENCE_STORE must be postgres in production")
+
         if self.enable_cross_encoder or self.ranker_backend == "cross_encoder":
             if not self.ranker_artifact_path or not self.ranker_artifact_checksum:
                 errors.append("Cross-encoder configured but RANKER_ARTIFACT_PATH/CHECKSUM missing")
@@ -117,6 +130,12 @@ class Settings(BaseSettings):
                     errors.append("Configured ranker artifact file is missing")
 
         return errors
+
+    def evidence_store_backend(self) -> Literal["memory", "postgres"]:
+        """Resolved backend. Production always resolves to postgres (caller must fail closed)."""
+        if self.app_mode == "production":
+            return "postgres"
+        return self.evidence_store
 
 
 @lru_cache

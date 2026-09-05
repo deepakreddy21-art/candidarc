@@ -4,14 +4,18 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.api.v1.routes import router as v1_router
 from app.core.config import get_settings
 from app.core.idempotency import MemoryIdempotencyStore, RedisIdempotencyStore
 from app.core.logging import configure_logging
+from app.core.metrics import METRICS
+from app.core.security import require_service_token
 from app.domain.schemas import HealthLiveResponse, HealthReadyResponse
+from app.modules.evidence.store.factory import close_evidence_store, init_evidence_store
+from app.modules.evidence.store.protocol import EvidenceStoreError
 
 
 @asynccontextmanager
@@ -55,8 +59,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.idempotency = MemoryIdempotencyStore()
 
     app.state.settings = settings
+    app.state.metrics = METRICS
+
+    # Evidence store: production requires postgres; demo may use memory. Never silent fallback.
+    try:
+        store = await init_evidence_store(settings, openai_client=getattr(app.state, "openai_client", None))
+        app.state.evidence_store = store
+        app.state.evidence_store_error = None
+    except EvidenceStoreError as exc:
+        app.state.evidence_store = None
+        app.state.evidence_store_error = exc
+        if settings.app_mode == "production":
+            # Fail closed in production — readiness will report not_ready
+            pass
+
     yield
 
+    await close_evidence_store()
     if openai_client is not None:
         await openai_client.close()
     if anthropic_client is not None:
@@ -84,12 +103,37 @@ def create_app() -> FastAPI:
     async def health_ready(request: Request) -> HealthReadyResponse | JSONResponse:
         runtime_settings = getattr(request.app.state, "settings", None) or get_settings()
         errors = runtime_settings.ready_errors()
+        store_err = getattr(request.app.state, "evidence_store_error", None)
+        store = getattr(request.app.state, "evidence_store", None)
+        if runtime_settings.app_mode == "production":
+            if store_err is not None:
+                errors.append(f"Evidence store unavailable: {store_err.message}")
+            elif store is None:
+                errors.append("Evidence store not initialized")
+            else:
+                healthy = await store.health_check()
+                if not healthy:
+                    errors.append("Evidence store health check failed (postgres/pgvector)")
         if errors:
             return JSONResponse(
                 status_code=503,
                 content=HealthReadyResponse(status="not_ready", errors=errors).model_dump(),
             )
         return HealthReadyResponse(status="ready", errors=[])
+
+    @application.get("/metrics")
+    async def metrics_endpoint(
+        request: Request,
+        _: None = Depends(require_service_token),
+    ) -> dict[str, Any]:
+        """Service-token protected JSON metrics. Never includes PII."""
+        registry = getattr(request.app.state, "metrics", None) or METRICS
+        snap = registry.snapshot()
+        return {
+            "service": "candidarc-python-backend",
+            "counters": snap["counters"],
+            "histograms": snap["histograms"],
+        }
 
     application.include_router(v1_router)
     return application

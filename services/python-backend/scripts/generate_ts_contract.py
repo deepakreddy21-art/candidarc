@@ -21,6 +21,7 @@ OPENAPI_PATH = ROOT / "openapi.json"
 REQUIRED_PATHS = [
     "/health/live",
     "/health/ready",
+    "/metrics",
     "/v1/resumes/parse",
     "/v1/jobs/parse",
     "/v1/research/synthesize",
@@ -271,6 +272,7 @@ def main() -> None:
         "export const PYTHON_BACKEND_PATHS = {",
         '  healthLive: "/health/live",',
         '  healthReady: "/health/ready",',
+        '  metrics: "/metrics",',
         '  resumesParse: "/v1/resumes/parse",',
         '  jobsParse: "/v1/jobs/parse",',
         '  researchSynthesize: "/v1/research/synthesize",',
@@ -313,6 +315,7 @@ def main() -> None:
         "export const pythonPathCatalogSchema = z.object({",
         "  healthLive: z.literal(PYTHON_BACKEND_PATHS.healthLive),",
         "  healthReady: z.literal(PYTHON_BACKEND_PATHS.healthReady),",
+        "  metrics: z.literal(PYTHON_BACKEND_PATHS.metrics),",
         "  resumesParse: z.literal(PYTHON_BACKEND_PATHS.resumesParse),",
         "  jobsParse: z.literal(PYTHON_BACKEND_PATHS.jobsParse),",
         "  researchSynthesize: z.literal(PYTHON_BACKEND_PATHS.researchSynthesize),",

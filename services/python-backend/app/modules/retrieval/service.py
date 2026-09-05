@@ -1,4 +1,4 @@
-"""Request-scoped evidence matching. Process-local index is experimental only."""
+"""Request-scoped evidence matching. Process-local index is non-authoritative demo helper only."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from app.domain.schemas import EvidenceItem, EvidenceMatchResponse, EvidenceMatc
 from app.modules.evidence.service import normalize_evidence, scope_filter
 from app.modules.retrieval.rankers import HybridKeywordVectorRanker
 
-# EXPERIMENTAL: process-local index — not authoritative. Disabled in production routes.
+# NON-AUTHORITATIVE: process-local cache for demo-only fallbacks. Production routes
+# must use EvidenceStore (postgres). Never treat this as the production index.
 _INDEX: dict[str, list[EvidenceItem]] = defaultdict(list)
 _RANKER = HybridKeywordVectorRanker()
 
@@ -18,14 +19,14 @@ def _key(tenant_id: str, owner_user_id: str) -> str:
 
 
 def index_evidence(tenant_id: str, owner_user_id: str, evidence: list[EvidenceItem]) -> int:
-    """Experimental process-local index. Prefer request-scoped match_evidence."""
+    """Demo-only process-local cache. Prefer EvidenceStore via evidence.service.index_evidence_items."""
     scoped = scope_filter(normalize_evidence(evidence), tenant_id, owner_user_id)
     _INDEX[_key(tenant_id, owner_user_id)] = scoped
     return len(scoped)
 
 
 def search_evidence(tenant_id: str, owner_user_id: str, query: str, limit: int = 8) -> list[EvidenceSearchHit]:
-    """Experimental process-local search."""
+    """Demo-only process-local search. Prefer EvidenceStore via evidence.service.search_evidence_store."""
     items = _INDEX.get(_key(tenant_id, owner_user_id), [])
     ranked = _RANKER.rank(query, items, limit=limit)
     return [

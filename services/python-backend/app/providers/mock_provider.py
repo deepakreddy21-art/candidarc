@@ -15,9 +15,11 @@ from app.domain.schemas import (
     FinalQaResponse,
     MistakeMemoryRule,
     ProviderUsage,
+    ResearchFinding,
     ResearchSource,
     ResearchSynthesizeResponse,
     ResumeDocument,
+    UserConfirmation,
 )
 from app.modules.generation import service as generation
 from app.modules.guardrails.service import validate_resume_claims
@@ -47,6 +49,8 @@ class MockProvider:
         accepted_findings: list[AuditFinding] | None = None,
         rejected_findings: list[AuditFinding] | None = None,
         mistake_memory: list[MistakeMemoryRule] | None = None,
+        research_findings: list[ResearchFinding] | None = None,
+        user_confirmations: list[UserConfirmation] | None = None,
         **_: Any,
     ) -> tuple[ResumeDocument, int, ProviderUsage]:
         started = time.perf_counter()
@@ -65,12 +69,16 @@ class MockProvider:
             accepted_findings=accepted_findings,
             rejected_findings=rejected_findings,
             mistake_memory=mistake_memory,
+            research_findings=research_findings,
+            user_confirmations=user_confirmations,
         )
         violations = validate_resume_claims(
             resume,
             evidence,
             allowed_technologies,
             job_description=job_description,
+            research_findings=research_findings,
+            user_confirmations=user_confirmations,
         )
         if violations:
             raise ValueError(f"GUARDRAIL_VIOLATION:{','.join(violations)}")

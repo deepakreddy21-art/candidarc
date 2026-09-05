@@ -343,7 +343,7 @@
         "additionalProperties": false,
         "properties": {
           "experimental": {
-            "default": true,
+            "default": false,
             "title": "Experimental",
             "type": "boolean"
           },
@@ -356,6 +356,15 @@
             "maxLength": 128,
             "minLength": 1,
             "title": "Owner User Id",
+            "type": "string"
+          },
+          "store_backend": {
+            "default": "memory",
+            "enum": [
+              "memory",
+              "postgres"
+            ],
+            "title": "Store Backend",
             "type": "string"
           },
           "tenant_id": {
@@ -768,7 +777,7 @@
         "additionalProperties": false,
         "properties": {
           "experimental": {
-            "default": true,
+            "default": false,
             "title": "Experimental",
             "type": "boolean"
           },
@@ -778,6 +787,15 @@
             },
             "title": "Hits",
             "type": "array"
+          },
+          "store_backend": {
+            "default": "memory",
+            "enum": [
+              "memory",
+              "postgres"
+            ],
+            "title": "Store Backend",
+            "type": "string"
           }
         },
         "required": [
@@ -1936,6 +1954,14 @@
             "title": "Research Findings",
             "type": "array"
           },
+          "user_confirmations": {
+            "items": {
+              "$ref": "#/components/schemas/UserConfirmation"
+            },
+            "maxItems": 100,
+            "title": "User Confirmations",
+            "type": "array"
+          },
           "version_number": {
             "anyOf": [
               {
@@ -2373,6 +2399,61 @@
         "title": "ScoreBreakdown",
         "type": "object"
       },
+      "UserConfirmation": {
+        "additionalProperties": false,
+        "description": "Typed user confirmation for generate/regenerate.\n\nOnly confirmations with a non-empty evidence_description may create first-person\nexperience claims. Bare yes without evidence is ignored (never added as experience).",
+        "properties": {
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "evidence_description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Description"
+          },
+          "related_evidence_ids": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Related Evidence Ids",
+            "type": "array"
+          },
+          "source_kind": {
+            "default": "user_confirmation",
+            "enum": [
+              "candidate_evidence",
+              "user_confirmation",
+              "job_requirement",
+              "company_research"
+            ],
+            "title": "Source Kind",
+            "type": "string"
+          },
+          "topic": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "confirmed"
+        ],
+        "title": "UserConfirmation",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "loc": {
@@ -2450,8 +2531,57 @@
         "summary": "Health Ready"
       }
     },
+    "/metrics": {
+      "get": {
+        "description": "Service-token protected JSON metrics. Never includes PII.",
+        "operationId": "metrics_endpoint_metrics_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Metrics Endpoint Metrics Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Endpoint"
+      }
+    },
     "/v1/evidence/index": {
       "post": {
+        "description": "Index evidence via EvidenceStore. Production uses postgres; demo may use memory.\n\nProcess-global `_INDEX` is never authoritative in production (no silent memory fallback).",
         "operationId": "evidence_index_v1_evidence_index_post",
         "parameters": [
           {
@@ -2508,6 +2638,7 @@
     },
     "/v1/evidence/match": {
       "post": {
+        "description": "Authoritative request-scoped match. Optionally enrich notes via store search (non-authoritative).",
         "operationId": "evidence_match_v1_evidence_match_post",
         "parameters": [
           {

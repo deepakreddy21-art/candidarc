@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from app.domain.schemas import AuditFinding, EvidenceItem, MistakeMemoryRule, ResumeBullet, ResumeDocument
+from app.domain.schemas import (
+    AuditFinding,
+    EvidenceItem,
+    MistakeMemoryRule,
+    ResearchFinding,
+    ResumeBullet,
+    ResumeDocument,
+    UserConfirmation,
+)
 from app.modules.evidence.service import normalize_evidence
 from app.modules.guardrails.service import build_grounded_resume, validate_resume_claims
 from app.modules.scoring.service import score_resume
@@ -94,6 +102,8 @@ def generate_grounded_resume(
     accepted_findings: list[AuditFinding] | None = None,
     rejected_findings: list[AuditFinding] | None = None,
     mistake_memory: list[MistakeMemoryRule] | None = None,
+    research_findings: list[ResearchFinding] | None = None,
+    user_confirmations: list[UserConfirmation] | None = None,
 ) -> ResumeDocument:
     """Generate or regenerate a resume.
 
@@ -101,6 +111,7 @@ def generate_grounded_resume(
     - Accepted/edited findings are applied onto previous_resume when present.
     - If no actionable findings on regenerate, content is kept and score recalculated.
     - Scores are always calculated from content (never SCORE_BY_VERSION).
+    - Job/research never become first-person claims; bare confirmations never become experience.
     """
     _ = rejected_findings  # explicitly ignored
     normalized = normalize_evidence(evidence)
@@ -139,6 +150,8 @@ def generate_grounded_resume(
         notes=notes or f"Grounded resume V{absolute_version}",
         job_description=job_description,
         job_requirements=job_requirements,
+        research_findings=research_findings,
+        user_confirmations=user_confirmations,
     )
 
 
@@ -155,6 +168,8 @@ def generate_and_validate(
     accepted_findings: list[AuditFinding] | None = None,
     rejected_findings: list[AuditFinding] | None = None,
     mistake_memory: list[MistakeMemoryRule] | None = None,
+    research_findings: list[ResearchFinding] | None = None,
+    user_confirmations: list[UserConfirmation] | None = None,
     tenant_id: str | None = None,
     owner_user_id: str | None = None,
 ) -> tuple[ResumeDocument, list[str]]:
@@ -170,6 +185,8 @@ def generate_and_validate(
         accepted_findings=accepted_findings,
         rejected_findings=rejected_findings,
         mistake_memory=mistake_memory,
+        research_findings=research_findings,
+        user_confirmations=user_confirmations,
     )
     violations = validate_resume_claims(
         resume,
@@ -178,5 +195,7 @@ def generate_and_validate(
         tenant_id=tenant_id,
         owner_user_id=owner_user_id,
         job_description=job_description,
+        research_findings=research_findings,
+        user_confirmations=user_confirmations,
     )
     return resume, violations

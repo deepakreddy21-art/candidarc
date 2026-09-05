@@ -185,11 +185,29 @@ def test_production_ready_checks_per_role(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix-32chars!!")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/candidarc")
+    monkeypatch.setenv("EVIDENCE_STORE", "postgres")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUDIT_API_KEY", raising=False)
     get_settings.cache_clear()
     errors = get_settings().ready_errors()
     assert any("Audit role" in e for e in errors)
+
+
+def test_production_ready_requires_postgres_evidence_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_MODE", "production")
+    monkeypatch.setenv("AI_MODE", "live")
+    monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix-32chars!!")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("EVIDENCE_STORE", "memory")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    get_settings.cache_clear()
+    errors = get_settings().ready_errors()
+    assert any("EVIDENCE_STORE=memory" in e for e in errors)
+    assert any("DATABASE_URL" in e for e in errors)
+    get_settings.cache_clear()
 
 
 def test_research_cannot_become_candidate_claims() -> None:

@@ -22,6 +22,7 @@ ScoreInt100 = Annotated[int, Field(ge=0, le=100)]
 
 Confidence = Literal["high", "medium", "low"]
 ClaimRisk = Literal["low", "medium", "high"]
+ClaimSourceKind = Literal["candidate_evidence", "user_confirmation", "job_requirement", "company_research"]
 AuditLens = Literal["hr-1", "em-1", "hr-2", "em-2"]
 FindingSeverity = Literal["critical", "major", "minor", "suggestion"]
 FindingStatus = Literal["open", "accepted", "rejected", "edited"]
@@ -234,7 +235,8 @@ class EvidenceIndexResponse(StrictModel):
     indexed: int = Field(ge=0)
     tenant_id: StrId
     owner_user_id: StrId
-    experimental: bool = True
+    experimental: bool = False
+    store_backend: Literal["memory", "postgres"] = "memory"
 
 
 class EvidenceSearchRequest(StrictModel):
@@ -252,7 +254,8 @@ class EvidenceSearchHit(StrictModel):
 
 class EvidenceSearchResponse(StrictModel):
     hits: list[EvidenceSearchHit]
-    experimental: bool = True
+    experimental: bool = False
+    store_backend: Literal["memory", "postgres"] = "memory"
 
 
 class EvidenceMatchRequest(StrictModel):
@@ -287,6 +290,36 @@ class MistakeMemoryRule(StrictModel):
     severity: FindingSeverity
     originating_audit: AuditLens
     affected_version: StrShort
+
+
+class UserConfirmation(StrictModel):
+    """Typed user confirmation for generate/regenerate.
+
+    Only confirmations with a non-empty evidence_description may create first-person
+    experience claims. Bare yes without evidence is ignored (never added as experience).
+    """
+
+    topic: StrShort
+    confirmed: bool
+    evidence_description: str | None = Field(default=None, max_length=4_000)
+    source_kind: ClaimSourceKind = "user_confirmation"
+    related_evidence_ids: list[StrId] = Field(default_factory=list, max_length=32)
+
+    def can_create_first_person_claim(self) -> bool:
+        if not self.confirmed:
+            return False
+        if self.source_kind not in {"candidate_evidence", "user_confirmation"}:
+            return False
+        desc = (self.evidence_description or "").strip()
+        return bool(desc)
+
+
+class ClaimSourcePolicy(StrictModel):
+    """Declares how a piece of context may be used for claim formation."""
+
+    kind: ClaimSourceKind
+    may_create_first_person_claim: bool
+    may_create_user_question: bool = False
 
 
 class AuditFinding(StrictModel):
@@ -341,6 +374,7 @@ class ResumeGenerateRequest(StrictModel):
     refinement_instruction: str | None = Field(default=None, max_length=4_000)
     job_requirements: list[Annotated[str, Field(max_length=2_000)]] = Field(default_factory=list, max_length=200)
     evidence_matches: list[EvidenceMatchRow] = Field(default_factory=list, max_length=200)
+    user_confirmations: list[UserConfirmation] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
     def _resolve_versions(self) -> ResumeGenerateRequest:

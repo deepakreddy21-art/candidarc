@@ -5,7 +5,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from app.domain.schemas import EvidenceItem, ResumeBullet, ResumeDocument, ResumeSection
+from app.core.metrics import METRICS, UNSUPPORTED_CLAIMS_BLOCKED
+from app.domain.schemas import (
+    ClaimSourceKind,
+    EvidenceItem,
+    ResearchFinding,
+    ResumeBullet,
+    ResumeDocument,
+    ResumeSection,
+    UserConfirmation,
+)
 from app.modules.scoring.service import score_resume
 
 PERCENT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*%")
@@ -20,6 +29,10 @@ DATE_RE = re.compile(
 TEAM_SIZE_RE = re.compile(r"\b(?:team of|led a team of|managed)\s+\d+\b|\b\d+\s*(?:engineers|people|members)\b", re.I)
 OWNERSHIP_INDIVIDUAL_RE = re.compile(r"\b(?:i built|i designed|i owned|i created|solely|single-handedly)\b", re.I)
 OWNERSHIP_TEAM_RE = re.compile(r"\b(?:we built|our team|collaborated|as a team|team delivered)\b", re.I)
+FIRST_PERSON_CLAIM_RE = re.compile(
+    r"\b(?:i\s+(?:built|designed|owned|created|led|implemented|developed|managed|shipped)|my experience)\b",
+    re.I,
+)
 ATS_MARKERS = (
     "white-space:none",
     "font-size:0",
@@ -83,6 +96,9 @@ KNOWN_TECH_HINTS = (
     "node.js",
 )
 
+# Only these sources may create first-person experience claims
+FIRST_PERSON_CLAIM_SOURCES: frozenset[ClaimSourceKind] = frozenset({"candidate_evidence", "user_confirmation"})
+
 
 @dataclass
 class ClaimAtoms:
@@ -103,7 +119,6 @@ def extract_claim_atoms(text: str, explicit_techs: list[str] | None = None) -> C
     for hint in KNOWN_TECH_HINTS:
         if re.search(rf"\b{re.escape(hint)}\b", lower):
             techs.append(hint)
-    # Heuristic org tokens: Capitalized multi-word before colon or employment verbs
     orgs = re.findall(r"\b([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Z][A-Za-z0-9&.\-]+){0,3})\b", text)
     return ClaimAtoms(
         percentages=PERCENT_RE.findall(text),
@@ -158,6 +173,59 @@ def detect_jd_injection(job_description: str) -> list[str]:
     return [f"JD_INJECTION:{marker}" for marker in INJECTION_MARKERS if marker in lower]
 
 
+def claim_source_allows_first_person(kind: ClaimSourceKind) -> bool:
+    return kind in FIRST_PERSON_CLAIM_SOURCES
+
+
+def evidence_backed_confirmations(confirmations: list[UserConfirmation] | None) -> list[UserConfirmation]:
+    """Confirmations that may create first-person claims (yes + evidence description)."""
+    return [c for c in (confirmations or []) if c.can_create_first_person_claim()]
+
+
+def confirmation_without_evidence(confirmations: list[UserConfirmation] | None) -> list[UserConfirmation]:
+    """Yes confirmations lacking evidence_description — must NOT become experience."""
+    out: list[UserConfirmation] = []
+    for c in confirmations or []:
+        if c.confirmed and c.source_kind == "user_confirmation" and not (c.evidence_description or "").strip():
+            out.append(c)
+    return out
+
+
+def research_or_jd_to_questions(
+    *,
+    job_requirements: list[str] | None = None,
+    research_findings: list[ResearchFinding] | None = None,
+    allowed_technologies: set[str] | None = None,
+) -> list[str]:
+    """Job/research may only produce clarifying questions, never first-person claims."""
+    allowed = allowed_technologies or set()
+    questions: list[str] = []
+    for finding in research_findings or []:
+        summary = finding.summary.strip()
+        if not summary:
+            continue
+        atoms = extract_claim_atoms(summary)
+        novel = [t for t in atoms.technologies if t not in allowed]
+        if novel:
+            tech = novel[0]
+            questions.append(f"Research suggests this team may use {tech.title()}. Have you used it?")
+        else:
+            questions.append(f"Research notes: {summary[:180]}. Is this part of your experience?")
+    for req in (job_requirements or [])[:10]:
+        atoms = extract_claim_atoms(req)
+        novel = [t for t in atoms.technologies if t not in allowed]
+        if novel:
+            tech = novel[0]
+            questions.append(f"The job description mentions {tech.title()}. Have you used it?")
+    seen: set[str] = set()
+    unique: list[str] = []
+    for q in questions:
+        if q not in seen:
+            seen.add(q)
+            unique.append(q)
+    return unique[:12]
+
+
 def validate_resume_claims(
     resume: ResumeDocument,
     evidence: list[EvidenceItem],
@@ -167,18 +235,49 @@ def validate_resume_claims(
     owner_user_id: str | None = None,
     research_technologies: list[str] | None = None,
     job_description: str | None = None,
+    research_findings: list[ResearchFinding] | None = None,
+    user_confirmations: list[UserConfirmation] | None = None,
 ) -> list[str]:
-    """Deterministic claim checks. Returns machine-readable violation codes."""
+    """Deterministic claim checks. Returns machine-readable violation codes.
+
+    JD, resume text from untrusted inputs, and company research are untrusted —
+    they must not introduce unsupported hard facts or ATS manipulation.
+    """
     violations: list[str] = []
     evidence_ids = {item.id for item in evidence}
     evidence_by_id = {item.id: item for item in evidence}
+    # Evidence-backed confirmations may appear as synthetic conf-* evidence IDs in resume bullets
+    for idx, conf in enumerate(evidence_backed_confirmations(user_confirmations)):
+        if conf.related_evidence_ids:
+            continue
+        synth_id = f"conf-{idx}-{conf.topic[:24].replace(' ', '-').lower()}"
+        evidence_ids.add(synth_id)
+        if synth_id not in evidence_by_id and evidence:
+            evidence_by_id[synth_id] = EvidenceItem(
+                id=synth_id,
+                tenant_id=evidence[0].tenant_id,
+                owner_user_id=evidence[0].owner_user_id,
+                title=conf.topic,
+                claim_text=(conf.evidence_description or "").strip()[:3900],
+                technologies=[],
+                source_type="user_confirmation",
+                verification_status="user_attested",
+                candidate_confirmation_status="confirmed",
+                confidence="medium",
+            )
     allowed = collect_allowed_technologies(evidence, allowed_technologies)
+    for conf in evidence_backed_confirmations(user_confirmations):
+        for tech in extract_claim_atoms(conf.evidence_description or "").technologies:
+            allowed.add(tech)
     research_techs = {_norm_tech(t) for t in (research_technologies or [])}
+    for finding in research_findings or []:
+        research_techs.update(extract_claim_atoms(finding.summary).technologies)
     evidence_orgs = {
         (item.organization or item.employer_association or "").lower()
         for item in evidence
         if item.organization or item.employer_association
     }
+    bare_yes_topics = {c.topic.lower() for c in confirmation_without_evidence(user_confirmations)}
 
     if tenant_id is not None:
         for item in evidence:
@@ -187,8 +286,6 @@ def validate_resume_claims(
             if owner_user_id is not None and item.owner_user_id != owner_user_id:
                 violations.append("CROSS_OWNER_EVIDENCE")
 
-    # JD injection markers are untrusted context only — never execute, but do not
-    # fail generation solely because the JD contains adversarial instructions.
     _ = job_description
 
     for section in resume.sections:
@@ -204,6 +301,9 @@ def validate_resume_claims(
                     violations.append("UNKNOWN_EVIDENCE_ID")
             cited = _cited_evidence(bullet, evidence_by_id)
             corpus = _evidence_corpus(cited) if cited else ""
+            for conf in evidence_backed_confirmations(user_confirmations):
+                if not conf.related_evidence_ids or any(eid in bullet.evidence_ids for eid in conf.related_evidence_ids):
+                    corpus = f"{corpus} {(conf.evidence_description or '').lower()}"
             atoms = extract_claim_atoms(bullet.text, bullet.technologies)
 
             for tech in atoms.technologies:
@@ -214,7 +314,6 @@ def validate_resume_claims(
 
             for pct in atoms.percentages:
                 if pct.lower().replace(" ", "") not in corpus.replace(" ", ""):
-                    # Also accept bare number presence in evidence metrics
                     bare = re.sub(r"[^\d.]", "", pct)
                     if bare and bare not in corpus:
                         violations.append("UNSUPPORTED_PERCENT")
@@ -236,11 +335,9 @@ def validate_resume_claims(
             for org in atoms.orgs:
                 org_l = org.lower()
                 if evidence_orgs and org_l not in corpus and not any(org_l in eo or eo in org_l for eo in evidence_orgs if eo):
-                    # Only flag when resume introduces a novel employer-like token not in cited evidence
                     if len(org.split()) >= 2 and org_l not in corpus:
                         violations.append("UNSUPPORTED_COMPANY")
 
-            # Team→individual ownership conversion
             if atoms.individual_ownership:
                 if any(OWNERSHIP_TEAM_RE.search(_evidence_corpus([e])) for e in cited) and not any(
                     OWNERSHIP_INDIVIDUAL_RE.search(_evidence_corpus([e])) for e in cited
@@ -252,8 +349,14 @@ def validate_resume_claims(
                 violations.append("RESEARCH_LEAKED_INTO_CLAIM")
             if any(marker in lower for marker in ATS_MARKERS):
                 violations.append("ATS_MANIPULATION")
+            for topic in bare_yes_topics:
+                if topic and topic in lower and FIRST_PERSON_CLAIM_RE.search(lower):
+                    violations.append("CONFIRMATION_WITHOUT_EVIDENCE")
 
-    return sorted(set(violations))
+    unique = sorted(set(violations))
+    if unique:
+        METRICS.incr(UNSUPPORTED_CLAIMS_BLOCKED, len(unique))
+    return unique
 
 
 def adjudicate_finding(
@@ -322,11 +425,31 @@ def build_grounded_resume(
     notes: str,
     job_description: str = "",
     job_requirements: list[str] | None = None,
+    research_findings: list[ResearchFinding] | None = None,
+    user_confirmations: list[UserConfirmation] | None = None,
 ) -> ResumeDocument:
-    """Build an evidence-grounded resume; scores are calculated, never version-inflated."""
-    allowed = collect_allowed_technologies(evidence, allowed_technologies)
+    """Build an evidence-grounded resume; scores are calculated, never version-inflated.
 
-    if not evidence:
+    Claim source rules:
+    - candidate_evidence + evidence-backed user_confirmation → first-person claims OK
+    - job_requirement / company_research → clarifying questions only (appended to notes)
+    - confirmation yes without evidence_description → never added as experience
+    """
+    allowed = collect_allowed_technologies(evidence, allowed_technologies)
+    for conf in evidence_backed_confirmations(user_confirmations):
+        for tech in extract_claim_atoms(conf.evidence_description or "").technologies:
+            allowed.add(tech)
+
+    questions = research_or_jd_to_questions(
+        job_requirements=job_requirements,
+        research_findings=research_findings,
+        allowed_technologies=allowed,
+    )
+    notes_bits = [notes]
+    if questions:
+        notes_bits.append("Evidence questions: " + " | ".join(questions[:5]))
+
+    if not evidence and not evidence_backed_confirmations(user_confirmations):
         sections = [
             ResumeSection(
                 type="summary",
@@ -340,7 +463,7 @@ def build_grounded_resume(
             evidence=[],
             job_description=job_description,
             job_requirements=job_requirements,
-            notes=notes,
+            notes=" ".join(notes_bits),
         )
         return ResumeDocument(
             absolute_version=absolute_version,
@@ -354,16 +477,46 @@ def build_grounded_resume(
             sections=sections,
         )
 
-    first = evidence[0]
-    tech_list = sorted({tech for item in evidence for tech in item.technologies if _norm_tech(tech) in allowed})[:12]
-    employment = [item for item in evidence if (item.source_type or "").lower() in {"employment", "metric", "leadership"}]
-    education = [item for item in evidence if (item.source_type or "").lower() == "education"]
+    augmented = list(evidence)
+    for idx, conf in enumerate(evidence_backed_confirmations(user_confirmations)):
+        if conf.related_evidence_ids:
+            continue
+        synth_id = f"conf-{idx}-{conf.topic[:24].replace(' ', '-').lower()}"
+        if any(e.id == synth_id for e in augmented):
+            continue
+        tenant = evidence[0].tenant_id if evidence else "unknown"
+        owner = evidence[0].owner_user_id if evidence else "unknown"
+        techs = sorted({t.title() for t in extract_claim_atoms(conf.evidence_description or "").technologies})
+        augmented.append(
+            EvidenceItem(
+                id=synth_id,
+                tenant_id=tenant,
+                owner_user_id=owner,
+                title=conf.topic,
+                claim_text=(conf.evidence_description or "").strip()[:3900],
+                technologies=techs[:12],
+                source_type="user_confirmation",
+                verification_status="user_attested",
+                candidate_confirmation_status="confirmed",
+                confidence="medium",
+            )
+        )
+
+    first = augmented[0]
+    tech_list = sorted({tech for item in augmented for tech in item.technologies if _norm_tech(tech) in allowed})[:12]
+    employment = [
+        item
+        for item in augmented
+        if (item.source_type or "").lower() in {"employment", "metric", "leadership", "user_confirmation"}
+    ]
+    education = [item for item in augmented if (item.source_type or "").lower() == "education"]
     jd_lower = job_description.lower()
     reqs = list(job_requirements or [])
 
-    # JD-aware emphasis (still evidence-grounded)
     is_ux = any(tok in jd_lower for tok in ("ux", "design", "figma", "user research", "product design", "interface"))
-    is_backend = any(tok in jd_lower for tok in ("backend", "api", "platform", "distributed", "infrastructure", "python", "pytorch"))
+    is_backend = any(
+        tok in jd_lower for tok in ("backend", "api", "platform", "distributed", "infrastructure", "python", "pytorch")
+    )
 
     def matched_for(item: EvidenceItem) -> list[str]:
         matched: list[str] = []
@@ -412,7 +565,7 @@ def build_grounded_resume(
     if tech_list:
         summary_bits.append(f"Stack includes {', '.join(tech_list[:4])}")
 
-    experience_source = employment or evidence[:3]
+    experience_source = employment or augmented[:3]
     experience_bullets = [
         bullet_from(
             item,
@@ -472,10 +625,10 @@ def build_grounded_resume(
 
     scored = score_resume(
         sections=sections,
-        evidence=evidence,
+        evidence=augmented,
         job_description=job_description,
         job_requirements=job_requirements or reqs,
-        notes=notes,
+        notes=" ".join(notes_bits),
     )
     return ResumeDocument(
         absolute_version=absolute_version,
@@ -485,6 +638,6 @@ def build_grounded_resume(
         score_breakdown=scored.breakdown,
         score_rubric_version=scored.rubric_version,
         score_explanations=scored.explanations,
-        notes=notes,
+        notes=" ".join(notes_bits),
         sections=sections,
     )

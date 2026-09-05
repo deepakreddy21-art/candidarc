@@ -913,3 +913,17 @@ websockets==17.1 \
     --hash=sha256:fd8f47dbf2e8adb15c847215f83436de3fdb120b51fdae0fbbdf69fd97a3ad80 \
     --hash=sha256:ff3e2ba7a9f0a110b0555452e9b5a03a34e11662544e01beea15f144b48ba7b7
     # via uvicorn
+
+# Evidence store (asyncpg + pgvector). Pins match pyproject.toml.
+# Platform hashes cover win_amd64 + manylinux2014_x86_64 where available.
+asyncpg==0.30.0 \
+    --hash=sha256:9a0292c6af5c500523949155ec17b7fe01a00ace33b68a476d6b5059f9630305 \
+    --hash=sha256:1292b84ee06ac8a2ad8e51c7475aa309245874b61333d97411aab835c4a2f737
+    # via candidarc-python-backend (pyproject.toml)
+pgvector==0.3.6 \
+    --hash=sha256:f6c269b3c110ccb7496bac87202148ed18f34b390a0189c783e351062400a75a
+    # via candidarc-python-backend (pyproject.toml)
+numpy==2.2.6 \
+    --hash=sha256:c1f9540be57940698ed329904db803cf7a402f3fc200bfe599334c9bd84a40b2 \
+    --hash=sha256:fd83c01228a688733f1ded5201c678f0c53ecc1006ffbc404db9f7a899ac6249
+    # via pgvector
