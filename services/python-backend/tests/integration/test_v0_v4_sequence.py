@@ -16,73 +16,78 @@ AUDIT_SEQUENCE = [
 
 
 def test_full_v0_to_v4_mock_sequence() -> None:
-    client = TestClient(app)
-    ctx = qa_context()
-    evidence = [item.model_dump() for item in qa_evidence(ctx)]
-    allowed = ["Python", "PyTorch", "OpenSearch"]
-    jd = "Northwind Labs fictional role seeking Python platform engineer " + ("detail " * 8)
+    with TestClient(app) as client:
+        ctx = qa_context()
+        evidence = [item.model_dump() for item in qa_evidence(ctx)]
+        allowed = ["Python", "PyTorch", "OpenSearch"]
+        jd = "Northwind Labs fictional role seeking Python platform engineer " + ("detail " * 8)
 
-    resume = None
-    lenses_seen: list[str] = []
+        resume = None
+        lenses_seen: list[str] = []
 
-    for version in range(0, 5):
-        gen = client.post(
-            "/v1/resumes/generate",
-            headers={**AUTH_HEADERS, "Idempotency-Key": f"qa-v{version}"},
+        for version in range(0, 5):
+            gen = client.post(
+                "/v1/resumes/generate",
+                headers={**AUTH_HEADERS, "Idempotency-Key": f"qa-v{version}-seq"},
+                json={
+                    "context": ctx.model_dump(),
+                    "absolute_version": version,
+                    "cycle_step": version,
+                    "job_description": jd,
+                    "evidence": evidence,
+                    "allowed_technologies": allowed,
+                    "previous_resume": resume,
+                },
+            )
+            assert gen.status_code == 200, gen.text
+            resume = gen.json()["resume"]
+            assert resume["version_number"] == version
+            assert resume["absolute_version"] == version
+
+            if version < 4:
+                lens, reviews, produces = AUDIT_SEQUENCE[version]
+                audit = client.post(
+                    "/v1/resumes/audit",
+                    headers=AUTH_HEADERS,
+                    json={
+                        "context": ctx.model_dump(),
+                        "lens": lens,
+                        "reviews_version": reviews,
+                        "produces_version": produces,
+                        "resume": resume,
+                        "evidence": evidence,
+                        "job_description": jd,
+                    },
+                )
+                assert audit.status_code == 200, audit.text
+                body = audit.json()
+                assert body["lens"] == lens
+                assert lens.split("-")[0] in body["summary"].lower() or lens in body["summary"]
+                lenses_seen.append(body["lens"])
+
+        assert lenses_seen == ["hr-1", "em-1", "hr-2", "em-2"]
+        assert lenses_seen.count("hr-1") + lenses_seen.count("hr-2") == 2
+        assert lenses_seen.count("em-1") + lenses_seen.count("em-2") == 2
+
+        final_qa = client.post(
+            "/v1/resumes/final-qa",
+            headers=AUTH_HEADERS,
+            json={"context": ctx.model_dump(), "resume": resume, "evidence": evidence},
+        )
+        assert final_qa.status_code == 200
+        assert final_qa.json()["passed"] is True
+
+        regen = client.post(
+            "/v1/resumes/regenerate",
+            headers=AUTH_HEADERS,
             json={
                 "context": ctx.model_dump(),
-                "version_number": version,
+                "absolute_version": 4,
+                "cycle_step": 4,
                 "job_description": jd,
                 "evidence": evidence,
                 "allowed_technologies": allowed,
                 "previous_resume": resume,
             },
         )
-        assert gen.status_code == 200, gen.text
-        resume = gen.json()["resume"]
-        assert resume["version_number"] == version
-
-        if version < 4:
-            lens, reviews, produces = AUDIT_SEQUENCE[version]
-            audit = client.post(
-                "/v1/resumes/audit",
-                headers=AUTH_HEADERS,
-                json={
-                    "context": ctx.model_dump(),
-                    "lens": lens,
-                    "reviews_version": reviews,
-                    "produces_version": produces,
-                    "resume": resume,
-                    "evidence": evidence,
-                    "job_description": jd,
-                },
-            )
-            assert audit.status_code == 200, audit.text
-            body = audit.json()
-            assert body["lens"] == lens
-            lenses_seen.append(body["lens"])
-
-    assert lenses_seen == ["hr-1", "em-1", "hr-2", "em-2"]
-    assert lenses_seen.count("hr-1") + lenses_seen.count("hr-2") == 2
-    assert lenses_seen.count("em-1") + lenses_seen.count("em-2") == 2
-
-    final_qa = client.post(
-        "/v1/resumes/final-qa",
-        headers=AUTH_HEADERS,
-        json={"context": ctx.model_dump(), "resume": resume, "evidence": evidence},
-    )
-    assert final_qa.status_code == 200
-    assert final_qa.json()["passed"] is True
-
-    regen = client.post(
-        "/v1/resumes/regenerate",
-        headers=AUTH_HEADERS,
-        json={
-            "context": ctx.model_dump(),
-            "version_number": 4,
-            "job_description": jd,
-            "evidence": evidence,
-            "allowed_technologies": allowed,
-        },
-    )
-    assert regen.status_code == 200
+        assert regen.status_code == 200

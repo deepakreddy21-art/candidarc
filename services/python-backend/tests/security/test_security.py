@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
+from app.core.errors import ProviderError
 from app.core.logging import safe_extra
 from app.main import app
 from app.modules.guardrails.service import build_grounded_resume, validate_resume_claims
@@ -18,7 +19,8 @@ from tests.conftest import AUTH_HEADERS, qa_context, qa_evidence
 
 @pytest.fixture()
 def client() -> TestClient:
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +68,43 @@ def test_cross_tenant_retrieval_rejection(client: TestClient) -> None:
     assert cross_owner.json()["detail"]["code"] == "CROSS_OWNER_SEARCH"
 
 
+def test_cross_tenant_audit_and_final_qa_rejected(client: TestClient) -> None:
+    ctx = qa_context()
+    evidence = qa_evidence(ctx)
+    generated = client.post(
+        "/v1/resumes/generate",
+        headers=AUTH_HEADERS,
+        json={
+            "context": ctx.model_dump(),
+            "absolute_version": 0,
+            "job_description": "Python platform engineer " + ("y" * 20),
+            "evidence": [item.model_dump() for item in evidence],
+            "allowed_technologies": ["Python", "PyTorch", "OpenSearch"],
+        },
+    ).json()["resume"]
+    stolen = evidence[0].model_copy(update={"tenant_id": "ten_other"}).model_dump()
+    audit = client.post(
+        "/v1/resumes/audit",
+        headers=AUTH_HEADERS,
+        json={
+            "context": ctx.model_dump(),
+            "lens": "hr-1",
+            "reviews_version": 0,
+            "produces_version": 1,
+            "resume": generated,
+            "evidence": [stolen],
+            "job_description": "Python platform engineer",
+        },
+    )
+    assert audit.status_code == 403
+    final_qa = client.post(
+        "/v1/resumes/final-qa",
+        headers=AUTH_HEADERS,
+        json={"context": ctx.model_dump(), "resume": generated, "evidence": [stolen]},
+    )
+    assert final_qa.status_code == 403
+
+
 def test_prompt_injection_jd_not_treated_as_experience(client: TestClient) -> None:
     ctx = qa_context()
     evidence = qa_evidence(ctx)
@@ -79,7 +118,7 @@ def test_prompt_injection_jd_not_treated_as_experience(client: TestClient) -> No
         headers=AUTH_HEADERS,
         json={
             "context": ctx.model_dump(),
-            "version_number": 0,
+            "absolute_version": 0,
             "job_description": jd,
             "evidence": [item.model_dump() for item in evidence],
             "allowed_technologies": ["Python", "PyTorch", "OpenSearch"],
@@ -114,9 +153,9 @@ def test_logging_redaction_no_raw_resume_text(caplog: pytest.LogCaptureFixture) 
 def test_mock_forbidden_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_MODE", "production")
     monkeypatch.setenv("AI_MODE", "mock")
-    monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix")
+    monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix-32chars!!")
     get_settings.cache_clear()
-    with pytest.raises(RuntimeError, match="MOCK_FORBIDDEN_IN_PRODUCTION"):
+    with pytest.raises(ProviderError, match="MOCK_FORBIDDEN_IN_PRODUCTION"):
         get_provider("generation")
 
 
@@ -124,17 +163,33 @@ def test_mock_forbidden_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_missing_credentials_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_MODE", "production")
     monkeypatch.setenv("AI_MODE", "live")
-    monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix")
+    monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix-32chars!!")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_GENERATION_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     get_settings.cache_clear()
     provider = get_provider("generation")
-    with pytest.raises(RuntimeError, match="MISSING_CREDENTIALS"):
+    with pytest.raises(ProviderError, match="MISSING_CREDENTIALS"):
         await provider.generate_resume(
-            version_number=0,
+            absolute_version=0,
+            cycle_step=0,
             evidence=qa_evidence(),
             allowed_technologies=["Python"],
         )
+
+
+def test_production_ready_checks_per_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_MODE", "production")
+    monkeypatch.setenv("AI_MODE", "live")
+    monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix-32chars!!")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUDIT_API_KEY", raising=False)
+    get_settings.cache_clear()
+    errors = get_settings().ready_errors()
+    assert any("Audit role" in e for e in errors)
 
 
 def test_research_cannot_become_candidate_claims() -> None:
@@ -168,10 +223,9 @@ def test_research_cannot_become_candidate_claims() -> None:
     )
     assert "RESEARCH_AS_CANDIDATE_CLAIM" in leaks
 
-    # Guardrail: research leak marker in resume claim text
     ctx = qa_context()
     evidence = qa_evidence(ctx)
-    resume = build_grounded_resume(version_number=0, evidence=evidence, notes="t", score=70)
+    resume = build_grounded_resume(absolute_version=0, cycle_step=0, evidence=evidence, notes="t")
     resume.sections[0].bullets[0].text = "According to the job description we used, company research shows fit."  # type: ignore[index]
     assert "RESEARCH_LEAKED_INTO_CLAIM" in validate_resume_claims(resume, evidence)
 

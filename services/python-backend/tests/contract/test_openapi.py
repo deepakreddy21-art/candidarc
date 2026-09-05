@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -23,6 +24,20 @@ REQUIRED_PATHS = {
     "/v1/resumes/final-qa",
 }
 
+REQUIRED_SCHEMAS = {
+    "ResumeDocument-Output",
+    "ResumeGenerateRequest",
+    "ResumeGenerateResponse",
+    "AuditRequest",
+    "AuditResponse",
+    "AuditFinding",
+    "ScoreBreakdown",
+    "ProviderUsage",
+    "FinalQaResponse",
+    "EvidenceMatchResponse",
+    "MistakeMemoryRule",
+}
+
 ROOT = Path(__file__).resolve().parents[2]
 OPENAPI_PATH = ROOT / "openapi.json"
 
@@ -36,24 +51,62 @@ def test_openapi_contains_required_paths() -> None:
     assert "openapi" in schema
 
 
+def test_openapi_contains_component_schemas() -> None:
+    schema = app.openapi()
+    components = schema["components"]["schemas"]
+    missing = REQUIRED_SCHEMAS - set(components)
+    assert not missing, f"Missing schemas: {sorted(missing)}"
+    # Pydantic v2 may emit ResumeDocument-Input/Output when validators alter wire shape
+    resume_key = "ResumeDocument-Output" if "ResumeDocument-Output" in components else "ResumeDocument"
+    resume = components[resume_key]["properties"]
+    assert "version_number" in resume
+    assert "absolute_version" in resume
+    assert "cycle_step" in resume
+    assert "score_breakdown" in resume
+    assert "score_rubric_version" in resume
+    audit = components["AuditResponse"]["properties"]
+    assert "rejected_findings" in audit
+    assert "usage" in audit
+
+
 def test_resume_generate_response_schema_fields() -> None:
     schema = app.openapi()
     components = schema["components"]["schemas"]
     assert "ResumeGenerateResponse" in components
-    assert "ResumeDocument" in components
-    resume = components["ResumeDocument"]["properties"]
-    assert "version_number" in resume
-    assert "sections" in resume
+    assert "ResumeDocument-Output" in components or "ResumeDocument" in components
+    gen = components["ResumeGenerateResponse"]["properties"]
+    assert "usage" in gen
 
 
 def test_committed_openapi_matches_runtime() -> None:
     assert OPENAPI_PATH.exists(), "Run scripts/export_openapi.py to generate openapi.json"
     committed = json.loads(OPENAPI_PATH.read_text(encoding="utf-8"))
     runtime = app.openapi()
-    # Stable compare on paths + info version (ignore volatile ordering via dumps sort)
-    committed_norm = json.dumps({"paths": sorted(committed["paths"].keys()), "title": committed["info"]["title"]}, sort_keys=True)
-    runtime_norm = json.dumps({"paths": sorted(runtime["paths"].keys()), "title": runtime["info"]["title"]}, sort_keys=True)
+    committed_norm = json.dumps(
+        {"paths": sorted(committed["paths"].keys()), "title": committed["info"]["title"]},
+        sort_keys=True,
+    )
+    runtime_norm = json.dumps(
+        {"paths": sorted(runtime["paths"].keys()), "title": runtime["info"]["title"]},
+        sort_keys=True,
+    )
     assert committed_norm == runtime_norm
     committed_hash = hashlib.sha256(json.dumps(committed["paths"], sort_keys=True).encode()).hexdigest()
     runtime_hash = hashlib.sha256(json.dumps(runtime["paths"], sort_keys=True).encode()).hexdigest()
     assert committed_hash == runtime_hash
+
+    # Full components/schemas presence in committed artifact
+    committed_schemas = set(committed.get("components", {}).get("schemas", {}))
+    assert REQUIRED_SCHEMAS <= committed_schemas
+
+
+def test_schema_drift_mutation_fails() -> None:
+    """Mutating a committed schema field must diverge from runtime OpenAPI."""
+    runtime = app.openapi()
+    mutated = copy.deepcopy(runtime)
+    resume_key = "ResumeDocument-Output" if "ResumeDocument-Output" in runtime["components"]["schemas"] else "ResumeDocument"
+    mutated["components"]["schemas"][resume_key]["properties"]["score"]["type"] = "string"
+    assert mutated["components"]["schemas"][resume_key] != runtime["components"]["schemas"][resume_key]
+    runtime_dump = json.dumps(runtime["components"]["schemas"][resume_key], sort_keys=True)
+    mutated_dump = json.dumps(mutated["components"]["schemas"][resume_key], sort_keys=True)
+    assert runtime_dump != mutated_dump

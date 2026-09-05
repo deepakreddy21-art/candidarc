@@ -28,6 +28,10 @@ def qa_evidence(ctx: RequestContext | None = None) -> list[EvidenceItem]:
             technologies=["Python", "PyTorch", "OpenSearch"],
             source_type="employment",
             employer_association="Northwind Labs",
+            verification_status="user_attested",
+            candidate_confirmation_status="confirmed",
+            confidence="high",
+            metrics=["latency improved 35%"],
         ),
         EvidenceItem(
             id="ev-2",
@@ -38,6 +42,9 @@ def qa_evidence(ctx: RequestContext | None = None) -> list[EvidenceItem]:
             claim_text="MS Information Systems, January 2023 – May 2024",
             technologies=[],
             source_type="education",
+            verification_status="user_attested",
+            candidate_confirmation_status="confirmed",
+            confidence="high",
         ),
     ]
 

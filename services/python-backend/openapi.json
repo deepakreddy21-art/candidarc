@@ -5,12 +5,36 @@
         "additionalProperties": false,
         "properties": {
           "before_text": {
+            "maxLength": 4000,
             "title": "Before Text",
             "type": "string"
+          },
+          "edited_text": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edited Text"
+          },
+          "evidence_ids": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Evidence Ids",
+            "type": "array"
           },
           "evidence_source": {
             "anyOf": [
               {
+                "maxLength": 128,
                 "type": "string"
               },
               {
@@ -20,14 +44,32 @@
             "title": "Evidence Source"
           },
           "expected_score_impact": {
+            "maximum": 100.0,
+            "minimum": -100.0,
             "title": "Expected Score Impact",
             "type": "number"
           },
           "explanation": {
+            "maxLength": 4000,
+            "minLength": 1,
             "title": "Explanation",
             "type": "string"
           },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
           "section": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Section",
             "type": "string"
           },
@@ -36,16 +78,36 @@
               "critical",
               "major",
               "minor",
-              "nit"
+              "suggestion"
             ],
             "title": "Severity",
             "type": "string"
           },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "accepted",
+                  "rejected",
+                  "edited"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
           "suggested_text": {
+            "maxLength": 4000,
             "title": "Suggested Text",
             "type": "string"
           },
           "title": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Title",
             "type": "string"
           }
@@ -65,6 +127,15 @@
       "AuditRequest": {
         "additionalProperties": false,
         "properties": {
+          "allowed_technologies": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Allowed Technologies",
+            "type": "array"
+          },
           "context": {
             "$ref": "#/components/schemas/RequestContext"
           },
@@ -72,10 +143,13 @@
             "items": {
               "$ref": "#/components/schemas/EvidenceItem"
             },
+            "maxItems": 500,
             "title": "Evidence",
             "type": "array"
           },
           "job_description": {
+            "maxLength": 100000,
+            "minLength": 1,
             "title": "Job Description",
             "type": "string"
           },
@@ -90,13 +164,15 @@
             "type": "string"
           },
           "produces_version": {
+            "minimum": 0.0,
             "title": "Produces Version",
             "type": "integer"
           },
           "resume": {
-            "$ref": "#/components/schemas/ResumeDocument"
+            "$ref": "#/components/schemas/ResumeDocument-Input"
           },
           "reviews_version": {
+            "minimum": 0.0,
             "title": "Reviews Version",
             "type": "integer"
           }
@@ -120,6 +196,7 @@
             "items": {
               "$ref": "#/components/schemas/AuditFinding"
             },
+            "maxItems": 100,
             "title": "Findings",
             "type": "array"
           },
@@ -134,32 +211,62 @@
             "type": "string"
           },
           "model": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Model",
             "type": "string"
           },
           "produces_version": {
+            "minimum": 0.0,
             "title": "Produces Version",
             "type": "integer"
           },
           "provider": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Provider",
             "type": "string"
           },
+          "rejected_findings": {
+            "items": {
+              "$ref": "#/components/schemas/AuditFinding"
+            },
+            "maxItems": 100,
+            "title": "Rejected Findings",
+            "type": "array"
+          },
           "reviews_version": {
+            "minimum": 0.0,
             "title": "Reviews Version",
             "type": "integer"
           },
           "score_after": {
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Score After",
             "type": "number"
           },
           "score_before": {
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Score Before",
             "type": "number"
           },
           "summary": {
+            "maxLength": 4000,
+            "minLength": 1,
             "title": "Summary",
             "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -176,6 +283,40 @@
         "title": "AuditResponse",
         "type": "object"
       },
+      "DeterministicQaCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "maxLength": 2000,
+            "title": "Detail",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "warn",
+              "fail",
+              "warning",
+              "pending"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "status",
+          "detail"
+        ],
+        "title": "DeterministicQaCheck",
+        "type": "object"
+      },
       "EvidenceIndexRequest": {
         "additionalProperties": false,
         "properties": {
@@ -186,6 +327,7 @@
             "items": {
               "$ref": "#/components/schemas/EvidenceItem"
             },
+            "maxItems": 500,
             "title": "Evidence",
             "type": "array"
           }
@@ -200,15 +342,25 @@
       "EvidenceIndexResponse": {
         "additionalProperties": false,
         "properties": {
+          "experimental": {
+            "default": true,
+            "title": "Experimental",
+            "type": "boolean"
+          },
           "indexed": {
+            "minimum": 0.0,
             "title": "Indexed",
             "type": "integer"
           },
           "owner_user_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Owner User Id",
             "type": "string"
           },
           "tenant_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Tenant Id",
             "type": "string"
           }
@@ -226,19 +378,23 @@
         "properties": {
           "actions": {
             "items": {
+              "maxLength": 2000,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Actions",
             "type": "array"
           },
           "candidate_confirmation_status": {
-            "default": "confirmed",
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Candidate Confirmation Status",
             "type": "string"
           },
           "claim_text": {
             "anyOf": [
               {
+                "maxLength": 4000,
                 "type": "string"
               },
               {
@@ -248,7 +404,6 @@
             "title": "Claim Text"
           },
           "confidence": {
-            "default": "high",
             "enum": [
               "high",
               "medium",
@@ -260,6 +415,7 @@
           "employer_association": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -269,19 +425,24 @@
             "title": "Employer Association"
           },
           "id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Id",
             "type": "string"
           },
           "metrics": {
             "items": {
+              "maxLength": 512,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Metrics",
             "type": "array"
           },
           "organization": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -291,17 +452,21 @@
             "title": "Organization"
           },
           "owner_user_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Owner User Id",
             "type": "string"
           },
           "privacy_classification": {
             "default": "share-safe",
+            "maxLength": 64,
             "title": "Privacy Classification",
             "type": "string"
           },
           "project_association": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -313,6 +478,7 @@
           "result": {
             "anyOf": [
               {
+                "maxLength": 4000,
                 "type": "string"
               },
               {
@@ -324,6 +490,7 @@
           "situation": {
             "anyOf": [
               {
+                "maxLength": 4000,
                 "type": "string"
               },
               {
@@ -335,6 +502,7 @@
           "source_type": {
             "anyOf": [
               {
+                "maxLength": 128,
                 "type": "string"
               },
               {
@@ -346,6 +514,7 @@
           "task": {
             "anyOf": [
               {
+                "maxLength": 4000,
                 "type": "string"
               },
               {
@@ -356,21 +525,28 @@
           },
           "technologies": {
             "items": {
+              "maxLength": 128,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Technologies",
             "type": "array"
           },
           "tenant_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Tenant Id",
             "type": "string"
           },
           "title": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Title",
             "type": "string"
           },
           "verification_status": {
-            "default": "user_attested",
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Verification Status",
             "type": "string"
           }
@@ -379,7 +555,10 @@
           "id",
           "tenant_id",
           "owner_user_id",
-          "title"
+          "title",
+          "verification_status",
+          "candidate_confirmation_status",
+          "confidence"
         ],
         "title": "EvidenceItem",
         "type": "object"
@@ -394,13 +573,16 @@
             "items": {
               "$ref": "#/components/schemas/EvidenceItem"
             },
+            "maxItems": 500,
             "title": "Evidence",
             "type": "array"
           },
           "requirements": {
             "items": {
+              "maxLength": 2000,
               "type": "string"
             },
+            "maxItems": 200,
             "title": "Requirements",
             "type": "array"
           },
@@ -408,6 +590,7 @@
             "items": {
               "$ref": "#/components/schemas/ResearchFinding"
             },
+            "maxItems": 100,
             "title": "Research Findings",
             "type": "array"
           }
@@ -424,13 +607,23 @@
         "additionalProperties": false,
         "properties": {
           "evidence_coverage": {
+            "maximum": 1.0,
+            "minimum": 0.0,
             "title": "Evidence Coverage",
             "type": "number"
+          },
+          "ranking_method": {
+            "default": "lexical_hybrid_request_scoped",
+            "description": "Request-scoped lexical hybrid (keyword overlap + deterministic hash vectors). Not RAG index.",
+            "maxLength": 128,
+            "title": "Ranking Method",
+            "type": "string"
           },
           "rows": {
             "items": {
               "$ref": "#/components/schemas/EvidenceMatchRow"
             },
+            "maxItems": 200,
             "title": "Rows",
             "type": "array"
           }
@@ -448,6 +641,7 @@
           "coverage_gap": {
             "anyOf": [
               {
+                "maxLength": 1000,
                 "type": "string"
               },
               {
@@ -458,8 +652,11 @@
           },
           "evidence_ids": {
             "items": {
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             },
+            "maxItems": 32,
             "title": "Evidence Ids",
             "type": "array"
           },
@@ -483,6 +680,7 @@
             "type": "string"
           },
           "requirement": {
+            "maxLength": 2000,
             "title": "Requirement",
             "type": "string"
           },
@@ -509,6 +707,8 @@
         "additionalProperties": false,
         "properties": {
           "evidence_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Evidence Id",
             "type": "string"
           },
@@ -517,6 +717,7 @@
             "type": "number"
           },
           "snippet": {
+            "maxLength": 512,
             "title": "Snippet",
             "type": "string"
           }
@@ -543,10 +744,14 @@
             "type": "integer"
           },
           "owner_user_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Owner User Id",
             "type": "string"
           },
           "query": {
+            "maxLength": 2000,
+            "minLength": 1,
             "title": "Query",
             "type": "string"
           }
@@ -562,6 +767,11 @@
       "EvidenceSearchResponse": {
         "additionalProperties": false,
         "properties": {
+          "experimental": {
+            "default": true,
+            "title": "Experimental",
+            "type": "boolean"
+          },
           "hits": {
             "items": {
               "$ref": "#/components/schemas/EvidenceSearchHit"
@@ -580,10 +790,13 @@
         "additionalProperties": false,
         "properties": {
           "detail": {
+            "maxLength": 2000,
             "title": "Detail",
             "type": "string"
           },
           "label": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Label",
             "type": "string"
           },
@@ -591,7 +804,9 @@
             "enum": [
               "pass",
               "warn",
-              "fail"
+              "fail",
+              "warning",
+              "pending"
             ],
             "title": "Status",
             "type": "string"
@@ -608,14 +823,23 @@
       "FinalQaRequest": {
         "additionalProperties": false,
         "properties": {
+          "allowed_technologies": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Allowed Technologies",
+            "type": "array"
+          },
           "context": {
             "$ref": "#/components/schemas/RequestContext"
           },
           "deterministic_checks": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/DeterministicQaCheck"
             },
+            "maxItems": 100,
             "title": "Deterministic Checks",
             "type": "array"
           },
@@ -623,11 +847,12 @@
             "items": {
               "$ref": "#/components/schemas/EvidenceItem"
             },
+            "maxItems": 500,
             "title": "Evidence",
             "type": "array"
           },
           "resume": {
-            "$ref": "#/components/schemas/ResumeDocument"
+            "$ref": "#/components/schemas/ResumeDocument-Input"
           }
         },
         "required": [
@@ -645,10 +870,13 @@
             "items": {
               "$ref": "#/components/schemas/FinalQaCheck"
             },
+            "maxItems": 100,
             "title": "Checks",
             "type": "array"
           },
           "model": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Model",
             "type": "string"
           },
@@ -657,8 +885,20 @@
             "type": "boolean"
           },
           "provider": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Provider",
             "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -701,8 +941,10 @@
         "properties": {
           "errors": {
             "items": {
+              "maxLength": 512,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Errors",
             "type": "array"
           },
@@ -727,6 +969,7 @@
           "company": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -747,6 +990,7 @@
           "role": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -769,6 +1013,7 @@
           "company": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -780,6 +1025,7 @@
           "employment_type": {
             "anyOf": [
               {
+                "maxLength": 128,
                 "type": "string"
               },
               {
@@ -791,6 +1037,7 @@
           "location": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -801,28 +1048,35 @@
           },
           "preferred_qualifications": {
             "items": {
+              "maxLength": 2000,
               "type": "string"
             },
+            "maxItems": 100,
             "title": "Preferred Qualifications",
             "type": "array"
           },
           "required_qualifications": {
             "items": {
+              "maxLength": 2000,
               "type": "string"
             },
+            "maxItems": 100,
             "title": "Required Qualifications",
             "type": "array"
           },
           "responsibilities": {
             "items": {
+              "maxLength": 2000,
               "type": "string"
             },
+            "maxItems": 100,
             "title": "Responsibilities",
             "type": "array"
           },
           "role": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -834,6 +1088,7 @@
           "seniority": {
             "anyOf": [
               {
+                "maxLength": 128,
                 "type": "string"
               },
               {
@@ -844,14 +1099,17 @@
           },
           "target_technologies": {
             "items": {
+              "maxLength": 128,
               "type": "string"
             },
+            "maxItems": 100,
             "title": "Target Technologies",
             "type": "array"
           },
           "title": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -859,9 +1117,184 @@
               }
             ],
             "title": "Title"
+          },
+          "warnings": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "title": "JobParseResponse",
+        "type": "object"
+      },
+      "MistakeMemoryRule": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Affected Version",
+            "type": "string"
+          },
+          "category": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Category",
+            "type": "string"
+          },
+          "originating_audit": {
+            "enum": [
+              "hr-1",
+              "em-1",
+              "hr-2",
+              "em-2"
+            ],
+            "title": "Originating Audit",
+            "type": "string"
+          },
+          "rule": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Rule",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "major",
+              "minor",
+              "suggestion"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "rule",
+          "severity",
+          "originating_audit",
+          "affected_version"
+        ],
+        "title": "MistakeMemoryRule",
+        "type": "object"
+      },
+      "ProviderUsage": {
+        "additionalProperties": false,
+        "properties": {
+          "cached_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cached Tokens"
+          },
+          "estimated_cost_cents": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Cents"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "latency_ms": {
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "model": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "prompt_version": {
+            "maxLength": 128,
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_request_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Request Id"
+          },
+          "retry_count": {
+            "default": 0,
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Retry Count",
+            "type": "integer"
+          },
+          "rubric_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rubric Version"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "prompt_version",
+          "latency_ms"
+        ],
+        "title": "ProviderUsage",
         "type": "object"
       },
       "RequestContext": {
@@ -870,6 +1303,7 @@
           "application_id": {
             "anyOf": [
               {
+                "maxLength": 128,
                 "type": "string"
               },
               {
@@ -879,25 +1313,33 @@
             "title": "Application Id"
           },
           "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Request Id",
             "type": "string"
           },
           "schema_version": {
             "default": "2026-09-resume-intelligence.v1",
+            "maxLength": 128,
             "title": "Schema Version",
             "type": "string"
           },
           "tenant_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Tenant Id",
             "type": "string"
           },
           "user_id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "User Id",
             "type": "string"
           },
           "workflow_run_id": {
             "anyOf": [
               {
+                "maxLength": 128,
                 "type": "string"
               },
               {
@@ -919,6 +1361,8 @@
         "additionalProperties": false,
         "properties": {
           "category": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Category",
             "type": "string"
           },
@@ -933,8 +1377,11 @@
           },
           "source_ids": {
             "items": {
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Source Ids",
             "type": "array"
           },
@@ -943,16 +1390,24 @@
             "enum": [
               "supported",
               "uncertain",
-              "unavailable"
+              "unavailable",
+              "verified",
+              "inferred",
+              "unverified",
+              "disputed"
             ],
             "title": "Status",
             "type": "string"
           },
           "summary": {
+            "maxLength": 4000,
+            "minLength": 1,
             "title": "Summary",
             "type": "string"
           },
           "title": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Title",
             "type": "string"
           }
@@ -970,6 +1425,8 @@
         "additionalProperties": false,
         "properties": {
           "accessed_at": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Accessed At",
             "type": "string"
           },
@@ -994,6 +1451,8 @@
             "type": "string"
           },
           "id": {
+            "maxLength": 128,
+            "minLength": 1,
             "title": "Id",
             "type": "string"
           },
@@ -1005,14 +1464,21 @@
             "type": "number"
           },
           "supporting_text": {
+            "maxLength": 4000,
+            "minLength": 1,
             "title": "Supporting Text",
             "type": "string"
           },
           "title": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Title",
             "type": "string"
           },
           "url": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
             "title": "Url",
             "type": "string"
           }
@@ -1031,6 +1497,8 @@
         "additionalProperties": false,
         "properties": {
           "company": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Company",
             "type": "string"
           },
@@ -1038,10 +1506,14 @@
             "$ref": "#/components/schemas/RequestContext"
           },
           "job_description": {
+            "maxLength": 100000,
+            "minLength": 1,
             "title": "Job Description",
             "type": "string"
           },
           "role": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Role",
             "type": "string"
           },
@@ -1049,6 +1521,7 @@
             "items": {
               "$ref": "#/components/schemas/ResearchSource"
             },
+            "maxItems": 50,
             "title": "Sources",
             "type": "array"
           }
@@ -1068,6 +1541,7 @@
           "company_research_status": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "type": "string"
               },
               {
@@ -1080,10 +1554,13 @@
             "items": {
               "$ref": "#/components/schemas/ResearchFinding"
             },
+            "maxItems": 100,
             "title": "Findings",
             "type": "array"
           },
           "overall_confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
             "title": "Overall Confidence",
             "type": "number"
           },
@@ -1091,6 +1568,7 @@
             "items": {
               "$ref": "#/components/schemas/ResearchSource"
             },
+            "maxItems": 50,
             "title": "Sources",
             "type": "array"
           }
@@ -1128,45 +1606,70 @@
           },
           "evidence_ids": {
             "items": {
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             },
+            "maxItems": 32,
+            "minItems": 1,
             "title": "Evidence Ids",
             "type": "array"
           },
           "matched_requirements": {
             "items": {
+              "maxLength": 512,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Matched Requirements",
             "type": "array"
           },
           "source_version": {
             "default": "career-evidence",
+            "maxLength": 64,
             "title": "Source Version",
             "type": "string"
           },
           "technologies": {
             "items": {
+              "maxLength": 128,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Technologies",
             "type": "array"
           },
           "text": {
+            "maxLength": 4000,
+            "minLength": 1,
             "title": "Text",
             "type": "string"
           }
         },
         "required": [
-          "text"
+          "text",
+          "evidence_ids"
         ],
         "title": "ResumeBullet",
         "type": "object"
       },
-      "ResumeDocument": {
+      "ResumeDocument-Input": {
         "additionalProperties": false,
+        "description": "Resume document with dual version fields for TS mapping.\n\n`absolute_version` is unbounded (>=0). `cycle_step` is 0..4 for the refinement cycle.\n`version_number` mirrors `absolute_version` for TypeScript compatibility.",
         "properties": {
+          "absolute_version": {
+            "minimum": 0.0,
+            "title": "Absolute Version",
+            "type": "integer"
+          },
+          "cycle_step": {
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Cycle Step",
+            "type": "integer"
+          },
           "notes": {
+            "maxLength": 8000,
             "title": "Notes",
             "type": "string"
           },
@@ -1177,27 +1680,128 @@
             "type": "number"
           },
           "score_breakdown": {
-            "additionalProperties": {
-              "type": "number"
-            },
-            "title": "Score Breakdown",
-            "type": "object"
+            "$ref": "#/components/schemas/ScoreBreakdown"
+          },
+          "score_explanations": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Score Explanations"
+          },
+          "score_rubric_version": {
+            "default": "candidarc-score-rubric@v1",
+            "maxLength": 128,
+            "title": "Score Rubric Version",
+            "type": "string"
           },
           "sections": {
             "items": {
-              "$ref": "#/components/schemas/ResumeSection"
+              "$ref": "#/components/schemas/ResumeSection-Input"
             },
+            "maxItems": 20,
+            "minItems": 1,
             "title": "Sections",
             "type": "array"
           },
           "version_number": {
-            "maximum": 4.0,
             "minimum": 0.0,
             "title": "Version Number",
             "type": "integer"
           }
         },
         "required": [
+          "absolute_version",
+          "cycle_step",
+          "version_number",
+          "score",
+          "score_breakdown",
+          "notes",
+          "sections"
+        ],
+        "title": "ResumeDocument",
+        "type": "object"
+      },
+      "ResumeDocument-Output": {
+        "additionalProperties": false,
+        "description": "Resume document with dual version fields for TS mapping.\n\n`absolute_version` is unbounded (>=0). `cycle_step` is 0..4 for the refinement cycle.\n`version_number` mirrors `absolute_version` for TypeScript compatibility.",
+        "properties": {
+          "absolute_version": {
+            "minimum": 0.0,
+            "title": "Absolute Version",
+            "type": "integer"
+          },
+          "cycle_step": {
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Cycle Step",
+            "type": "integer"
+          },
+          "notes": {
+            "maxLength": 8000,
+            "title": "Notes",
+            "type": "string"
+          },
+          "score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "score_breakdown": {
+            "$ref": "#/components/schemas/ScoreBreakdown"
+          },
+          "score_explanations": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Score Explanations"
+          },
+          "score_rubric_version": {
+            "default": "candidarc-score-rubric@v1",
+            "maxLength": 128,
+            "title": "Score Rubric Version",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeSection-Output"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Sections",
+            "type": "array"
+          },
+          "version_number": {
+            "minimum": 0.0,
+            "title": "Version Number",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "absolute_version",
+          "cycle_step",
           "version_number",
           "score",
           "score_breakdown",
@@ -1210,50 +1814,104 @@
       "ResumeGenerateRequest": {
         "additionalProperties": false,
         "properties": {
+          "absolute_version": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Absolute Version"
+          },
           "accepted_findings": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/AuditFinding"
             },
+            "maxItems": 100,
             "title": "Accepted Findings",
             "type": "array"
           },
           "allowed_technologies": {
             "items": {
+              "maxLength": 128,
               "type": "string"
             },
+            "maxItems": 100,
             "title": "Allowed Technologies",
             "type": "array"
           },
           "context": {
             "$ref": "#/components/schemas/RequestContext"
           },
-          "evidence": {
-            "items": {
-              "$ref": "#/components/schemas/EvidenceItem"
-            },
-            "title": "Evidence",
-            "type": "array"
-          },
-          "job_description": {
-            "title": "Job Description",
-            "type": "string"
-          },
-          "previous_resume": {
+          "cycle_step": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "maximum": 4.0,
+                "minimum": 0.0,
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Previous Resume"
+            "title": "Cycle Step"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceItem"
+            },
+            "maxItems": 500,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "evidence_matches": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceMatchRow"
+            },
+            "maxItems": 200,
+            "title": "Evidence Matches",
+            "type": "array"
+          },
+          "job_description": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Job Description",
+            "type": "string"
+          },
+          "job_requirements": {
+            "items": {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Job Requirements",
+            "type": "array"
+          },
+          "mistake_memory": {
+            "items": {
+              "$ref": "#/components/schemas/MistakeMemoryRule"
+            },
+            "maxItems": 100,
+            "title": "Mistake Memory",
+            "type": "array"
+          },
+          "previous_resume": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeDocument-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "refinement_instruction": {
             "anyOf": [
               {
+                "maxLength": 4000,
                 "type": "string"
               },
               {
@@ -1262,23 +1920,37 @@
             ],
             "title": "Refinement Instruction"
           },
+          "rejected_findings": {
+            "items": {
+              "$ref": "#/components/schemas/AuditFinding"
+            },
+            "maxItems": 100,
+            "title": "Rejected Findings",
+            "type": "array"
+          },
           "research_findings": {
             "items": {
               "$ref": "#/components/schemas/ResearchFinding"
             },
+            "maxItems": 100,
             "title": "Research Findings",
             "type": "array"
           },
           "version_number": {
-            "maximum": 4.0,
-            "minimum": 0.0,
-            "title": "Version Number",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Number"
           }
         },
         "required": [
           "context",
-          "version_number",
           "job_description",
           "evidence"
         ],
@@ -1289,23 +1961,40 @@
         "additionalProperties": false,
         "properties": {
           "latency_ms": {
+            "minimum": 0.0,
             "title": "Latency Ms",
             "type": "integer"
           },
           "model": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Model",
             "type": "string"
           },
           "prompt_version": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Prompt Version",
             "type": "string"
           },
           "provider": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Provider",
             "type": "string"
           },
           "resume": {
-            "$ref": "#/components/schemas/ResumeDocument"
+            "$ref": "#/components/schemas/ResumeDocument-Output"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1325,12 +2014,14 @@
             "items": {
               "$ref": "#/components/schemas/ResumeBullet"
             },
+            "maxItems": 50,
             "title": "Bullets",
             "type": "array"
           },
           "dates": {
             "anyOf": [
               {
+                "maxLength": 128,
                 "type": "string"
               },
               {
@@ -1340,12 +2031,15 @@
             "title": "Dates"
           },
           "heading": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Heading",
             "type": "string"
           },
           "location": {
             "anyOf": [
               {
+                "maxLength": 256,
                 "type": "string"
               },
               {
@@ -1357,6 +2051,7 @@
           "subheading": {
             "anyOf": [
               {
+                "maxLength": 512,
                 "type": "string"
               },
               {
@@ -1376,10 +2071,14 @@
         "additionalProperties": false,
         "properties": {
           "content_base64": {
+            "maxLength": 20000000,
+            "minLength": 1,
             "title": "Content Base64",
             "type": "string"
           },
           "content_type": {
+            "maxLength": 256,
+            "minLength": 1,
             "title": "Content Type",
             "type": "string"
           },
@@ -1387,6 +2086,8 @@
             "$ref": "#/components/schemas/RequestContext"
           },
           "filename": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Filename",
             "type": "string"
           }
@@ -1406,6 +2107,8 @@
           "page_count": {
             "anyOf": [
               {
+                "maximum": 10000.0,
+                "minimum": 0.0,
                 "type": "integer"
               },
               {
@@ -1415,13 +2118,16 @@
             "title": "Page Count"
           },
           "text": {
+            "maxLength": 500000,
             "title": "Text",
             "type": "string"
           },
           "warnings": {
             "items": {
+              "maxLength": 256,
               "type": "string"
             },
+            "maxItems": 50,
             "title": "Warnings",
             "type": "array"
           }
@@ -1432,7 +2138,7 @@
         "title": "ResumeParseResponse",
         "type": "object"
       },
-      "ResumeSection": {
+      "ResumeSection-Input": {
         "additionalProperties": false,
         "properties": {
           "bullets": {
@@ -1441,6 +2147,7 @@
                 "items": {
                   "$ref": "#/components/schemas/ResumeBullet"
                 },
+                "maxItems": 50,
                 "type": "array"
               },
               {
@@ -1452,6 +2159,7 @@
           "content": {
             "anyOf": [
               {
+                "maxLength": 8000,
                 "type": "string"
               },
               {
@@ -1466,6 +2174,7 @@
                 "items": {
                   "$ref": "#/components/schemas/ResumeItem"
                 },
+                "maxItems": 50,
                 "type": "array"
               },
               {
@@ -1476,10 +2185,14 @@
           },
           "order": {
             "default": 0,
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Order",
             "type": "integer"
           },
           "title": {
+            "maxLength": 512,
+            "minLength": 1,
             "title": "Title",
             "type": "string"
           },
@@ -1490,8 +2203,7 @@
               "experience",
               "projects",
               "education",
-              "certifications",
-              "other"
+              "certifications"
             ],
             "title": "Type",
             "type": "string"
@@ -1504,15 +2216,165 @@
         "title": "ResumeSection",
         "type": "object"
       },
+      "ResumeSection-Output": {
+        "additionalProperties": false,
+        "properties": {
+          "bullets": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ResumeBullet"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bullets"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "items": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ResumeItem"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Items"
+          },
+          "order": {
+            "default": 0,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Order",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "summary",
+              "skills",
+              "experience",
+              "projects",
+              "education",
+              "certifications"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title"
+        ],
+        "title": "ResumeSection",
+        "type": "object"
+      },
+      "ScoreBreakdown": {
+        "additionalProperties": false,
+        "properties": {
+          "atsCompatibility": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Atscompatibility",
+            "type": "number"
+          },
+          "competencyCoverage": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Competencycoverage",
+            "type": "number"
+          },
+          "evidenceConfidence": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Evidenceconfidence",
+            "type": "number"
+          },
+          "formatIntegrity": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Formatintegrity",
+            "type": "number"
+          },
+          "impact": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Impact",
+            "type": "number"
+          },
+          "jobAlignment": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Jobalignment",
+            "type": "number"
+          },
+          "quantification": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Quantification",
+            "type": "number"
+          },
+          "recruiterReadability": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Recruiterreadability",
+            "type": "number"
+          },
+          "technicalDepth": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Technicaldepth",
+            "type": "number"
+          },
+          "writingQuality": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Writingquality",
+            "type": "number"
+          }
+        },
+        "required": [
+          "atsCompatibility",
+          "jobAlignment",
+          "recruiterReadability",
+          "impact",
+          "quantification",
+          "technicalDepth",
+          "competencyCoverage",
+          "evidenceConfidence",
+          "writingQuality",
+          "formatIntegrity"
+        ],
+        "title": "ScoreBreakdown",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
           "loc": {
             "items": {
               "anyOf": [
@@ -1874,22 +2736,6 @@
         "parameters": [
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
@@ -1902,6 +2748,22 @@
                 }
               ],
               "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -1944,6 +2806,22 @@
       "post": {
         "operationId": "resumes_final_qa_v1_resumes_final_qa_post",
         "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
           {
             "in": "header",
             "name": "authorization",
@@ -2002,22 +2880,6 @@
         "parameters": [
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
@@ -2030,6 +2892,22 @@
                 }
               ],
               "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],
@@ -2130,22 +3008,6 @@
         "parameters": [
           {
             "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          },
-          {
-            "in": "header",
             "name": "Idempotency-Key",
             "required": false,
             "schema": {
@@ -2158,6 +3020,22 @@
                 }
               ],
               "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
             }
           }
         ],

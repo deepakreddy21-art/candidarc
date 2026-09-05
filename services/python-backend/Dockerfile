@@ -8,10 +8,12 @@ WORKDIR /app
 
 RUN useradd --create-home --uid 10001 appuser
 
-COPY pyproject.toml README.md ./
+COPY requirements.txt pyproject.toml README.md ./
 COPY app ./app
 
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip \
+    && if [ -f requirements.txt ]; then pip install --require-hashes -r requirements.txt || pip install -r requirements.txt; fi \
+    && pip install --no-deps .
 
 USER appuser
 

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+from app.core.errors import (
+    CROSS_OWNER_EVIDENCE,
+    CROSS_TENANT_EVIDENCE,
+    EXPERIMENTAL_DISABLED,
+    IDEMPOTENCY_KEY_REUSED,
+    ProviderError,
+    http_status_for,
+)
+from app.core.idempotency import idempotency_redis_key, request_hash
 from app.core.security import require_service_token
 from app.domain.schemas import (
     AuditRequest,
@@ -35,15 +44,78 @@ from app.providers.factory import get_provider
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_service_token)])
 
 
-def _accept_idempotency(_idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> None:
-    """Accept Idempotency-Key when present; routing is currently request-scoped."""
-    return None
+def _raise_provider(exc: Exception) -> None:
+    if isinstance(exc, ProviderError):
+        raise HTTPException(status_code=http_status_for(exc.code), detail={"code": exc.code, "message": exc.message}) from exc
+    if isinstance(exc, RuntimeError):
+        code = str(exc).split(":", 1)[0]
+        raise HTTPException(status_code=http_status_for(code), detail={"code": code, "message": str(exc)}) from exc
+    if isinstance(exc, ValueError) and str(exc).startswith("GUARDRAIL_VIOLATION"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "GUARDRAIL_VIOLATION", "message": str(exc)},
+        ) from exc
+    raise exc
+
+
+def _assert_evidence_scope(tenant_id: str, user_id: str, evidence: list[Any]) -> None:
+    for item in evidence:
+        if item.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": CROSS_TENANT_EVIDENCE, "message": "Evidence tenant mismatch"},
+            )
+        if item.owner_user_id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": CROSS_OWNER_EVIDENCE, "message": "Evidence owner mismatch"},
+            )
+
+
+async def _with_idempotency(
+    request: Request,
+    *,
+    operation: str,
+    tenant_id: str,
+    user_id: str,
+    idempotency_key: str | None,
+    body_dict: dict[str, Any],
+    handler: Any,
+) -> Any:
+    if not idempotency_key:
+        return await handler()
+
+    store = request.app.state.idempotency
+    settings = request.app.state.settings
+    key = idempotency_redis_key(tenant_id, user_id, operation, idempotency_key)
+    digest = request_hash(body_dict)
+    try:
+        cached = await store.begin(key, digest, settings.idempotency_ttl_seconds)
+    except ProviderError as exc:
+        if exc.code == IDEMPOTENCY_KEY_REUSED:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": IDEMPOTENCY_KEY_REUSED, "message": exc.message},
+            ) from exc
+        raise HTTPException(status_code=http_status_for(exc.code), detail={"code": exc.code, "message": exc.message}) from exc
+
+    if cached is not None:
+        return cached
+
+    try:
+        result = await handler()
+        payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+        await store.complete(key, digest, payload, settings.idempotency_ttl_seconds)
+        return result
+    except Exception:
+        await store.release(key)
+        raise
 
 
 @router.post("/resumes/parse", response_model=ResumeParseResponse)
 async def resumes_parse(body: ResumeParseRequest) -> ResumeParseResponse:
     try:
-        return parse_resume_bytes(body.filename, body.content_type, body.content_base64)
+        return await parse_resume_bytes(body.filename, body.content_type, body.content_base64)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -58,11 +130,14 @@ async def jobs_parse(body: JobParseRequest) -> JobParseResponse:
 
 
 @router.post("/research/synthesize", response_model=ResearchSynthesizeResponse)
-async def research_synthesize(body: ResearchSynthesizeRequest) -> ResearchSynthesizeResponse:
-    provider = get_provider("generation")
-    result, _ = await provider.synthesize_research(company=body.company, role=body.role, sources=body.sources)
-    # Ensure research never invents candidate-experience language.
-    typed = cast(ResearchSynthesizeResponse, result)
+async def research_synthesize(request: Request, body: ResearchSynthesizeRequest) -> ResearchSynthesizeResponse:
+    try:
+        provider = get_provider("generation", request)
+        result, _, _ = await provider.synthesize_research(company=body.company, role=body.role, sources=body.sources)
+    except Exception as exc:
+        _raise_provider(exc)
+        raise
+    typed = result if isinstance(result, ResearchSynthesizeResponse) else ResearchSynthesizeResponse.model_validate(result)
     claim_leaks = research_svc.research_must_not_become_claims(typed.findings)
     if claim_leaks:
         raise HTTPException(
@@ -73,105 +148,227 @@ async def research_synthesize(body: ResearchSynthesizeRequest) -> ResearchSynthe
 
 
 @router.post("/evidence/index", response_model=EvidenceIndexResponse)
-async def evidence_index(body: EvidenceIndexRequest) -> EvidenceIndexResponse:
-    if any(item.tenant_id != body.context.tenant_id for item in body.evidence):
-        raise HTTPException(status_code=403, detail={"code": "CROSS_TENANT_EVIDENCE", "message": "Evidence tenant mismatch"})
-    if any(item.owner_user_id != body.context.user_id for item in body.evidence):
-        raise HTTPException(status_code=403, detail={"code": "CROSS_OWNER_EVIDENCE", "message": "Evidence owner mismatch"})
+async def evidence_index(request: Request, body: EvidenceIndexRequest) -> EvidenceIndexResponse:
+    settings = request.app.state.settings
+    if settings.app_mode == "production":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": EXPERIMENTAL_DISABLED, "message": "Experimental evidence index disabled in production"},
+        )
+    _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
     indexed = retrieval.index_evidence(body.context.tenant_id, body.context.user_id, body.evidence)
-    return EvidenceIndexResponse(indexed=indexed, tenant_id=body.context.tenant_id, owner_user_id=body.context.user_id)
+    return EvidenceIndexResponse(
+        indexed=indexed,
+        tenant_id=body.context.tenant_id,
+        owner_user_id=body.context.user_id,
+        experimental=True,
+    )
 
 
 @router.post("/evidence/search", response_model=EvidenceSearchResponse)
-async def evidence_search(body: EvidenceSearchRequest) -> EvidenceSearchResponse:
+async def evidence_search(request: Request, body: EvidenceSearchRequest) -> EvidenceSearchResponse:
+    settings = request.app.state.settings
+    if settings.app_mode == "production":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": EXPERIMENTAL_DISABLED, "message": "Experimental evidence search disabled in production"},
+        )
     if body.owner_user_id != body.context.user_id:
         raise HTTPException(status_code=403, detail={"code": "CROSS_OWNER_SEARCH", "message": "Cannot search another candidate"})
     hits = retrieval.search_evidence(body.context.tenant_id, body.owner_user_id, body.query, body.limit)
-    return EvidenceSearchResponse(hits=hits)
+    return EvidenceSearchResponse(hits=hits, experimental=True)
 
 
 @router.post("/evidence/match", response_model=EvidenceMatchResponse)
-async def evidence_match(body: EvidenceMatchRequest) -> EvidenceMatchResponse:
-    if any(item.tenant_id != body.context.tenant_id or item.owner_user_id != body.context.user_id for item in body.evidence):
-        raise HTTPException(status_code=403, detail={"code": "CROSS_TENANT_EVIDENCE", "message": "Evidence scope mismatch"})
-    # Research must never become candidate evidence; only requirements+evidence used.
+async def evidence_match(request: Request, body: EvidenceMatchRequest) -> EvidenceMatchResponse:
+    _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
     _ = body.research_findings  # intentionally ignored for claim formation
-    provider = get_provider("generation")
-    result, _ = await provider.match_evidence(requirements=body.requirements, evidence=body.evidence)
-    return cast(EvidenceMatchResponse, result)
-
-
-@router.post("/resumes/generate", response_model=ResumeGenerateResponse, dependencies=[Depends(_accept_idempotency)])
-async def resumes_generate(body: ResumeGenerateRequest) -> ResumeGenerateResponse:
-    if any(item.tenant_id != body.context.tenant_id or item.owner_user_id != body.context.user_id for item in body.evidence):
-        raise HTTPException(status_code=403, detail={"code": "CROSS_TENANT_EVIDENCE", "message": "Evidence scope mismatch"})
-    # Research findings must not become candidate claims.
-    _ = body.research_findings
     try:
-        provider = get_provider("generation")
-        resume, latency = await provider.generate_resume(
-            version_number=body.version_number,
+        provider = get_provider("generation", request)
+        result, _, _ = await provider.match_evidence(requirements=body.requirements, evidence=body.evidence)
+    except Exception as exc:
+        _raise_provider(exc)
+        raise
+    return result if isinstance(result, EvidenceMatchResponse) else EvidenceMatchResponse.model_validate(result)
+
+
+async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> ResumeGenerateResponse:
+    _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
+    _ = body.research_findings
+    absolute = body.absolute_version if body.absolute_version is not None else 0
+    cycle = body.cycle_step if body.cycle_step is not None else absolute % 5
+    try:
+        provider = get_provider("generation", request)
+        resume, latency, usage = await provider.generate_resume(
+            absolute_version=absolute,
+            cycle_step=cycle,
+            version_number=absolute,
             evidence=body.evidence,
             allowed_technologies=body.allowed_technologies,
             job_description=body.job_description,
+            job_requirements=body.job_requirements,
+            previous_resume=body.previous_resume,
             accepted_findings=body.accepted_findings,
+            rejected_findings=body.rejected_findings,
+            mistake_memory=body.mistake_memory,
         )
-    except RuntimeError as exc:
-        code = str(exc)
-        status_code = 503 if "MISSING_CREDENTIALS" in code or "MOCK_FORBIDDEN" in code else 500
-        raise HTTPException(status_code=status_code, detail={"code": code, "message": code}) from exc
-    violations = validate_resume_claims(resume, body.evidence, body.allowed_technologies)
+    except Exception as exc:
+        _raise_provider(exc)
+        raise
+    violations = validate_resume_claims(
+        resume,
+        body.evidence,
+        body.allowed_technologies,
+        tenant_id=body.context.tenant_id,
+        owner_user_id=body.context.user_id,
+        job_description=body.job_description,
+    )
     if violations:
         raise HTTPException(
             status_code=422,
-            detail={"code": "GUARDRAIL_VIOLATION", "message": "Resume failed claim checks", "details": {"violations": violations}},
+            detail={
+                "code": "GUARDRAIL_VIOLATION",
+                "message": "Resume failed claim checks",
+                "details": {"violations": violations},
+            },
         )
     return ResumeGenerateResponse(
         resume=resume,
         provider=provider.name,
         model=provider.model,
-        prompt_version="resume-generation@python-v1",
+        prompt_version=usage.prompt_version if usage else "resume-generation@python-v2",
         latency_ms=latency,
+        usage=usage,
     )
 
 
-@router.post("/resumes/audit", response_model=AuditResponse, dependencies=[Depends(_accept_idempotency)])
-async def resumes_audit(body: AuditRequest) -> AuditResponse:
-    try:
-        provider = get_provider(audits.lens_to_role(body.lens))
-        result, _ = await provider.audit(
-            lens=body.lens,
-            reviews_version=body.reviews_version,
-            produces_version=body.produces_version,
-            resume=body.resume,
-            evidence=body.evidence,
-            job_description=body.job_description,
-        )
-    except RuntimeError as exc:
-        code = str(exc)
-        status_code = 503 if "MISSING_CREDENTIALS" in code or "MOCK_FORBIDDEN" in code else 500
-        raise HTTPException(status_code=status_code, detail={"code": code, "message": code}) from exc
-    typed = cast(AuditResponse, result)
-    safe_findings = audits.filter_adjudicated_findings(typed.findings, body.evidence)
-    return typed.model_copy(update={"findings": safe_findings})
+@router.post("/resumes/generate", response_model=ResumeGenerateResponse)
+async def resumes_generate(
+    request: Request,
+    body: ResumeGenerateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> ResumeGenerateResponse | dict[str, Any]:
+    return cast(
+        ResumeGenerateResponse | dict[str, Any],
+        await _with_idempotency(
+            request,
+            operation="generate",
+            tenant_id=body.context.tenant_id,
+            user_id=body.context.user_id,
+            idempotency_key=idempotency_key,
+            body_dict=body.model_dump(mode="json"),
+            handler=lambda: _generate_handler(request, body),
+        ),
+    )
 
 
-@router.post("/resumes/regenerate", response_model=ResumeGenerateResponse, dependencies=[Depends(_accept_idempotency)])
-async def resumes_regenerate(body: ResumeGenerateRequest) -> ResumeGenerateResponse:
-    return await resumes_generate(body)
+@router.post("/resumes/audit", response_model=AuditResponse)
+async def resumes_audit(
+    request: Request,
+    body: AuditRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> AuditResponse | dict[str, Any]:
+    _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
+
+    async def _handler() -> AuditResponse:
+        try:
+            provider = get_provider(audits.lens_to_role(body.lens), request)
+            result, _, usage = await provider.audit(
+                lens=body.lens,
+                reviews_version=body.reviews_version,
+                produces_version=body.produces_version,
+                resume=body.resume,
+                evidence=body.evidence,
+                job_description=body.job_description,
+                allowed_technologies=body.allowed_technologies,
+                tenant_id=body.context.tenant_id,
+                owner_user_id=body.context.user_id,
+            )
+        except Exception as exc:
+            _raise_provider(exc)
+            raise
+        typed = result if isinstance(result, AuditResponse) else AuditResponse.model_validate(result)
+        if typed.usage is None:
+            typed = typed.model_copy(update={"usage": usage})
+        if not typed.rejected_findings and typed.findings:
+            accepted, rejected = audits.adjudicate_findings(
+                typed.findings,
+                body.evidence,
+                body.allowed_technologies,
+                tenant_id=body.context.tenant_id,
+                owner_user_id=body.context.user_id,
+            )
+            typed = typed.model_copy(update={"findings": accepted, "rejected_findings": rejected})
+        return typed
+
+    return cast(
+        AuditResponse | dict[str, Any],
+        await _with_idempotency(
+            request,
+            operation="audit",
+            tenant_id=body.context.tenant_id,
+            user_id=body.context.user_id,
+            idempotency_key=idempotency_key,
+            body_dict=body.model_dump(mode="json"),
+            handler=_handler,
+        ),
+    )
+
+
+@router.post("/resumes/regenerate", response_model=ResumeGenerateResponse)
+async def resumes_regenerate(
+    request: Request,
+    body: ResumeGenerateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> ResumeGenerateResponse | dict[str, Any]:
+    return cast(
+        ResumeGenerateResponse | dict[str, Any],
+        await _with_idempotency(
+            request,
+            operation="regenerate",
+            tenant_id=body.context.tenant_id,
+            user_id=body.context.user_id,
+            idempotency_key=idempotency_key,
+            body_dict=body.model_dump(mode="json"),
+            handler=lambda: _generate_handler(request, body),
+        ),
+    )
 
 
 @router.post("/resumes/final-qa", response_model=FinalQaResponse)
-async def resumes_final_qa(body: FinalQaRequest) -> FinalQaResponse:
-    try:
-        provider = get_provider("final-review")
-        result, _ = await provider.final_qa(
-            resume=body.resume,
-            evidence=body.evidence,
-            deterministic_checks=body.deterministic_checks,
-        )
-    except RuntimeError as exc:
-        code = str(exc)
-        status_code = 503 if "MISSING_CREDENTIALS" in code or "MOCK_FORBIDDEN" in code else 500
-        raise HTTPException(status_code=status_code, detail={"code": code, "message": code}) from exc
-    return cast(FinalQaResponse, result)
+async def resumes_final_qa(
+    request: Request,
+    body: FinalQaRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> FinalQaResponse | dict[str, Any]:
+    _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
+
+    async def _handler() -> FinalQaResponse:
+        try:
+            provider = get_provider("final-review", request)
+            result, _, usage = await provider.final_qa(
+                resume=body.resume,
+                evidence=body.evidence,
+                deterministic_checks=body.deterministic_checks,
+                allowed_technologies=body.allowed_technologies,
+            )
+        except Exception as exc:
+            _raise_provider(exc)
+            raise
+        typed = result if isinstance(result, FinalQaResponse) else FinalQaResponse.model_validate(result)
+        if typed.usage is None:
+            typed = typed.model_copy(update={"usage": usage})
+        return typed
+
+    return cast(
+        FinalQaResponse | dict[str, Any],
+        await _with_idempotency(
+            request,
+            operation="final-qa",
+            tenant_id=body.context.tenant_id,
+            user_id=body.context.user_id,
+            idempotency_key=idempotency_key,
+            body_dict=body.model_dump(mode="json"),
+            handler=_handler,
+        ),
+    )

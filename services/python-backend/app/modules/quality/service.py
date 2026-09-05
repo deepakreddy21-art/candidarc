@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict
 
-from app.domain.schemas import EvidenceItem, ResumeDocument
+from app.domain.schemas import EvidenceItem, FinalQaCheck, ResumeDocument
 from app.modules.guardrails.service import validate_resume_claims
 
 CheckStatus = Literal["pass", "warn", "fail"]
@@ -41,8 +41,17 @@ def run_deterministic_checks(
             "status": "pass" if section_count >= 2 else "warn",
             "detail": str(section_count),
         },
+        {
+            "label": "Score rubric present",
+            "status": "pass" if resume.score_rubric_version else "fail",
+            "detail": resume.score_rubric_version,
+        },
     ]
     return checks
+
+
+def to_final_qa_checks(checks: list[QaCheckDict]) -> list[FinalQaCheck]:
+    return [FinalQaCheck(label=c["label"], status=c["status"], detail=c["detail"]) for c in checks]
 
 
 def all_passed(checks: list[QaCheckDict]) -> bool:

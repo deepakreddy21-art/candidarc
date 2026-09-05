@@ -1,14 +1,15 @@
 """Retrieval rankers.
 
-Production baseline: deterministic hybrid keyword/vector scoring.
-Experimental cross-encoder: optional protocol stub behind `[ranker]` extra.
-It is DISABLED by default and MUST NOT download models on import, startup, or tests.
+Production baseline: deterministic hybrid keyword/vector scoring on request-scoped evidence.
+Experimental cross-encoder: loads ONLY from a local artifact path + checksum — never downloads.
+Disabled by default; readiness fails if configured but missing.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
+from pathlib import Path
 from typing import Any, Protocol
 
 from app.domain.schemas import EvidenceItem
@@ -70,32 +71,54 @@ class HybridKeywordVectorRanker:
         return scored[:limit]
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class CrossEncoderRanker:
     """Optional experimental re-ranker.
 
-    Disabled by default. Instantiation does not download models. Calling `rank`
-    without the optional `[ranker]` extra raises ImportError clearly.
+    Disabled by default. Never downloads models. Requires local artifact path + checksum.
     """
 
     name = "cross_encoder"
     enabled = False
 
-    def __init__(self, *, enabled: bool = False, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2") -> None:
+    def __init__(
+        self,
+        *,
+        enabled: bool = False,
+        artifact_path: str | None = None,
+        artifact_checksum: str | None = None,
+    ) -> None:
         self.enabled = enabled
-        self.model_name = model_name
+        self.artifact_path = artifact_path
+        self.artifact_checksum = artifact_checksum
         self._model: Any | None = None
 
     def _load_model(self) -> Any:
         if self._model is not None:
             return self._model
+        if not self.artifact_path or not self.artifact_checksum:
+            raise RuntimeError("CROSS_ENCODER_ARTIFACT_MISSING")
+        path = Path(self.artifact_path)
+        if not path.is_file():
+            raise RuntimeError("CROSS_ENCODER_ARTIFACT_MISSING")
+        digest = _sha256_file(path)
+        if digest.lower() != self.artifact_checksum.lower():
+            raise RuntimeError("CROSS_ENCODER_CHECKSUM_MISMATCH")
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:
             raise ImportError(
                 "CROSS_ENCODER_UNAVAILABLE: install optional extra `[ranker]` to enable experimental ranking"
             ) from exc
-        # Explicit load only when enabled and invoked — never on import.
-        self._model = CrossEncoder(self.model_name)
+        # Load from local artifact only — never download.
+        self._model = CrossEncoder(str(path))
         return self._model
 
     def rank(self, query: str, items: list[EvidenceItem], limit: int = 8) -> list[tuple[EvidenceItem, float]]:
@@ -108,7 +131,17 @@ class CrossEncoderRanker:
         return ranked[:limit]
 
 
-def get_ranker(backend: str = "hybrid", *, enable_cross_encoder: bool = False) -> Ranker:
+def get_ranker(
+    backend: str = "hybrid",
+    *,
+    enable_cross_encoder: bool = False,
+    artifact_path: str | None = None,
+    artifact_checksum: str | None = None,
+) -> Ranker:
     if backend == "cross_encoder":
-        return CrossEncoderRanker(enabled=enable_cross_encoder)
+        return CrossEncoderRanker(
+            enabled=enable_cross_encoder,
+            artifact_path=artifact_path,
+            artifact_checksum=artifact_checksum,
+        )
     return HybridKeywordVectorRanker()
