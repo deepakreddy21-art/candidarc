@@ -605,49 +605,98 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     if (backend === "python") {
       const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
       const client = getPythonIntelligenceClient();
-      const ready = await client.ready();
-      if (!ready) {
+      const context = {
+        tenantId: run.tenantId,
+        userId: application?.ownerUserId ?? "unknown",
+        applicationId: run.applicationPublicId,
+        workflowRunId: run.publicId,
+        requestId: run.id,
+      };
+      const evidencePayload = evidence.map((item) => ({
+        id: item.publicId,
+        tenantId: item.tenantId,
+        ownerUserId: item.ownerUserId,
+        title: item.title,
+        organization: item.organization,
+        situation: item.situation,
+        task: item.task,
+        actions: item.actions,
+        result: item.result,
+        technologies: item.technologies,
+        confidence: item.confidence,
+        sourceType: item.sourceType,
+        claimText: item.claimText,
+        employerAssociation: item.employerAssociation,
+        projectAssociation: item.projectAssociation,
+        verificationStatus: item.verificationStatus,
+        candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+        privacyLevel: item.privacyLevel,
+        metrics: item.payload?.metrics,
+        payload: item.payload,
+      }));
+      const rejectedFindings = auditFindings.filter((finding) => finding.status === "rejected");
+      const researchFindings = Array.isArray(research?.findings)
+        ? (research.findings as Array<Record<string, unknown>>)
+        : [];
+      const jobRequirements = Array.isArray(application?.metadata?.jobRequirements)
+        ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+        : [];
+      const evidenceMatches = Array.isArray(application?.metadata?.evidenceMatches)
+        ? (application.metadata.evidenceMatches as Array<Record<string, unknown>>)
+        : [];
+      const generateInput = {
+        context,
+        absoluteVersion: storedVersionNumber,
+        cycleStep: versionNumber,
+        jobDescription: String(application?.metadata?.jobDescription ?? ""),
+        evidence: evidencePayload,
+        allowedTechnologies: evidenceTechnologies,
+        previousResume: previousVersion
+          ? {
+              versionNumber: previousVersion.versionNumber,
+              absoluteVersion: previousVersion.versionNumber,
+              cycleStep: previousVersion.versionNumber % 5,
+              score: previousVersion.score,
+              scoreBreakdown: previousVersion.scoreBreakdown ?? {},
+              notes: previousVersion.notes ?? "",
+              sections: previousVersion.sections as Array<Record<string, unknown>>,
+            }
+          : null,
+        acceptedFindings: actionable as unknown as Array<Record<string, unknown>>,
+        rejectedFindings: rejectedFindings as unknown as Array<Record<string, unknown>>,
+        researchFindings,
+        mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
+        refinementInstruction:
+          typeof run.payload.refinementInstruction === "string" ? run.payload.refinementInstruction : null,
+        jobRequirements,
+        evidenceMatches,
+        idempotencyKey,
+      };
+      try {
+        const py =
+          versionNumber === 0
+            ? await client.generateResume(generateInput)
+            : await client.regenerateResume(generateInput);
+        result = {
+          data: resumeSchema.parse(py.resume),
+          rawText: "",
+          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+          prompt: {
+            id: prompt.id,
+            version: py.promptVersion || prompt.version,
+            rubricVersion: prompt.rubricVersion,
+          },
+          usage: {
+            inputTokens: py.usage.inputTokens,
+            outputTokens: py.usage.outputTokens,
+            estimatedCostCents: py.usage.estimatedCostCents,
+          },
+          latencyMs: py.latencyMs,
+        };
+      } catch (error) {
+        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
         throw new AppError("PYTHON_BACKEND_UNAVAILABLE", "Resume intelligence service is unavailable", 503);
       }
-      const py = await client.generateResume({
-        context: {
-          tenantId: run.tenantId,
-          userId: application?.ownerUserId ?? "unknown",
-          applicationId: run.applicationPublicId,
-          workflowRunId: run.publicId,
-          requestId: run.id,
-        },
-        versionNumber,
-        jobDescription: String(application?.metadata?.jobDescription ?? ""),
-        evidence: evidence.map((item) => ({
-          id: item.publicId,
-          tenantId: item.tenantId,
-          ownerUserId: item.ownerUserId,
-          title: item.title,
-          organization: item.organization,
-          situation: item.situation,
-          task: item.task,
-          actions: item.actions,
-          result: item.result,
-          technologies: item.technologies,
-          confidence: item.confidence,
-          sourceType: item.sourceType,
-          claimText: item.claimText,
-          employerAssociation: item.employerAssociation,
-          projectAssociation: item.projectAssociation,
-          verificationStatus: item.verificationStatus,
-          privacyLevel: item.privacyLevel,
-        })),
-        allowedTechnologies: evidenceTechnologies,
-      });
-      result = {
-        data: py.resume as never,
-        rawText: "",
-        model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        usage: { inputTokens: 0, outputTokens: 0, estimatedCostCents: 0 },
-        latencyMs: py.latencyMs,
-      };
     } else {
       result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
@@ -689,58 +738,98 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       },
     });
       if (backend === "shadow") {
-        void (async () => {
-          try {
-            const { compareResumeShapes, getPythonIntelligenceClient } = await import(
-              "../intelligence/python-client"
-            );
-            const py = await getPythonIntelligenceClient().generateResume({
-              context: {
-                tenantId: run.tenantId,
-                userId: application?.ownerUserId ?? "unknown",
-                applicationId: run.applicationPublicId,
-                workflowRunId: run.publicId,
-                requestId: run.id,
-              },
-              versionNumber,
-              jobDescription: String(application?.metadata?.jobDescription ?? ""),
-              evidence: evidence.map((item) => ({
-                id: item.publicId,
-                tenantId: item.tenantId,
-                ownerUserId: item.ownerUserId,
-                title: item.title,
-                organization: item.organization,
-                situation: item.situation,
-                task: item.task,
-                actions: item.actions,
-                result: item.result,
-                technologies: item.technologies,
-                confidence: item.confidence,
-                sourceType: item.sourceType,
-                claimText: item.claimText,
-                employerAssociation: item.employerAssociation,
-                projectAssociation: item.projectAssociation,
-                verificationStatus: item.verificationStatus,
-                privacyLevel: item.privacyLevel,
-              })),
-              allowedTechnologies: evidenceTechnologies,
-            });
-            const diff = compareResumeShapes(
-              result.data as { sections?: Array<Record<string, unknown>> },
-              py.resume as { sections?: Array<Record<string, unknown>> },
-            );
-            logger.info(
-              {
-                applicationPublicId: run.applicationPublicId,
-                versionNumber,
-                ...diff,
-              },
-              "python shadow resume comparison (sanitized counts only)",
-            );
-          } catch {
-            /* shadow mode never affects customer path */
-          }
-        })();
+        const { shouldSampleShadow } = await import("../intelligence/python-client");
+        if (shouldSampleShadow()) {
+          void (async () => {
+            try {
+              const { compareResumeShapes, getPythonIntelligenceClient } = await import(
+                "../intelligence/python-client"
+              );
+              const started = Date.now();
+              const py = await getPythonIntelligenceClient().generateResume({
+                context: {
+                  tenantId: run.tenantId,
+                  userId: application?.ownerUserId ?? "unknown",
+                  applicationId: run.applicationPublicId,
+                  workflowRunId: run.publicId,
+                  requestId: run.id,
+                },
+                absoluteVersion: storedVersionNumber,
+                cycleStep: versionNumber,
+                jobDescription: String(application?.metadata?.jobDescription ?? ""),
+                evidence: evidence.map((item) => ({
+                  id: item.publicId,
+                  tenantId: item.tenantId,
+                  ownerUserId: item.ownerUserId,
+                  title: item.title,
+                  organization: item.organization,
+                  situation: item.situation,
+                  task: item.task,
+                  actions: item.actions,
+                  result: item.result,
+                  technologies: item.technologies,
+                  confidence: item.confidence,
+                  sourceType: item.sourceType,
+                  claimText: item.claimText,
+                  employerAssociation: item.employerAssociation,
+                  projectAssociation: item.projectAssociation,
+                  verificationStatus: item.verificationStatus,
+                  candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+                  privacyLevel: item.privacyLevel,
+                  metrics: item.payload?.metrics,
+                  payload: item.payload,
+                })),
+                allowedTechnologies: evidenceTechnologies,
+                previousResume: previousVersion
+                  ? {
+                      versionNumber: previousVersion.versionNumber,
+                      score: previousVersion.score,
+                      scoreBreakdown: previousVersion.scoreBreakdown ?? {},
+                      notes: previousVersion.notes ?? "",
+                      sections: previousVersion.sections as Array<Record<string, unknown>>,
+                    }
+                  : null,
+                acceptedFindings: actionable as unknown as Array<Record<string, unknown>>,
+                rejectedFindings: auditFindings
+                  .filter((finding) => finding.status === "rejected")
+                  .map((finding) => finding as unknown as Record<string, unknown>),
+                researchFindings: Array.isArray(research?.findings)
+                  ? (research.findings as Array<Record<string, unknown>>)
+                  : [],
+                mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
+                refinementInstruction:
+                  typeof run.payload.refinementInstruction === "string" ? run.payload.refinementInstruction : null,
+              });
+              const diff = compareResumeShapes(
+                result.data as { sections?: Array<Record<string, unknown>>; score?: number },
+                py.resume as { sections?: Array<Record<string, unknown>>; score?: number },
+                {
+                  tsLatencyMs: result.latencyMs,
+                  pyLatencyMs: py.latencyMs,
+                  tsEvidenceValidity: Number(result.data.scoreBreakdown.evidenceConfidence ?? 0),
+                  pyEvidenceValidity: Number(py.resume.scoreBreakdown.evidenceConfidence ?? 0),
+                },
+              );
+              logger.info(
+                {
+                  applicationPublicId: run.applicationPublicId,
+                  versionNumber,
+                  absoluteVersion: storedVersionNumber,
+                  shadowElapsedMs: Date.now() - started,
+                  ...diff,
+                },
+                "python shadow resume comparison (sanitized counts only)",
+              );
+            } catch (error) {
+              logger.warn(
+                { err: error, applicationPublicId: run.applicationPublicId, versionNumber },
+                "python shadow comparison failed",
+              );
+            }
+          })().catch((error) => {
+            logger.warn({ err: error }, "python shadow comparison promise rejected");
+          });
+        }
       }
     }
     await this.recordProviderUsage(run, usageKey, result);
@@ -864,58 +953,72 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     let result: AuditGenerationResult;
     if (backend === "python") {
       const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
+      const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
       const client = getPythonIntelligenceClient();
-      const ready = await client.ready();
-      if (!ready) {
+      try {
+        const py = await client.auditResume({
+          context: {
+            tenantId: run.tenantId,
+            userId: application?.ownerUserId ?? "unknown",
+            applicationId: run.applicationPublicId,
+            workflowRunId: run.publicId,
+            requestId: run.id,
+          },
+          lens: lensMap[promptId],
+          reviewsVersion: storedReviewsVersion,
+          producesVersion: storedProducesVersion,
+          resume: {
+            versionNumber: reviewedResume.versionNumber,
+            absoluteVersion: reviewedResume.versionNumber,
+            cycleStep: reviewedResume.versionNumber % 5,
+            score: reviewedResume.score,
+            scoreBreakdown: reviewedResume.scoreBreakdown ?? {},
+            notes: reviewedResume.notes ?? "",
+            sections: reviewedResume.sections as Array<Record<string, unknown>>,
+          },
+          evidence: evidence.map((item) => ({
+            id: item.publicId,
+            tenantId: item.tenantId,
+            ownerUserId: item.ownerUserId,
+            title: item.title,
+            organization: item.organization,
+            situation: item.situation,
+            task: item.task,
+            actions: item.actions,
+            result: item.result,
+            technologies: item.technologies,
+            confidence: item.confidence,
+            sourceType: item.sourceType,
+            claimText: item.claimText,
+            employerAssociation: item.employerAssociation,
+            projectAssociation: item.projectAssociation,
+            verificationStatus: item.verificationStatus,
+            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+            privacyLevel: item.privacyLevel,
+            metrics: item.payload?.metrics,
+            payload: item.payload,
+          })),
+          jobDescription: String(application?.metadata?.jobDescription ?? ""),
+          allowedTechnologies: claimableTechnologies(
+            (application?.metadata?.techQuestions ?? []) as TechQuestion[],
+          ),
+        });
+        result = {
+          data: auditOutputSchema.parse(py.data),
+          rawText: "",
+          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+          prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+          usage: {
+            inputTokens: py.usage.inputTokens,
+            outputTokens: py.usage.outputTokens,
+            estimatedCostCents: py.usage.estimatedCostCents,
+          },
+          latencyMs: py.latencyMs,
+        };
+      } catch (error) {
+        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python audit failed");
         throw new AppError("PYTHON_BACKEND_UNAVAILABLE", "Resume intelligence service is unavailable", 503);
       }
-      const py = await client.auditResume({
-        context: {
-          tenantId: run.tenantId,
-          userId: application?.ownerUserId ?? "unknown",
-          applicationId: run.applicationPublicId,
-          workflowRunId: run.publicId,
-          requestId: run.id,
-        },
-        lens: lensMap[promptId],
-        reviewsVersion: storedReviewsVersion,
-        producesVersion: storedProducesVersion,
-        resume: {
-          versionNumber: reviewedResume.versionNumber,
-          score: reviewedResume.score,
-          scoreBreakdown: reviewedResume.scoreBreakdown ?? {},
-          notes: reviewedResume.notes ?? "",
-          sections: reviewedResume.sections as Array<Record<string, unknown>>,
-        },
-        evidence: evidence.map((item) => ({
-          id: item.publicId,
-          tenantId: item.tenantId,
-          ownerUserId: item.ownerUserId,
-          title: item.title,
-          organization: item.organization,
-          situation: item.situation,
-          task: item.task,
-          actions: item.actions,
-          result: item.result,
-          technologies: item.technologies,
-          confidence: item.confidence,
-          sourceType: item.sourceType,
-          claimText: item.claimText,
-          employerAssociation: item.employerAssociation,
-          projectAssociation: item.projectAssociation,
-          verificationStatus: item.verificationStatus,
-          privacyLevel: item.privacyLevel,
-        })),
-        jobDescription: String(application?.metadata?.jobDescription ?? ""),
-      });
-      result = {
-        data: py.data as never,
-        rawText: "",
-        model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        usage: { inputTokens: 0, outputTokens: 0, estimatedCostCents: 0 },
-        latencyMs: 0,
-      };
     } else {
       result = await provider.generateStructured({
         prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
@@ -1153,55 +1256,67 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     let supplement: FinalQaSupplementResult;
     if (backend === "python") {
       const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
+      const { finalQaSchema: finalQaOutputSchema } = await import("../ai/schemas");
       const client = getPythonIntelligenceClient();
-      const ready = await client.ready();
-      if (!ready) {
+      try {
+        const py = await client.finalQa({
+          context: {
+            tenantId: run.tenantId,
+            userId: application?.ownerUserId ?? "unknown",
+            applicationId: run.applicationPublicId,
+            workflowRunId: run.publicId,
+            requestId: run.id,
+          },
+          resume: {
+            versionNumber: latest.versionNumber,
+            absoluteVersion: latest.versionNumber,
+            cycleStep: latest.versionNumber % 5,
+            score: latest.score,
+            scoreBreakdown: latest.scoreBreakdown ?? {},
+            notes: latest.notes ?? "",
+            sections: latest.sections as Array<Record<string, unknown>>,
+          },
+          evidence: evidence.map((item) => ({
+            id: item.publicId,
+            tenantId: item.tenantId,
+            ownerUserId: item.ownerUserId,
+            title: item.title,
+            organization: item.organization,
+            situation: item.situation,
+            task: item.task,
+            actions: item.actions,
+            result: item.result,
+            technologies: item.technologies,
+            confidence: item.confidence,
+            sourceType: item.sourceType,
+            claimText: item.claimText,
+            employerAssociation: item.employerAssociation,
+            projectAssociation: item.projectAssociation,
+            verificationStatus: item.verificationStatus,
+            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+            privacyLevel: item.privacyLevel,
+            metrics: item.payload?.metrics,
+            payload: item.payload,
+          })),
+          deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
+          allowedTechnologies: knownTechnologies,
+        });
+        supplement = {
+          data: finalQaOutputSchema.parse(py.data),
+          rawText: "",
+          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+          prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+          usage: {
+            inputTokens: py.usage.inputTokens,
+            outputTokens: py.usage.outputTokens,
+            estimatedCostCents: py.usage.estimatedCostCents,
+          },
+          latencyMs: py.latencyMs,
+        };
+      } catch (error) {
+        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python final QA failed");
         throw new AppError("PYTHON_BACKEND_UNAVAILABLE", "Resume intelligence service is unavailable", 503);
       }
-      const py = await client.finalQa({
-        context: {
-          tenantId: run.tenantId,
-          userId: application?.ownerUserId ?? "unknown",
-          applicationId: run.applicationPublicId,
-          workflowRunId: run.publicId,
-          requestId: run.id,
-        },
-        resume: {
-          versionNumber: latest.versionNumber,
-          score: latest.score,
-          scoreBreakdown: latest.scoreBreakdown ?? {},
-          notes: latest.notes ?? "",
-          sections: latest.sections as Array<Record<string, unknown>>,
-        },
-        evidence: evidence.map((item) => ({
-          id: item.publicId,
-          tenantId: item.tenantId,
-          ownerUserId: item.ownerUserId,
-          title: item.title,
-          organization: item.organization,
-          situation: item.situation,
-          task: item.task,
-          actions: item.actions,
-          result: item.result,
-          technologies: item.technologies,
-          confidence: item.confidence,
-          sourceType: item.sourceType,
-          claimText: item.claimText,
-          employerAssociation: item.employerAssociation,
-          projectAssociation: item.projectAssociation,
-          verificationStatus: item.verificationStatus,
-          privacyLevel: item.privacyLevel,
-        })),
-        deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
-      });
-      supplement = {
-        data: py.data as never,
-        rawText: "",
-        model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        usage: { inputTokens: 0, outputTokens: 0, estimatedCostCents: 0 },
-        latencyMs: 0,
-      };
     } else {
       supplement = await provider.generateStructured({
         prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },

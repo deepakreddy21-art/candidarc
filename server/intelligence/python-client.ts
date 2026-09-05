@@ -1,126 +1,27 @@
 import { z } from "zod";
+import { resumeSchema } from "../ai/schemas";
 import { getEnv } from "../config/env";
 import { logger } from "../observability/logger";
 import { PYTHON_BACKEND_PATHS } from "./generated/python-paths";
+import {
+  AuditFindingSchema,
+  AuditResponseSchema,
+  EvidenceItemSchema,
+  EvidenceMatchResponseSchema,
+  FinalQaResponseSchema,
+  JobParseResponseSchema,
+  ProviderUsageSchema,
+  ResearchSynthesizeResponseSchema,
+  ResumeDocumentSchema,
+  ResumeGenerateResponseSchema,
+  type AuditFinding,
+  type EvidenceItem,
+  type ProviderUsage,
+  type ResumeDocument,
+} from "./generated/python-schemas";
 
-const resumeBulletSchema = z.object({
-  text: z.string(),
-  evidence_ids: z.array(z.string()).default([]),
-  matched_requirements: z.array(z.string()).default([]),
-  technologies: z.array(z.string()).default([]),
-  confidence: z.enum(["high", "medium", "low"]).default("high"),
-  claim_risk: z.enum(["low", "medium", "high"]).default("low"),
-  source_version: z.string().default("career-evidence"),
-});
-
-const resumeSectionSchema = z.object({
-  type: z.enum(["summary", "skills", "experience", "projects", "education", "certifications", "other"]),
-  title: z.string(),
-  order: z.number().int().default(0),
-  content: z.string().optional().nullable(),
-  bullets: z.array(resumeBulletSchema).optional().nullable(),
-  items: z
-    .array(
-      z.object({
-        heading: z.string(),
-        subheading: z.string().optional().nullable(),
-        location: z.string().optional().nullable(),
-        dates: z.string().optional().nullable(),
-        bullets: z.array(resumeBulletSchema).default([]),
-      }),
-    )
-    .optional()
-    .nullable(),
-});
-
-export const pythonResumeSchema = z.object({
-  version_number: z.number().int().min(0).max(4),
-  score: z.number(),
-  score_breakdown: z.record(z.string(), z.number()),
-  notes: z.string(),
-  sections: z.array(resumeSectionSchema),
-});
-
-export type PythonResume = z.infer<typeof pythonResumeSchema>;
-
-const pythonAuditSchema = z.object({
-  lens: z.enum(["hr-1", "em-1", "hr-2", "em-2"]),
-  reviews_version: z.number().int(),
-  produces_version: z.number().int(),
-  score_before: z.number(),
-  score_after: z.number(),
-  summary: z.string(),
-  findings: z.array(
-    z.object({
-      severity: z.enum(["critical", "major", "minor", "nit"]),
-      section: z.string(),
-      title: z.string(),
-      explanation: z.string(),
-      before_text: z.string(),
-      suggested_text: z.string(),
-      expected_score_impact: z.number(),
-      evidence_source: z.string().nullable().optional(),
-    }),
-  ),
-  provider: z.string(),
-  model: z.string(),
-});
-
-const pythonFinalQaSchema = z.object({
-  passed: z.boolean(),
-  checks: z.array(
-    z.object({
-      label: z.string(),
-      status: z.enum(["pass", "warn", "fail"]),
-      detail: z.string(),
-    }),
-  ),
-  provider: z.string(),
-  model: z.string(),
-});
-
-const pythonJobParseSchema = z.object({
-  title: z.string().nullable().optional(),
-  company: z.string().nullable().optional(),
-  role: z.string().nullable().optional(),
-  location: z.string().nullable().optional(),
-  employment_type: z.string().nullable().optional(),
-  seniority: z.string().nullable().optional(),
-  required_qualifications: z.array(z.string()).default([]),
-  preferred_qualifications: z.array(z.string()).default([]),
-  responsibilities: z.array(z.string()).default([]),
-  target_technologies: z.array(z.string()).default([]),
-});
-
-const pythonResearchSchema = z.object({
-  findings: z.array(
-    z.object({
-      category: z.string(),
-      title: z.string(),
-      summary: z.string(),
-      confidence: z.enum(["high", "medium", "low"]),
-      status: z.enum(["supported", "uncertain", "unavailable"]).default("supported"),
-      source_ids: z.array(z.string()).default([]),
-    }),
-  ),
-  sources: z.array(z.record(z.string(), z.unknown())).default([]),
-  overall_confidence: z.number(),
-  company_research_status: z.string().nullable().optional(),
-});
-
-const pythonEvidenceMatchSchema = z.object({
-  rows: z.array(
-    z.object({
-      requirement: z.string(),
-      importance: z.enum(["required", "preferred", "responsibility"]).default("required"),
-      evidence_ids: z.array(z.string()),
-      evidence_strength: z.enum(["strong", "partial", "none"]),
-      resume_usage: z.enum(["use", "consider", "skip"]).default("use"),
-      coverage_gap: z.string().nullable().optional(),
-    }),
-  ),
-  evidence_coverage: z.number(),
-});
+export type PythonResume = ResumeDocument;
+export const pythonResumeSchema = ResumeDocumentSchema;
 
 export type IntelligenceBackendMode = "typescript" | "python" | "shadow";
 
@@ -130,6 +31,15 @@ type RequestContext = {
   applicationId?: string;
   workflowRunId?: string;
   requestId: string;
+};
+
+export type MappedProviderUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostCents: number;
+  cachedTokens?: number;
+  providerRequestId?: string;
+  retryCount?: number;
 };
 
 function toSnakeContext(context: RequestContext) {
@@ -143,55 +53,112 @@ function toSnakeContext(context: RequestContext) {
   };
 }
 
-function toSnakeEvidence(item: Record<string, unknown>) {
-  return {
-    id: item.id,
-    tenant_id: item.tenantId ?? item.tenant_id,
-    owner_user_id: item.ownerUserId ?? item.owner_user_id,
-    title: item.title,
-    organization: item.organization ?? null,
-    situation: item.situation ?? null,
-    task: item.task ?? null,
-    actions: item.actions ?? [],
-    result: item.result ?? null,
-    metrics: item.metrics ?? [],
-    technologies: item.technologies ?? [],
-    source_type: item.sourceType ?? item.source_type ?? null,
-    verification_status: item.verificationStatus ?? item.verification_status ?? "user_attested",
-    candidate_confirmation_status:
+function metricStrings(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object") {
+        const rec = item as Record<string, unknown>;
+        const label = typeof rec.label === "string" ? rec.label : "";
+        const value = rec.value != null ? String(rec.value) : "";
+        const unit = typeof rec.unit === "string" ? rec.unit : "";
+        const joined = [label, value, unit].filter(Boolean).join(" ").trim();
+        return joined || JSON.stringify(item).slice(0, 512);
+      }
+      return String(item);
+    })
+    .filter(Boolean)
+    .slice(0, 50);
+}
+
+/** Map TS / mixed evidence into Python EvidenceItem (required fields always explicit). */
+export function toSnakeEvidence(item: Record<string, unknown>): EvidenceItem {
+  const confidenceRaw = item.confidence ?? "high";
+  const confidence =
+    confidenceRaw === "high" || confidenceRaw === "medium" || confidenceRaw === "low"
+      ? confidenceRaw
+      : "high";
+  const payload = (item.payload as Record<string, unknown> | undefined) ?? {};
+  const mapped = {
+    id: String(item.id ?? item.publicId ?? ""),
+    tenant_id: String(item.tenantId ?? item.tenant_id ?? ""),
+    owner_user_id: String(item.ownerUserId ?? item.owner_user_id ?? ""),
+    title: String(item.title ?? ""),
+    organization: (item.organization as string | null | undefined) ?? null,
+    situation: (item.situation as string | null | undefined) ?? null,
+    task: (item.task as string | null | undefined) ?? null,
+    actions: Array.isArray(item.actions) ? (item.actions as string[]) : [],
+    result: (item.result as string | null | undefined) ?? null,
+    metrics: metricStrings(item.metrics ?? payload.metrics),
+    technologies: Array.isArray(item.technologies) ? (item.technologies as string[]) : [],
+    source_type: (item.sourceType ?? item.source_type ?? null) as string | null,
+    verification_status: String(item.verificationStatus ?? item.verification_status ?? "user_attested"),
+    candidate_confirmation_status: String(
       item.candidateConfirmationStatus ?? item.candidate_confirmation_status ?? "confirmed",
-    confidence: item.confidence ?? "high",
-    privacy_classification: item.privacyLevel ?? item.privacy_classification ?? "share-safe",
-    claim_text: item.claimText ?? item.claim_text ?? null,
-    employer_association: item.employerAssociation ?? item.employer_association ?? null,
-    project_association: item.projectAssociation ?? item.project_association ?? null,
+    ),
+    confidence,
+    privacy_classification: String(item.privacyLevel ?? item.privacy_classification ?? "share-safe"),
+    claim_text: (item.claimText ?? item.claim_text ?? null) as string | null,
+    employer_association: (item.employerAssociation ?? item.employer_association ?? null) as string | null,
+    project_association: (item.projectAssociation ?? item.project_association ?? null) as string | null,
+  };
+  return EvidenceItemSchema.parse(mapped);
+}
+
+function toSnakeScoreBreakdown(raw: unknown) {
+  const breakdown = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const score = Number(breakdown.atsCompatibility ?? breakdown.jobAlignment ?? 70);
+  const num = (key: string) => Number(breakdown[key] ?? score);
+  return {
+    atsCompatibility: num("atsCompatibility"),
+    jobAlignment: num("jobAlignment"),
+    recruiterReadability: num("recruiterReadability"),
+    impact: num("impact"),
+    quantification: num("quantification"),
+    technicalDepth: num("technicalDepth"),
+    competencyCoverage: num("competencyCoverage"),
+    evidenceConfidence: num("evidenceConfidence"),
+    writingQuality: num("writingQuality"),
+    formatIntegrity: num("formatIntegrity"),
   };
 }
 
-function toSnakeResume(resume: Record<string, unknown>) {
-  // Accept either already-snake PythonResume or camel TS resume shape.
-  if ("version_number" in resume) return resume;
-  const sections = Array.isArray(resume.sections) ? resume.sections : [];
+function toSnakeBullet(bullet: Record<string, unknown>) {
   return {
-    version_number: resume.versionNumber ?? resume.version_number ?? 0,
-    score: resume.score ?? 0,
-    score_breakdown: resume.scoreBreakdown ?? resume.score_breakdown ?? {},
-    notes: resume.notes ?? "",
+    text: String(bullet.text ?? ""),
+    evidence_ids: (bullet.evidenceIds ?? bullet.evidence_ids ?? []) as string[],
+    matched_requirements: (bullet.matchedRequirements ?? bullet.matched_requirements ?? []) as string[],
+    technologies: (bullet.technologies ?? []) as string[],
+    confidence: (bullet.confidence ?? "high") as "high" | "medium" | "low",
+    claim_risk: (bullet.claimRisk ?? bullet.claim_risk ?? "low") as "low" | "medium" | "high",
+    source_version: String(bullet.sourceVersion ?? bullet.source_version ?? "career-evidence"),
+  };
+}
+
+export function toSnakeResume(resume: Record<string, unknown>): ResumeDocument {
+  if ("absolute_version" in resume && "version_number" in resume && "score_breakdown" in resume) {
+    return ResumeDocumentSchema.parse(resume);
+  }
+  const absolute = Number(resume.absoluteVersion ?? resume.absolute_version ?? resume.versionNumber ?? resume.version_number ?? 0);
+  const cycleStep = Number(resume.cycleStep ?? resume.cycle_step ?? absolute % 5);
+  const sections = Array.isArray(resume.sections) ? resume.sections : [];
+  return ResumeDocumentSchema.parse({
+    absolute_version: absolute,
+    cycle_step: Math.min(4, Math.max(0, cycleStep)),
+    version_number: absolute,
+    score: Number(resume.score ?? 0),
+    score_breakdown: toSnakeScoreBreakdown(resume.scoreBreakdown ?? resume.score_breakdown),
+    score_rubric_version: resume.scoreRubricVersion ?? resume.score_rubric_version,
+    score_explanations: resume.scoreExplanations ?? resume.score_explanations ?? {},
+    notes: String(resume.notes ?? ""),
     sections: sections.map((section: Record<string, unknown>) => ({
       type: section.type,
       title: section.title,
       order: section.order ?? 0,
       content: section.content ?? null,
       bullets: Array.isArray(section.bullets)
-        ? section.bullets.map((bullet: Record<string, unknown>) => ({
-            text: bullet.text,
-            evidence_ids: bullet.evidenceIds ?? bullet.evidence_ids ?? [],
-            matched_requirements: bullet.matchedRequirements ?? bullet.matched_requirements ?? [],
-            technologies: bullet.technologies ?? [],
-            confidence: bullet.confidence ?? "high",
-            claim_risk: bullet.claimRisk ?? bullet.claim_risk ?? "low",
-            source_version: bullet.sourceVersion ?? bullet.source_version ?? "career-evidence",
-          }))
+        ? section.bullets.map((bullet: Record<string, unknown>) => toSnakeBullet(bullet))
         : null,
       items: Array.isArray(section.items)
         ? section.items.map((item: Record<string, unknown>) => ({
@@ -200,88 +167,151 @@ function toSnakeResume(resume: Record<string, unknown>) {
             location: item.location ?? null,
             dates: item.dates ?? null,
             bullets: Array.isArray(item.bullets)
-              ? item.bullets.map((bullet: Record<string, unknown>) => ({
-                  text: bullet.text,
-                  evidence_ids: bullet.evidenceIds ?? bullet.evidence_ids ?? [],
-                  matched_requirements: bullet.matchedRequirements ?? bullet.matched_requirements ?? [],
-                  technologies: bullet.technologies ?? [],
-                  confidence: bullet.confidence ?? "high",
-                  claim_risk: bullet.claimRisk ?? bullet.claim_risk ?? "low",
-                  source_version: bullet.sourceVersion ?? bullet.source_version ?? "career-evidence",
-                }))
+              ? item.bullets.map((bullet: Record<string, unknown>) => toSnakeBullet(bullet))
               : [],
           }))
         : null,
     })),
+  });
+}
+
+export function toSnakeFinding(finding: Record<string, unknown>): AuditFinding {
+  const severityRaw = finding.severity;
+  const severity =
+    severityRaw === "nit"
+      ? "suggestion"
+      : severityRaw === "critical" || severityRaw === "major" || severityRaw === "minor" || severityRaw === "suggestion"
+        ? severityRaw
+        : "suggestion";
+  return AuditFindingSchema.parse({
+    severity,
+    section: String(finding.section ?? ""),
+    title: String(finding.title ?? ""),
+    explanation: String(finding.explanation ?? ""),
+    before_text: String(finding.beforeText ?? finding.before_text ?? ""),
+    suggested_text: String(finding.suggestedText ?? finding.suggested_text ?? ""),
+    expected_score_impact: Number(finding.expectedScoreImpact ?? finding.expected_score_impact ?? 0),
+    evidence_source: (finding.evidenceSource ?? finding.evidence_source ?? null) as string | null,
+    evidence_ids: (finding.evidenceIds ?? finding.evidence_ids ?? []) as string[],
+    status: (finding.status ?? null) as AuditFinding["status"],
+    rejection_reason: (finding.rejectionReason ?? finding.rejection_reason ?? null) as string | null,
+    edited_text: (finding.editedText ?? finding.edited_text ?? null) as string | null,
+  });
+}
+
+export function toSnakeMistakeMemory(rule: Record<string, unknown>) {
+  const severityRaw = rule.severity;
+  const severity =
+    severityRaw === "nit"
+      ? "suggestion"
+      : severityRaw === "critical" || severityRaw === "major" || severityRaw === "minor" || severityRaw === "suggestion"
+        ? severityRaw
+        : "suggestion";
+  return {
+    category: String(rule.category ?? ""),
+    rule: String(rule.rule ?? ""),
+    severity,
+    originating_audit: String(rule.originatingAudit ?? rule.originating_audit ?? "hr-1"),
+    affected_version: String(rule.affectedVersion ?? rule.affected_version ?? "V0"),
+  };
+}
+
+export function toSnakeResearchFinding(finding: Record<string, unknown>) {
+  return {
+    category: String(finding.category ?? "general"),
+    title: String(finding.title ?? ""),
+    summary: String(finding.summary ?? ""),
+    confidence: (finding.confidence ?? "medium") as "high" | "medium" | "low",
+    status: finding.status ?? "supported",
+    source_ids: (finding.sourceIds ?? finding.source_ids ?? []) as string[],
+  };
+}
+
+export function mapProviderUsage(usage: ProviderUsage | null | undefined): MappedProviderUsage {
+  const parsed = usage ? ProviderUsageSchema.partial().passthrough().safeParse(usage) : null;
+  const data = parsed?.success ? parsed.data : null;
+  return {
+    inputTokens: Number(data?.input_tokens ?? 0),
+    outputTokens: Number(data?.output_tokens ?? 0),
+    estimatedCostCents: Number(data?.estimated_cost_cents ?? 0),
+    cachedTokens: data?.cached_tokens == null ? undefined : Number(data.cached_tokens),
+    providerRequestId: data?.provider_request_id ?? undefined,
+    retryCount: data?.retry_count == null ? undefined : Number(data.retry_count),
   };
 }
 
 /** Map Python resume JSON into the TypeScript resumeSchema shape used by PDF/DOCX. */
 export function mapPythonResumeToTs(resume: PythonResume) {
-  const breakdown = resume.score_breakdown ?? {};
-  const score = resume.score;
-  return {
-    versionNumber: resume.version_number,
-    score,
+  const breakdown = resume.score_breakdown;
+  const mapped = {
+    versionNumber: resume.absolute_version,
+    score: resume.score,
     scoreBreakdown: {
-      atsCompatibility: Number(breakdown.atsCompatibility ?? score),
-      jobAlignment: Number(breakdown.jobAlignment ?? score),
-      recruiterReadability: Number(breakdown.recruiterReadability ?? score),
-      impact: Number(breakdown.impact ?? score),
-      quantification: Number(breakdown.quantification ?? score),
-      technicalDepth: Number(breakdown.technicalDepth ?? score),
-      competencyCoverage: Number(breakdown.competencyCoverage ?? score),
-      evidenceConfidence: Number(breakdown.evidenceConfidence ?? score),
-      writingQuality: Number(breakdown.writingQuality ?? score),
-      formatIntegrity: Number(breakdown.formatIntegrity ?? score),
+      atsCompatibility: breakdown.atsCompatibility,
+      jobAlignment: breakdown.jobAlignment,
+      recruiterReadability: breakdown.recruiterReadability,
+      impact: breakdown.impact,
+      quantification: breakdown.quantification,
+      technicalDepth: breakdown.technicalDepth,
+      competencyCoverage: breakdown.competencyCoverage,
+      evidenceConfidence: breakdown.evidenceConfidence,
+      writingQuality: breakdown.writingQuality,
+      formatIntegrity: breakdown.formatIntegrity,
     },
     notes: resume.notes,
     sections: resume.sections.map((section) => ({
       type: section.type,
       title: section.title,
-      order: section.order,
+      order: section.order ?? 0,
       content: section.content ?? undefined,
       bullets: section.bullets?.map((bullet) => ({
         text: bullet.text,
         evidenceIds: bullet.evidence_ids,
-        matchedRequirements: bullet.matched_requirements,
-        technologies: bullet.technologies,
-        confidence: bullet.confidence,
-        claimRisk: bullet.claim_risk,
-        sourceVersion: bullet.source_version,
+        matchedRequirements: bullet.matched_requirements ?? [],
+        technologies: bullet.technologies ?? [],
+        confidence: bullet.confidence ?? "high",
+        claimRisk: bullet.claim_risk ?? "low",
+        sourceVersion: bullet.source_version ?? "career-evidence",
       })),
       items: section.items?.map((item) => ({
         heading: item.heading,
         subheading: item.subheading ?? undefined,
         location: item.location ?? undefined,
         dates: item.dates ?? undefined,
-        bullets: item.bullets.map((bullet) => ({
+        bullets: (item.bullets ?? []).map((bullet) => ({
           text: bullet.text,
           evidenceIds: bullet.evidence_ids,
-          matchedRequirements: bullet.matched_requirements,
-          technologies: bullet.technologies,
-          confidence: bullet.confidence,
-          claimRisk: bullet.claim_risk,
-          sourceVersion: bullet.source_version,
+          matchedRequirements: bullet.matched_requirements ?? [],
+          technologies: bullet.technologies ?? [],
+          confidence: bullet.confidence ?? "high",
+          claimRisk: bullet.claim_risk ?? "low",
+          sourceVersion: bullet.source_version ?? "career-evidence",
         })),
       })),
     })),
   };
+  return resumeSchema.parse(mapped);
 }
 
-function mapSeverity(severity: "critical" | "major" | "minor" | "nit"): "critical" | "major" | "minor" | "suggestion" {
-  return severity === "nit" ? "suggestion" : severity;
+function mapQaStatus(status: string): "pass" | "fail" | "warning" | "pending" {
+  if (status === "warn" || status === "warning") return "warning";
+  if (status === "fail") return "fail";
+  if (status === "pending") return "pending";
+  return "pass";
 }
 
-function mapQaStatus(status: "pass" | "warn" | "fail"): "pass" | "fail" | "warning" | "pending" {
-  if (status === "warn") return "warning";
-  return status;
-}
-
-/** Sanitized shadow comparison — counts only, no PII. */
+/** Sanitized shadow comparison — counts/scores/latency only, no resume text. */
 export function compareResumeShapes(
-  tsResume: { sections?: Array<Record<string, unknown>> },
-  pyResume: { sections?: Array<Record<string, unknown>> },
+  tsResume: { sections?: Array<Record<string, unknown>>; score?: number },
+  pyResume: { sections?: Array<Record<string, unknown>>; score?: number },
+  meta?: {
+    tsLatencyMs?: number;
+    pyLatencyMs?: number;
+    tsUnsupportedClaims?: number;
+    pyUnsupportedClaims?: number;
+    tsEvidenceValidity?: number;
+    pyEvidenceValidity?: number;
+  },
 ) {
   const tsSections = tsResume.sections ?? [];
   const pySections = pyResume.sections ?? [];
@@ -295,6 +325,30 @@ export function compareResumeShapes(
       }, 0);
       return sum + bullets + itemBullets;
     }, 0);
+  const countUnsupported = (sections: Array<Record<string, unknown>>) =>
+    sections.reduce((sum, section) => {
+      const bullets = Array.isArray(section.bullets) ? section.bullets : [];
+      const items = Array.isArray(section.items) ? section.items : [];
+      const fromBullets = bullets.filter((b) => {
+        const rec = b as Record<string, unknown>;
+        return rec.claimRisk === "high" || rec.claim_risk === "high" || rec.unsupported === true;
+      }).length;
+      const fromItems = items.reduce((inner, item) => {
+        const rec = item as Record<string, unknown>;
+        const itemBullets = Array.isArray(rec.bullets) ? rec.bullets : [];
+        return (
+          inner +
+          itemBullets.filter((b) => {
+            const bullet = b as Record<string, unknown>;
+            return bullet.claimRisk === "high" || bullet.claim_risk === "high" || bullet.unsupported === true;
+          }).length
+        );
+      }, 0);
+      return sum + fromBullets + fromItems;
+    }, 0);
+
+  const tsUnsupported = meta?.tsUnsupportedClaims ?? countUnsupported(tsSections);
+  const pyUnsupported = meta?.pyUnsupportedClaims ?? countUnsupported(pySections);
   return {
     sectionCountDiff: Math.abs(tsSections.length - pySections.length),
     bulletCountDiff: Math.abs(countBullets(tsSections) - countBullets(pySections)),
@@ -302,6 +356,69 @@ export function compareResumeShapes(
     pySectionCount: pySections.length,
     tsBulletCount: countBullets(tsSections),
     pyBulletCount: countBullets(pySections),
+    scoreDiff:
+      tsResume.score != null && pyResume.score != null ? Math.abs(Number(tsResume.score) - Number(pyResume.score)) : null,
+    tsScore: tsResume.score ?? null,
+    pyScore: pyResume.score ?? null,
+    unsupportedClaimsDiff: Math.abs(tsUnsupported - pyUnsupported),
+    evidenceValidityDiff:
+      meta?.tsEvidenceValidity != null && meta?.pyEvidenceValidity != null
+        ? Math.abs(meta.tsEvidenceValidity - meta.pyEvidenceValidity)
+        : null,
+    latencyDiffMs:
+      meta?.tsLatencyMs != null && meta?.pyLatencyMs != null ? Math.abs(meta.tsLatencyMs - meta.pyLatencyMs) : null,
+  };
+}
+
+export function shouldSampleShadow(samplePercent = getEnv().SHADOW_SAMPLE_PERCENT): boolean {
+  const bounded = Math.min(100, Math.max(0, samplePercent));
+  if (bounded <= 0) return false;
+  if (bounded >= 100) return true;
+  return Math.random() * 100 < bounded;
+}
+
+export type GenerateResumeInput = {
+  context: RequestContext;
+  absoluteVersion: number;
+  cycleStep: number;
+  jobDescription: string;
+  evidence: Array<Record<string, unknown>>;
+  allowedTechnologies: string[];
+  previousResume?: Record<string, unknown> | null;
+  acceptedFindings?: Array<Record<string, unknown>>;
+  rejectedFindings?: Array<Record<string, unknown>>;
+  researchFindings?: Array<Record<string, unknown>>;
+  mistakeMemory?: Array<Record<string, unknown>>;
+  refinementInstruction?: string | null;
+  jobRequirements?: string[];
+  evidenceMatches?: Array<Record<string, unknown>>;
+  idempotencyKey?: string;
+};
+
+function buildGenerateBody(input: GenerateResumeInput) {
+  return {
+    context: toSnakeContext(input.context),
+    absolute_version: input.absoluteVersion,
+    cycle_step: input.cycleStep,
+    version_number: input.absoluteVersion,
+    job_description: input.jobDescription,
+    evidence: input.evidence.map((item) => toSnakeEvidence(item)),
+    allowed_technologies: input.allowedTechnologies,
+    previous_resume: input.previousResume ? toSnakeResume(input.previousResume) : null,
+    accepted_findings: (input.acceptedFindings ?? []).map((finding) => toSnakeFinding(finding)),
+    rejected_findings: (input.rejectedFindings ?? []).map((finding) => toSnakeFinding(finding)),
+    research_findings: (input.researchFindings ?? []).map((finding) => toSnakeResearchFinding(finding)),
+    mistake_memory: (input.mistakeMemory ?? []).map((rule) => toSnakeMistakeMemory(rule)),
+    refinement_instruction: input.refinementInstruction ?? null,
+    job_requirements: input.jobRequirements ?? [],
+    evidence_matches: (input.evidenceMatches ?? []).map((row) => ({
+      requirement: String(row.requirement ?? ""),
+      importance: row.importance ?? "required",
+      evidence_ids: (row.evidenceIds ?? row.evidence_ids ?? []) as string[],
+      evidence_strength: row.evidenceStrength ?? row.evidence_strength ?? "none",
+      resume_usage: row.resumeUsage ?? row.resume_usage ?? "use",
+      coverage_gap: (row.coverageGap ?? row.coverage_gap ?? null) as string | null,
+    })),
   };
 }
 
@@ -324,6 +441,12 @@ export class PythonIntelligenceClient {
     return true;
   }
 
+  private bumpFailure() {
+    this.failures += 1;
+    if (this.failures >= 5) this.openedAt = Date.now();
+  }
+
+  /** On-demand readiness probe — not called before every request. */
   async ready(): Promise<boolean> {
     try {
       const response = await fetch(`${this.baseUrl}${PYTHON_BACKEND_PATHS.healthReady}`, {
@@ -368,7 +491,7 @@ export class PythonIntelligenceClient {
       company: input.company,
       role: input.role,
     });
-    return pythonJobParseSchema.parse(data);
+    return JobParseResponseSchema.parse(data);
   }
 
   async synthesizeResearch(input: {
@@ -385,7 +508,7 @@ export class PythonIntelligenceClient {
       job_description: input.jobDescription,
       sources: input.sources ?? [],
     });
-    return pythonResearchSchema.parse(data);
+    return ResearchSynthesizeResponseSchema.parse(data);
   }
 
   async indexEvidence(input: { context: RequestContext; evidence: Array<Record<string, unknown>> }) {
@@ -431,71 +554,47 @@ export class PythonIntelligenceClient {
     context: RequestContext;
     requirements: string[];
     evidence: Array<Record<string, unknown>>;
+    researchFindings?: Array<Record<string, unknown>>;
   }) {
     const data = await this.post(PYTHON_BACKEND_PATHS.evidenceMatch, {
       context: toSnakeContext(input.context),
       requirements: input.requirements,
       evidence: input.evidence.map((item) => toSnakeEvidence(item)),
-      research_findings: [],
+      research_findings: (input.researchFindings ?? []).map((finding) => toSnakeResearchFinding(finding)),
     });
-    return pythonEvidenceMatchSchema.parse(data);
+    return EvidenceMatchResponseSchema.parse(data);
   }
 
-  async generateResume(input: {
-    context: RequestContext;
-    versionNumber: number;
-    jobDescription: string;
-    evidence: Array<Record<string, unknown>>;
-    allowedTechnologies: string[];
-    idempotencyKey?: string;
-  }) {
+  async generateResume(input: GenerateResumeInput) {
     const data = await this.post(
       PYTHON_BACKEND_PATHS.resumesGenerate,
-      {
-        context: toSnakeContext(input.context),
-        version_number: input.versionNumber,
-        job_description: input.jobDescription,
-        evidence: input.evidence.map((item) => toSnakeEvidence(item)),
-        allowed_technologies: input.allowedTechnologies,
-      },
+      buildGenerateBody(input),
       input.idempotencyKey,
     );
-    const resume = pythonResumeSchema.parse(data.resume);
-    return {
-      resume: mapPythonResumeToTs(resume),
-      provider: String(data.provider ?? "python"),
-      model: String(data.model ?? "unknown"),
-      promptVersion: String(data.prompt_version ?? "python"),
-      latencyMs: Number(data.latency_ms ?? 0),
-    };
+    return this.mapGenerateResponse(data);
   }
 
-  async regenerateResume(input: {
-    context: RequestContext;
-    versionNumber: number;
-    jobDescription: string;
-    evidence: Array<Record<string, unknown>>;
-    allowedTechnologies: string[];
-    idempotencyKey?: string;
-  }) {
+  async regenerateResume(input: GenerateResumeInput) {
     const data = await this.post(
       PYTHON_BACKEND_PATHS.resumesRegenerate,
-      {
-        context: toSnakeContext(input.context),
-        version_number: input.versionNumber,
-        job_description: input.jobDescription,
-        evidence: input.evidence.map((item) => toSnakeEvidence(item)),
-        allowed_technologies: input.allowedTechnologies,
-      },
+      buildGenerateBody(input),
       input.idempotencyKey,
     );
-    const resume = pythonResumeSchema.parse(data.resume);
+    return this.mapGenerateResponse(data);
+  }
+
+  private mapGenerateResponse(data: Record<string, unknown>) {
+    const parsed = ResumeGenerateResponseSchema.parse(data);
+    const usage = mapProviderUsage(parsed.usage);
     return {
-      resume: mapPythonResumeToTs(resume),
-      provider: String(data.provider ?? "python"),
-      model: String(data.model ?? "unknown"),
-      promptVersion: String(data.prompt_version ?? "python"),
-      latencyMs: Number(data.latency_ms ?? 0),
+      resume: mapPythonResumeToTs(parsed.resume),
+      absoluteVersion: parsed.resume.absolute_version,
+      cycleStep: parsed.resume.cycle_step,
+      provider: parsed.provider,
+      model: parsed.model,
+      promptVersion: parsed.prompt_version,
+      latencyMs: parsed.latency_ms,
+      usage,
     };
   }
 
@@ -507,6 +606,7 @@ export class PythonIntelligenceClient {
     resume: Record<string, unknown>;
     evidence: Array<Record<string, unknown>>;
     jobDescription: string;
+    allowedTechnologies?: string[];
     idempotencyKey?: string;
   }) {
     const data = await this.post(
@@ -519,10 +619,12 @@ export class PythonIntelligenceClient {
         resume: toSnakeResume(input.resume),
         evidence: input.evidence.map((item) => toSnakeEvidence(item)),
         job_description: input.jobDescription,
+        allowed_technologies: input.allowedTechnologies ?? [],
       },
       input.idempotencyKey,
     );
-    const parsed = pythonAuditSchema.parse(data);
+    const parsed = AuditResponseSchema.parse(data);
+    const usage = mapProviderUsage(parsed.usage);
     return {
       data: {
         lens: parsed.lens,
@@ -532,7 +634,7 @@ export class PythonIntelligenceClient {
         scoreAfter: parsed.score_after,
         summary: parsed.summary,
         findings: parsed.findings.map((finding) => ({
-          severity: mapSeverity(finding.severity),
+          severity: finding.severity,
           section: finding.section,
           title: finding.title,
           explanation: finding.explanation,
@@ -541,9 +643,22 @@ export class PythonIntelligenceClient {
           expectedScoreImpact: finding.expected_score_impact,
           evidenceSource: finding.evidence_source ?? undefined,
         })),
+        rejectedFindings: (parsed.rejected_findings ?? []).map((finding) => ({
+          severity: finding.severity,
+          section: finding.section,
+          title: finding.title,
+          explanation: finding.explanation,
+          beforeText: finding.before_text,
+          suggestedText: finding.suggested_text,
+          expectedScoreImpact: finding.expected_score_impact,
+          evidenceSource: finding.evidence_source ?? undefined,
+          rejectionReason: finding.rejection_reason ?? undefined,
+        })),
       },
       provider: parsed.provider,
       model: parsed.model,
+      latencyMs: parsed.usage?.latency_ms ?? 0,
+      usage,
     };
   }
 
@@ -552,14 +667,21 @@ export class PythonIntelligenceClient {
     resume: Record<string, unknown>;
     evidence: Array<Record<string, unknown>>;
     deterministicChecks?: Array<Record<string, unknown>>;
+    allowedTechnologies?: string[];
   }) {
     const data = await this.post(PYTHON_BACKEND_PATHS.resumesFinalQa, {
       context: toSnakeContext(input.context),
       resume: toSnakeResume(input.resume),
       evidence: input.evidence.map((item) => toSnakeEvidence(item)),
-      deterministic_checks: input.deterministicChecks ?? [],
+      deterministic_checks: (input.deterministicChecks ?? []).map((check) => ({
+        label: String(check.label ?? ""),
+        status: check.status ?? "pass",
+        detail: String(check.detail ?? ""),
+      })),
+      allowed_technologies: input.allowedTechnologies ?? [],
     });
-    const parsed = pythonFinalQaSchema.parse(data);
+    const parsed = FinalQaResponseSchema.parse(data);
+    const usage = mapProviderUsage(parsed.usage);
     return {
       data: {
         passed: parsed.passed,
@@ -571,6 +693,8 @@ export class PythonIntelligenceClient {
       },
       provider: parsed.provider,
       model: parsed.model,
+      latencyMs: parsed.usage?.latency_ms ?? 0,
+      usage,
     };
   }
 
@@ -580,6 +704,7 @@ export class PythonIntelligenceClient {
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let failureCounted = false;
     try {
       const headers: Record<string, string> = {
         "content-type": "application/json",
@@ -594,16 +719,15 @@ export class PythonIntelligenceClient {
       });
       const json = (await response.json()) as Record<string, unknown>;
       if (!response.ok) {
-        this.failures += 1;
-        if (this.failures >= 5) this.openedAt = Date.now();
+        this.bumpFailure();
+        failureCounted = true;
         const detail = json.detail as { code?: string; message?: string } | undefined;
         throw new Error(detail?.code ?? `PYTHON_BACKEND_${response.status}`);
       }
       this.failures = 0;
       return json;
     } catch (error) {
-      this.failures += 1;
-      if (this.failures >= 5) this.openedAt = Date.now();
+      if (!failureCounted) this.bumpFailure();
       logger.warn({ err: error, path }, "python intelligence request failed");
       throw error;
     } finally {
@@ -617,6 +741,10 @@ let singleton: PythonIntelligenceClient | null = null;
 export function getPythonIntelligenceClient() {
   if (!singleton) singleton = new PythonIntelligenceClient();
   return singleton;
+}
+
+export function resetPythonIntelligenceClient() {
+  singleton = null;
 }
 
 export function getResumeIntelligenceBackend(): IntelligenceBackendMode {

@@ -1,11 +1,12 @@
 /**
  * GENERATED FILE — DO NOT EDIT.
- * Minimal path presence assertions derived from OpenAPI.
- * Full response schemas live in server/intelligence/python-client.ts.
+ * Path catalog + schema presence assertions derived from OpenAPI.
+ * Runtime response parsing uses ./python-schemas.
  */
 
 import { z } from "zod";
 import { PYTHON_BACKEND_PATHS } from "./python-paths";
+import { PYTHON_OPENAPI_SCHEMA_NAMES } from "./python-schemas";
 
 export const pythonPathCatalogSchema = z.object({
   healthLive: z.literal(PYTHON_BACKEND_PATHS.healthLive),
@@ -23,3 +24,30 @@ export const pythonPathCatalogSchema = z.object({
 });
 
 export const pythonPathCatalog = pythonPathCatalogSchema.parse(PYTHON_BACKEND_PATHS);
+
+export const REQUIRED_PYTHON_COMPONENT_SCHEMAS = [
+  "ScoreBreakdown",
+  "ResumeBullet",
+  "ResumeItem",
+  "ResumeSection-Output",
+  "ResumeDocument-Output",
+  "ProviderUsage",
+  "ResumeGenerateResponse",
+  "AuditFinding",
+  "AuditResponse",
+  "FinalQaCheck",
+  "FinalQaResponse",
+  "JobParseResponse",
+  "ResearchFinding",
+  "ResearchSynthesizeResponse",
+  "EvidenceMatchRow",
+  "EvidenceMatchResponse",
+  "MistakeMemoryRule",
+  "EvidenceItem",
+] as const;
+
+for (const name of REQUIRED_PYTHON_COMPONENT_SCHEMAS) {
+  if (!(PYTHON_OPENAPI_SCHEMA_NAMES as readonly string[]).includes(name)) {
+    throw new Error(`Generated OpenAPI catalog missing schema: ${name}`);
+  }
+}
