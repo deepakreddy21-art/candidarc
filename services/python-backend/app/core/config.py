@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-PRICING_TABLE_VERSION = "candidarc-pricing@v1"
+from app.core.pricing import PRICING_TABLE_VERSION
 
 
 class Settings(BaseSettings):
@@ -53,6 +53,8 @@ class Settings(BaseSettings):
 
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
     idempotency_ttl_seconds: int = Field(default=86_400, ge=60, le=604_800)
+    # Lock TTL covering provider timeouts + retries; do not cap at 120s.
+    idempotency_lock_ttl_seconds: int = Field(default=600, ge=180, le=3_600, alias="IDEMPOTENCY_LOCK_TTL_SECONDS")
     shadow_sample_percent: float = Field(default=0.0, ge=0.0, le=100.0, alias="SHADOW_SAMPLE_PERCENT")
     pricing_table_version: str = Field(default=PRICING_TABLE_VERSION, alias="PRICING_TABLE_VERSION")
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.config import Settings
 from app.core.errors import GUARDRAIL_VIOLATION, MISSING_CREDENTIALS, PROVIDER_OUTPUT_INVALID, ProviderError
+from app.core.pricing import PRICING_TABLE_VERSION, estimate_cost_cents
 from app.domain.schemas import (
     SCORE_RUBRIC_VERSION,
     EvidenceItem,
@@ -153,6 +154,13 @@ class OpenAIProvider:
         if details is not None:
             cached = getattr(details, "cached_tokens", None)
         req_id = getattr(raw, "id", None)
+        cost = estimate_cost_cents(
+            provider=self.name,
+            model=self.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=int(cached or 0),
+        )
         return ProviderUsage(
             provider=self.name,
             model=self.model,
@@ -163,7 +171,8 @@ class OpenAIProvider:
             cached_tokens=cached,
             latency_ms=latency_ms,
             provider_request_id=req_id,
-            estimated_cost_cents=None,
+            estimated_cost_cents=cost,
+            pricing_table_version=PRICING_TABLE_VERSION if cost is not None else None,
             retry_count=retry_count,
         )
 

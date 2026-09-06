@@ -1263,6 +1263,18 @@
             ],
             "title": "Output Tokens"
           },
+          "pricing_table_version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Table Version"
+          },
           "prompt_version": {
             "maxLength": 128,
             "title": "Prompt Version",

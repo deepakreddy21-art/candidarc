@@ -71,6 +71,7 @@ export const ProviderUsageSchema = z.object({
   "latency_ms": z.number().int().min(0.0),
   "model": z.string().min(1).max(512),
   "output_tokens": z.number().int().min(0.0).nullable().optional(),
+  "pricing_table_version": z.string().max(128).nullable().optional(),
   "prompt_version": z.string().max(128),
   "provider": z.string().min(1).max(512),
   "provider_request_id": z.string().max(256).nullable().optional(),

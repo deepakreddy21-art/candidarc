@@ -355,6 +355,7 @@ class ProviderUsage(StrictModel):
     latency_ms: int = Field(ge=0)
     provider_request_id: str | None = Field(default=None, max_length=256)
     estimated_cost_cents: float | None = Field(default=None, ge=0)
+    pricing_table_version: str | None = Field(default=None, max_length=128)
     retry_count: int = Field(default=0, ge=0, le=20)
 
 

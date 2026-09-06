@@ -205,9 +205,10 @@ def _append_atom_violations(
             violations.append("RESEARCH_TECH_AS_CLAIM")
 
     for pct in atoms.percentages:
-        if pct.lower().replace(" ", "") not in corpus.replace(" ", ""):
+        compact = pct.lower().replace(" ", "")
+        if compact not in corpus.replace(" ", ""):
             bare = re.sub(r"[^\d.]", "", pct)
-            if bare and bare not in corpus:
+            if bare and not re.search(rf"\b{re.escape(bare)}\b", corpus):
                 violations.append("UNSUPPORTED_PERCENT")
 
     for dollar in atoms.dollars:
@@ -220,9 +221,18 @@ def _append_atom_violations(
         if digits and digits not in corpus:
             violations.append("UNSUPPORTED_TEAM_SIZE")
 
+    for num in atoms.numbers:
+        # Exact numeric token with word boundaries so "5" does not validate "50".
+        if not re.search(rf"\b{re.escape(num)}\b", corpus):
+            violations.append("UNSUPPORTED_NUMBER")
+
     for date in atoms.dates:
-        if date.lower() not in corpus and not any(tok in corpus for tok in date.lower().split()):
-            violations.append("UNSUPPORTED_DATE")
+        date_l = date.lower()
+        if date_l not in corpus and not re.search(rf"\b{re.escape(date_l)}\b", corpus):
+            # Require at least one date token (year / month) as a whole word in corpus.
+            tokens = [tok for tok in re.split(r"[\s–-]+", date_l) if tok and tok != "present"]
+            if not tokens or not all(re.search(rf"\b{re.escape(tok)}\b", corpus) for tok in tokens):
+                violations.append("UNSUPPORTED_DATE")
 
     for org in atoms.orgs:
         org_l = org.lower()
@@ -551,7 +561,7 @@ def adjudicate_finding(
     atoms = extract_claim_atoms(finding_suggested_text)
     for pct in atoms.percentages:
         bare = re.sub(r"[^\d.]", "", pct)
-        if bare and bare not in corpus:
+        if bare and not re.search(rf"\b{re.escape(bare)}\b", corpus):
             return False, "UNSUPPORTED_PERCENT"
     for dollar in atoms.dollars:
         digits = re.sub(r"[^\d]", "", dollar)
@@ -559,8 +569,34 @@ def adjudicate_finding(
             return False, "UNSUPPORTED_DOLLAR"
     for team in atoms.team_sizes:
         digits = re.sub(r"\D", "", team)
-        if digits and digits not in corpus:
+        if digits and not re.search(rf"\b{re.escape(digits)}\b", corpus):
             return False, "UNSUPPORTED_TEAM_SIZE"
+    for num in atoms.numbers:
+        if not re.search(rf"\b{re.escape(num)}\b", corpus):
+            return False, "UNSUPPORTED_NUMBER"
+    for date in atoms.dates:
+        date_l = date.lower()
+        if date_l not in corpus and not re.search(rf"\b{re.escape(date_l)}\b", corpus):
+            tokens = [tok for tok in re.split(r"[\s–-]+", date_l) if tok and tok != "present"]
+            if not tokens or not all(re.search(rf"\b{re.escape(tok)}\b", corpus) for tok in tokens):
+                return False, "UNSUPPORTED_DATE"
+    evidence_orgs = {
+        (item.organization or item.employer_association or "").lower()
+        for item in scoped
+        if item.organization or item.employer_association
+    }
+    for org in atoms.orgs:
+        org_l = org.lower()
+        if len(org.split()) < 2:
+            continue
+        if org_l in corpus or any(org_l in eo or eo in org_l for eo in evidence_orgs if eo):
+            continue
+        # Education / certification-like org names without evidence grounding
+        if any(tok in suggested_lower for tok in ("university", "college", "institute", "school")):
+            return False, "UNSUPPORTED_EDUCATION"
+        if any(tok in suggested_lower for tok in ("certified", "certification", "certificate", "comptia")):
+            return False, "UNSUPPORTED_CERTIFICATION"
+        return False, "UNSUPPORTED_COMPANY"
 
     if atoms.individual_ownership:
         if OWNERSHIP_TEAM_RE.search(corpus) and not OWNERSHIP_INDIVIDUAL_RE.search(corpus):

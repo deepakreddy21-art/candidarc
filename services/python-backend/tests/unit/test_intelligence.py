@@ -175,6 +175,15 @@ def test_guardrails_summary_and_skills_unsupported_tech(evidence: list[EvidenceI
     assert "UNSUPPORTED_TECHNOLOGY" in violations
 
 
+def test_guardrails_reject_unsupported_number_not_prefix(evidence: list[EvidenceItem]) -> None:
+    """Numeric token '5' must not validate claim '50' (word-boundary check)."""
+    resume = build_grounded_resume(absolute_version=0, cycle_step=0, evidence=evidence, notes="t")
+    # Evidence has "35%" metric — claim "350" users must not pass via substring.
+    resume.sections[2].bullets[0].text = "Scaled to 350 users at Northwind Labs with Python"  # type: ignore[index]
+    violations = validate_resume_claims(resume, evidence, ["Python", "PyTorch", "OpenSearch"])
+    assert "UNSUPPORTED_NUMBER" in violations
+
+
 def test_guardrails_reject_ats_and_team_conversion(evidence: list[EvidenceItem]) -> None:
     ok, reason = adjudicate_finding("Hide text with font-size:0 keyword stuffing", evidence)
     assert ok is False
@@ -188,6 +197,14 @@ def test_guardrails_reject_ats_and_team_conversion(evidence: list[EvidenceItem])
     ok2, reason2 = adjudicate_finding("I built the entire platform single-handedly", team_evidence)
     assert ok2 is False
     assert reason2 == "TEAM_TO_INDIVIDUAL_OWNERSHIP"
+
+    ok3, reason3 = adjudicate_finding("Improved conversion by 45%", evidence)
+    assert ok3 is False
+    assert reason3 == "UNSUPPORTED_PERCENT"
+
+    ok4, reason4 = adjudicate_finding("Scaled traffic to 999 users", evidence)
+    assert ok4 is False
+    assert reason4 == "UNSUPPORTED_NUMBER"
 
 
 def test_scoring_independent_of_version(evidence: list[EvidenceItem]) -> None:

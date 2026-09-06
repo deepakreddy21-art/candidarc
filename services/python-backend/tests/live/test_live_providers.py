@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,6 +20,63 @@ pytestmark = [
 ]
 
 
+@dataclass
+class LiveBudget:
+    """Tracks remaining live-provider budget; stop before exceeding configured maxima."""
+
+    max_calls: int
+    max_tokens: int
+    max_cost_usd: float
+    calls_used: int = 0
+    tokens_used: int = 0
+    cost_usd_used: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def remaining_calls(self) -> int:
+        return max(0, self.max_calls - self.calls_used)
+
+    def remaining_tokens(self) -> int:
+        return max(0, self.max_tokens - self.tokens_used)
+
+    def remaining_cost_usd(self) -> float:
+        return max(0.0, self.max_cost_usd - self.cost_usd_used)
+
+    def ensure_room(self, *, estimated_tokens: int = 0, estimated_cost_usd: float = 0.0) -> None:
+        with self._lock:
+            if self.calls_used + 1 > self.max_calls:
+                pytest.fail(
+                    f"Live provider budget exhausted: calls {self.calls_used}/{self.max_calls} "
+                    f"(remaining={self.remaining_calls()})"
+                )
+            if self.tokens_used + estimated_tokens > self.max_tokens:
+                pytest.fail(
+                    f"Live provider budget would exceed token limit: "
+                    f"{self.tokens_used}+{estimated_tokens}/{self.max_tokens} "
+                    f"(remaining={self.remaining_tokens()})"
+                )
+            if self.cost_usd_used + estimated_cost_usd > self.max_cost_usd:
+                pytest.fail(
+                    f"Live provider budget would exceed cost limit: "
+                    f"${self.cost_usd_used + estimated_cost_usd:.4f}/${self.max_cost_usd} "
+                    f"(remaining=${self.remaining_cost_usd():.4f})"
+                )
+
+    def record(self, *, tokens: int = 0, cost_usd: float = 0.0) -> None:
+        with self._lock:
+            self.calls_used += 1
+            self.tokens_used += max(0, tokens)
+            self.cost_usd_used += max(0.0, cost_usd)
+            if self.calls_used > self.max_calls:
+                pytest.fail(f"Exceeded MAX_LIVE_PROVIDER_CALLS ({self.max_calls})")
+            if self.tokens_used > self.max_tokens:
+                pytest.fail(f"Exceeded MAX_LIVE_PROVIDER_TOKENS ({self.max_tokens})")
+            if self.cost_usd_used > self.max_cost_usd:
+                pytest.fail(f"Exceeded MAX_LIVE_PROVIDER_COST_USD ({self.max_cost_usd})")
+
+
+_BUDGET: LiveBudget | None = None
+
+
 def _cost_warning() -> None:
     print(
         "WARNING: live provider smoke tests may incur API costs. "
@@ -26,23 +85,62 @@ def _cost_warning() -> None:
     )
 
 
-def _require_budget_guard() -> float:
-    """Fail/skip when RUN=1 but MAX_LIVE_PROVIDER_COST_USD is unset or invalid."""
+def _parse_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        pytest.fail(f"{name} must be an integer, got {raw!r}")
+    if value <= 0:
+        pytest.fail(f"{name} must be > 0")
+    return value
+
+
+def _require_budget_guard() -> LiveBudget:
+    """Fail/skip when RUN=1 but MAX_LIVE_PROVIDER_COST_USD is unset or invalid.
+
+    Also loads MAX_LIVE_PROVIDER_CALLS / MAX_LIVE_PROVIDER_TOKENS (defaults keep smoke small).
+    """
+    global _BUDGET
     raw = os.getenv("MAX_LIVE_PROVIDER_COST_USD")
     if raw is None or not str(raw).strip():
         pytest.fail("MAX_LIVE_PROVIDER_COST_USD must be set when RUN_LIVE_PROVIDER_TESTS=1")
     try:
-        budget = float(raw)
+        budget_usd = float(raw)
     except ValueError:
         pytest.fail(f"MAX_LIVE_PROVIDER_COST_USD must be a number, got {raw!r}")
-    if budget <= 0:
+    if budget_usd <= 0:
         pytest.fail("MAX_LIVE_PROVIDER_COST_USD must be > 0")
-    return budget
+
+    max_calls = _parse_positive_int("MAX_LIVE_PROVIDER_CALLS", default=10)
+    max_tokens = _parse_positive_int("MAX_LIVE_PROVIDER_TOKENS", default=50_000)
+
+    if _BUDGET is None:
+        _BUDGET = LiveBudget(max_calls=max_calls, max_tokens=max_tokens, max_cost_usd=budget_usd)
+    else:
+        # Keep a single session budget; refresh caps if env changed mid-run.
+        _BUDGET.max_calls = max_calls
+        _BUDGET.max_tokens = max_tokens
+        _BUDGET.max_cost_usd = budget_usd
+    return _BUDGET
+
+
+def _record_usage(budget: LiveBudget, usage: object) -> None:
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    cached = int(getattr(usage, "cached_tokens", 0) or 0)
+    tokens = input_tokens + output_tokens + cached
+    cost_cents = getattr(usage, "estimated_cost_cents", None)
+    cost_usd = (float(cost_cents) / 100.0) if cost_cents is not None else 0.0
+    budget.record(tokens=tokens, cost_usd=cost_usd)
 
 
 async def test_live_generation_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     _cost_warning()
-    _require_budget_guard()
+    budget = _require_budget_guard()
+    budget.ensure_room(estimated_tokens=4_000, estimated_cost_usd=0.05)
     if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_GENERATION_API_KEY")):
         pytest.skip("OPENAI_API_KEY not set")
 
@@ -69,6 +167,7 @@ async def test_live_generation_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
             allowed_technologies=["Python", "PyTorch", "OpenSearch"],
             job_description="Python platform engineer building search systems " + ("q" * 20),
         )
+        _record_usage(budget, usage)
     finally:
         await client.close()
         get_settings.cache_clear()
@@ -78,13 +177,19 @@ async def test_live_generation_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     assert usage.provider == "openai"
     assert usage.model
     assert usage.prompt_version
-    print(f"live generation ok latency_ms={latency} model={usage.model}")
+    print(
+        f"live generation ok latency_ms={latency} model={usage.model} "
+        f"budget_calls={budget.calls_used}/{budget.max_calls} "
+        f"budget_tokens={budget.tokens_used}/{budget.max_tokens} "
+        f"budget_cost_usd={budget.cost_usd_used:.4f}/{budget.max_cost_usd}"
+    )
 
 
 async def test_live_openai_final_qa(monkeypatch: pytest.MonkeyPatch) -> None:
     """Factory maps final-review → OpenAIProvider.final_qa."""
     _cost_warning()
-    _require_budget_guard()
+    budget = _require_budget_guard()
+    budget.ensure_room(estimated_tokens=4_000, estimated_cost_usd=0.05)
     if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_FINAL_API_KEY")):
         pytest.skip("OPENAI_API_KEY not set")
 
@@ -110,6 +215,7 @@ async def test_live_openai_final_qa(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     try:
         result, latency, usage = await provider.final_qa(resume=resume, evidence=evidence)
+        _record_usage(budget, usage)
     finally:
         get_settings.cache_clear()
 
@@ -124,7 +230,7 @@ async def test_live_openai_final_qa(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_live_anthropic_hr_em_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     """Factory maps audit roles → AnthropicProvider.audit (hr-1 / em-1)."""
     _cost_warning()
-    _require_budget_guard()
+    budget = _require_budget_guard()
     if not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUDIT_API_KEY")):
         pytest.skip("ANTHROPIC_API_KEY not set")
 
@@ -150,6 +256,7 @@ async def test_live_anthropic_hr_em_audit(monkeypatch: pytest.MonkeyPatch) -> No
     )
     try:
         for lens in ("hr-1", "em-1"):
+            budget.ensure_room(estimated_tokens=4_000, estimated_cost_usd=0.10)
             response, latency, usage = await provider.audit(
                 lens=lens,
                 reviews_version=0,
@@ -161,6 +268,7 @@ async def test_live_anthropic_hr_em_audit(monkeypatch: pytest.MonkeyPatch) -> No
                 tenant_id=ctx.tenant_id,
                 owner_user_id=ctx.user_id,
             )
+            _record_usage(budget, usage)
             assert latency >= 0
             assert usage.provider == "anthropic"
             assert usage.prompt_version
@@ -223,6 +331,7 @@ async def test_usage_extraction_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-used")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-not-used")
     from app.core.config import get_settings
+    from app.core.pricing import PRICING_TABLE_VERSION
     from app.providers.anthropic_provider import AnthropicProvider
     from app.providers.openai_provider import OpenAIProvider
 
@@ -252,6 +361,8 @@ async def test_usage_extraction_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     assert openai_usage.provider_request_id == "chatcmpl_test"
     assert openai_usage.retry_count == 1
     assert openai_usage.prompt_version == "resume@test"
+    assert openai_usage.estimated_cost_cents is not None
+    assert openai_usage.pricing_table_version == PRICING_TABLE_VERSION
 
     class _AnthropicUsage:
         input_tokens = 21
@@ -269,11 +380,14 @@ async def test_usage_extraction_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     assert anthropic_usage.output_tokens == 5
     assert anthropic_usage.latency_ms == 99
     assert anthropic_usage.provider_request_id == "msg_test"
+    assert anthropic_usage.estimated_cost_cents is not None
     get_settings.cache_clear()
 
 
 async def test_budget_guard_requires_max_cost(monkeypatch: pytest.MonkeyPatch) -> None:
     """When RUN=1, missing/invalid MAX_LIVE_PROVIDER_COST_USD must fail (not silently proceed)."""
+    global _BUDGET
+    _BUDGET = None
     monkeypatch.delenv("MAX_LIVE_PROVIDER_COST_USD", raising=False)
     with pytest.raises(pytest.fail.Exception, match="MAX_LIVE_PROVIDER_COST_USD"):
         _require_budget_guard()
@@ -287,4 +401,24 @@ async def test_budget_guard_requires_max_cost(monkeypatch: pytest.MonkeyPatch) -
         _require_budget_guard()
 
     monkeypatch.setenv("MAX_LIVE_PROVIDER_COST_USD", "1.5")
-    assert _require_budget_guard() == 1.5
+    monkeypatch.setenv("MAX_LIVE_PROVIDER_CALLS", "3")
+    monkeypatch.setenv("MAX_LIVE_PROVIDER_TOKENS", "1000")
+    _BUDGET = None
+    budget = _require_budget_guard()
+    assert budget.max_cost_usd == 1.5
+    assert budget.max_calls == 3
+    assert budget.max_tokens == 1000
+
+
+async def test_budget_stops_before_exceeding(monkeypatch: pytest.MonkeyPatch) -> None:
+    global _BUDGET
+    _BUDGET = None
+    monkeypatch.setenv("MAX_LIVE_PROVIDER_COST_USD", "0.01")
+    monkeypatch.setenv("MAX_LIVE_PROVIDER_CALLS", "2")
+    monkeypatch.setenv("MAX_LIVE_PROVIDER_TOKENS", "100")
+    budget = _require_budget_guard()
+    budget.record(tokens=40, cost_usd=0.004)
+    budget.ensure_room(estimated_tokens=40, estimated_cost_usd=0.004)
+    budget.record(tokens=40, cost_usd=0.004)
+    with pytest.raises(pytest.fail.Exception, match="calls"):
+        budget.ensure_room(estimated_tokens=1, estimated_cost_usd=0.0)

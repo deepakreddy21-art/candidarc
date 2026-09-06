@@ -234,21 +234,21 @@ async def test_anthropic_invalid_tool_payload_fails_closed() -> None:
 
 @pytest.mark.asyncio
 async def test_lifespan_closes_clients(monkeypatch: pytest.MonkeyPatch) -> None:
-    closed: dict[str, bool] = {"openai": False, "anthropic": False}
+    closed: dict[str, int] = {"openai": 0, "anthropic": 0}
 
     class FakeOpenAI:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
         async def close(self) -> None:
-            closed["openai"] = True
+            closed["openai"] += 1
 
     class FakeAnthropic:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
         async def close(self) -> None:
-            closed["anthropic"] = True
+            closed["anthropic"] += 1
 
     monkeypatch.setenv("AI_MODE", "live")
     monkeypatch.setenv("APP_MODE", "demo")
@@ -265,7 +265,78 @@ async def test_lifespan_closes_clients(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with TestClient(application) as client:
         assert client.app.state.openai_client is not None
+        assert client.app.state.openai_generation_client is not None
+        assert client.app.state.openai_final_client is not None
+        # Same shared key → same client object
+        assert client.app.state.openai_generation_client is client.app.state.openai_final_client
         assert client.app.state.anthropic_client is not None
-    assert closed["openai"] is True
-    assert closed["anthropic"] is True
+    assert closed["openai"] == 1
+    assert closed["anthropic"] == 1
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_dual_openai_clients_when_keys_differ(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[str] = []
+    closed_ids: list[int] = []
+
+    class FakeOpenAI:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.api_key = kwargs.get("api_key")
+            created.append(str(self.api_key))
+
+        async def close(self) -> None:
+            closed_ids.append(id(self))
+
+    monkeypatch.setenv("AI_MODE", "live")
+    monkeypatch.setenv("APP_MODE", "demo")
+    monkeypatch.setenv("OPENAI_GENERATION_API_KEY", "sk-gen")
+    monkeypatch.setenv("OPENAI_FINAL_API_KEY", "sk-final")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    get_settings = __import__("app.core.config", fromlist=["get_settings"]).get_settings
+    get_settings.cache_clear()
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeOpenAI)
+
+    application = create_app()
+    from fastapi.testclient import TestClient
+
+    with TestClient(application) as client:
+        gen = client.app.state.openai_generation_client
+        final = client.app.state.openai_final_client
+        assert gen is not None and final is not None
+        assert gen is not final
+        assert created == ["sk-gen", "sk-final"]
+    assert len(set(closed_ids)) == 2
+    get_settings.cache_clear()
+
+
+def test_factory_routes_openai_clients_by_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_MODE", "live")
+    monkeypatch.setenv("APP_MODE", "demo")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    get_settings = __import__("app.core.config", fromlist=["get_settings"]).get_settings
+    get_settings.cache_clear()
+
+    from app.providers.factory import get_provider
+    from app.providers.openai_provider import OpenAIProvider
+
+    class _State:
+        openai_generation_client = object()
+        openai_final_client = object()
+        openai_client = openai_generation_client
+        anthropic_client = None
+
+    class _App:
+        state = _State()
+
+    class _Request:
+        app = _App()
+
+    gen = get_provider("generation", _Request())  # type: ignore[arg-type]
+    final = get_provider("final-review", _Request())  # type: ignore[arg-type]
+    assert isinstance(gen, OpenAIProvider)
+    assert isinstance(final, OpenAIProvider)
+    assert gen._client is _State.openai_generation_client
+    assert final._client is _State.openai_final_client
     get_settings.cache_clear()

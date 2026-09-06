@@ -81,7 +81,7 @@ python -m evals.run_eval
 npm run eval:resume
 ```
 
-Postgres evidence-store integration tests run only when `DATABASE_URL` is set **and** `RUN_PGVECTOR_TESTS=1`.
+Postgres evidence-store integration tests skip only when `RUN_PGVECTOR_TESTS` is unset/0. When `RUN_PGVECTOR_TESTS=1`, missing `DATABASE_URL` or connection/schema failures **fail** (they do not skip). CI job `python-pgvector` migrates the schema and runs this suite.
 Live provider smoke tests run only when `RUN_LIVE_PROVIDER_TESTS=1` (not CI default; may incur cost).
 
 ## Docker Compose

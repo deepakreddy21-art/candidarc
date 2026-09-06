@@ -21,20 +21,32 @@ from app.modules.evidence.store.protocol import EvidenceStoreError
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    openai_client: Any | None = None
+    openai_generation_client: Any | None = None
+    openai_final_client: Any | None = None
     anthropic_client: Any | None = None
     redis_client: Any | None = None
 
     if settings.ai_mode == "live":
-        if settings.generation_api_key() or settings.final_review_api_key():
+        gen_key = settings.generation_api_key()
+        final_key = settings.final_review_api_key()
+        if gen_key or final_key:
             from openai import AsyncOpenAI
 
-            # Prefer generation key for shared client; final-review may share same org key.
-            key = settings.generation_api_key() or settings.final_review_api_key()
-            openai_client = AsyncOpenAI(api_key=key, timeout=settings.http_timeout_seconds)
-            app.state.openai_client = openai_client
-        else:
-            app.state.openai_client = None
+            if gen_key:
+                openai_generation_client = AsyncOpenAI(api_key=gen_key, timeout=settings.http_timeout_seconds)
+            if final_key:
+                if final_key == gen_key and openai_generation_client is not None:
+                    openai_final_client = openai_generation_client
+                else:
+                    openai_final_client = AsyncOpenAI(api_key=final_key, timeout=settings.http_timeout_seconds)
+            elif openai_generation_client is not None:
+                # No dedicated final key — reuse generation client when present.
+                openai_final_client = openai_generation_client
+
+        app.state.openai_generation_client = openai_generation_client
+        app.state.openai_final_client = openai_final_client
+        # Backward-compat alias used by evidence store / older callers.
+        app.state.openai_client = openai_generation_client or openai_final_client
 
         if settings.audit_api_key():
             from anthropic import AsyncAnthropic
@@ -45,6 +57,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.anthropic_client = None
     else:
         # Mock mode never constructs live clients
+        app.state.openai_generation_client = None
+        app.state.openai_final_client = None
         app.state.openai_client = None
         app.state.anthropic_client = None
 
@@ -76,8 +90,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     await close_evidence_store()
-    if openai_client is not None:
-        await openai_client.close()
+    # Close unique OpenAI clients once (generation/final may share the same object).
+    closed_ids: set[int] = set()
+    for client in (openai_generation_client, openai_final_client):
+        if client is None:
+            continue
+        cid = id(client)
+        if cid in closed_ids:
+            continue
+        closed_ids.add(cid)
+        await client.close()
     if anthropic_client is not None:
         await anthropic_client.close()
     if redis_client is not None:

@@ -35,7 +35,14 @@ def get_provider(role: str = "generation", request: Request | None = None) -> An
     openai_client = None
     anthropic_client = None
     if request is not None:
-        openai_client = getattr(request.app.state, "openai_client", None)
+        if role == "final-review":
+            openai_client = getattr(request.app.state, "openai_final_client", None) or getattr(
+                request.app.state, "openai_client", None
+            )
+        else:
+            openai_client = getattr(request.app.state, "openai_generation_client", None) or getattr(
+                request.app.state, "openai_client", None
+            )
         anthropic_client = getattr(request.app.state, "anthropic_client", None)
 
     if settings.ai_mode == "mock":

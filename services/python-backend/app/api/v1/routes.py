@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -12,7 +13,7 @@ from app.core.errors import (
     ProviderError,
     http_status_for,
 )
-from app.core.idempotency import idempotency_redis_key, request_hash
+from app.core.idempotency import idempotency_redis_key, lock_ttl_seconds, request_hash
 from app.core.metrics import IDEMPOTENCY_HITS, METRICS, PROVIDER_FAILURES, STAGE_LATENCY, TOKENS_IN, TOKENS_OUT
 from app.core.security import require_service_token
 from app.domain.schemas import (
@@ -93,8 +94,12 @@ async def _with_idempotency(
     settings = request.app.state.settings
     key = idempotency_redis_key(tenant_id, user_id, operation, idempotency_key)
     digest = request_hash(body_dict)
+    lock_ttl = lock_ttl_seconds(
+        response_ttl_seconds=settings.idempotency_ttl_seconds,
+        lock_budget_seconds=settings.idempotency_lock_ttl_seconds,
+    )
     try:
-        cached = await store.begin(key, digest, settings.idempotency_ttl_seconds)
+        begun = await store.begin(key, digest, lock_ttl)
     except ProviderError as exc:
         if exc.code == IDEMPOTENCY_KEY_REUSED:
             raise HTTPException(
@@ -103,11 +108,35 @@ async def _with_idempotency(
             ) from exc
         raise HTTPException(status_code=http_status_for(exc.code), detail={"code": exc.code, "message": exc.message}) from exc
 
-    if cached is not None:
+    if begun.cached_response is not None:
         METRICS.incr(IDEMPOTENCY_HITS)
-        return cached
+        return begun.cached_response
 
+    owner = begun.owner
+    if owner is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "IDEMPOTENCY_LOCK_MISSING", "message": "Idempotency lock acquired without owner"},
+        )
+
+    # Heartbeat renews lock every lock_ttl/3 while the provider call runs.
+    stop_heartbeat = asyncio.Event()
+
+    async def _heartbeat() -> None:
+        interval = max(1.0, lock_ttl / 3)
+        while not stop_heartbeat.is_set():
+            try:
+                await asyncio.wait_for(stop_heartbeat.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                renewed = await store.renew(key, owner, lock_ttl)
+                if not renewed:
+                    return
+
+    heartbeat_task = asyncio.create_task(_heartbeat())
     try:
+        # Renew once up-front with full lock TTL before the provider call.
+        await store.renew(key, owner, lock_ttl)
         with METRICS.time_block(f"{STAGE_LATENCY}.{operation}"):
             result = await handler()
         payload = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
@@ -117,12 +146,19 @@ async def _with_idempotency(
                 METRICS.incr(TOKENS_IN, int(usage.input_tokens or 0))
             if getattr(usage, "output_tokens", None):
                 METRICS.incr(TOKENS_OUT, int(usage.output_tokens or 0))
-        await store.complete(key, digest, payload, settings.idempotency_ttl_seconds)
+        await store.complete(key, digest, payload, settings.idempotency_ttl_seconds, owner)
         return result
     except Exception:
         METRICS.incr(PROVIDER_FAILURES)
-        await store.release(key)
+        await store.release(key, owner)
         raise
+    finally:
+        stop_heartbeat.set()
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 @router.post("/resumes/parse", response_model=ResumeParseResponse)
