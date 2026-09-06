@@ -118,6 +118,13 @@ function assertServiceRunning(service) {
 }
 
 function workerProcessAlive() {
+  // Prefer host-side `compose top` — node:*-slim images often lack `ps`/procps.
+  const top = runCapture("docker", ["compose", "top", "worker"]);
+  if (top.status === 0) {
+    const body = String(top.stdout || "");
+    if (/\b(node|npm|tsx)\b/i.test(body)) return true;
+  }
+  // Fallback: /proc cmdline (works without procps)
   const probe = runCapture("docker", [
     "compose",
     "exec",
@@ -125,9 +132,24 @@ function workerProcessAlive() {
     "worker",
     "sh",
     "-c",
-    "ps aux | grep -E '[n]ode|[n]pm' | head -n 3",
+    "tr '\\0' ' ' </proc/1/cmdline 2>/dev/null; echo; ls /proc/[0-9]*/cmdline 2>/dev/null | head -n 5",
   ]);
-  return probe.status === 0 && String(probe.stdout || "").trim().length > 0;
+  if (probe.status !== 0) return false;
+  const text = String(probe.stdout || "");
+  return /\b(node|npm|tsx)\b/i.test(text) || /\/proc\/\d+\/cmdline/.test(text);
+}
+
+function waitForWorker(deadline) {
+  while (Date.now() < deadline) {
+    try {
+      assertServiceRunning("worker");
+      if (workerProcessAlive()) return true;
+    } catch {
+      // retry until deadline
+    }
+    sleepSeconds(5);
+  }
+  return false;
 }
 
 function teardown() {
@@ -198,12 +220,11 @@ try {
   for (const service of ["postgres", "redis", "minio", "python-backend", "web", "worker"]) {
     assertServiceRunning(service);
   }
-  // Worker may run under node/tsx/npm — accept any non-empty process table after healthy compose status.
-  if (!workerProcessAlive()) {
-    const fallback = runCapture("docker", ["compose", "exec", "-T", "worker", "sh", "-c", "ps -o pid=,comm= | head -n 20"]);
-    if (fallback.status !== 0 || !String(fallback.stdout || "").trim()) {
-      fail("worker process not detected", ["worker", "web", "redis"]);
-    }
+  const workerReadyDeadline = Math.min(deadline, Date.now() + 120_000);
+  if (!waitForWorker(workerReadyDeadline)) {
+    const top = runCapture("docker", ["compose", "top", "worker"]);
+    console.error(String(top.stdout || top.stderr || "").slice(0, 1000));
+    fail("worker process not detected", ["worker", "web", "redis"]);
   }
   console.log("required services running");
 
@@ -231,20 +252,7 @@ try {
     fail("worker restart failed", ["worker", "redis"]);
   }
   const workerDeadline = Math.min(deadline, Date.now() + 90_000);
-  let workerOk = false;
-  while (Date.now() < workerDeadline) {
-    try {
-      assertServiceRunning("worker");
-      if (workerProcessAlive()) {
-        workerOk = true;
-        break;
-      }
-    } catch {
-      // retry until deadline
-    }
-    sleepSeconds(5);
-  }
-  if (!workerOk) {
+  if (!waitForWorker(workerDeadline)) {
     fail("worker not healthy after restart", ["worker", "redis", "web"]);
   }
   console.log("worker restart OK");
