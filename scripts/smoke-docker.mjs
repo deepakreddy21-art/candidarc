@@ -106,11 +106,12 @@ if (!waitForExec("python-backend", readySnippet, deadline)) {
 
 console.log("Running Python health/live + /health/ready (postgres evidence store)...");
 const readyAssert = [
-  "from app.main import app; from fastapi.testclient import TestClient; ",
-  "c=TestClient(app); ",
-  "live=c.get('/health/live'); assert live.status_code==200, live.text; ",
-  "ready=c.get('/health/ready'); assert ready.status_code==200, ready.text; ",
-  "body=ready.json(); assert body.get('status')=='ready', body",
+  "import json, urllib.request; ",
+  "live=urllib.request.urlopen('http://127.0.0.1:8090/health/live'); ",
+  "assert live.status==200, live.read(); ",
+  "ready=urllib.request.urlopen('http://127.0.0.1:8090/health/ready'); ",
+  "body=json.loads(ready.read().decode()); ",
+  "assert ready.status==200 and body.get('status')=='ready', body",
 ].join("");
 code = run("docker", ["compose", "exec", "-T", "python-backend", "python", "-c", readyAssert]);
 if (code !== 0) {
