@@ -159,11 +159,17 @@ try {
   if (up !== 0) {
     fail("compose up failed for required full stack");
   }
+  console.log("compose up returned 0");
 
   // migrate is one-shot; ensure it completed successfully
   const migratePs = runCapture("docker", ["compose", "ps", "-a", "--format", "json", "migrate"]);
+  console.log(String(migratePs.stdout || "").slice(0, 500));
   if (migratePs.status !== 0) {
     fail("unable to inspect migrate service", ["migrate", "postgres"]);
+  }
+  const migrateBlob = String(migratePs.stdout || "");
+  if (migrateBlob && /exit.?code["']?\s*[:=]\s*[1-9]/i.test(migrateBlob)) {
+    fail("migrate service exited with non-zero status", ["migrate", "postgres"]);
   }
 
   const deadline = Date.now() + SMOKE_TIMEOUT_MS;

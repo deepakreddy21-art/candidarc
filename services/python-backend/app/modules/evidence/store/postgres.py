@@ -340,7 +340,7 @@ class PostgresEvidenceStore:
                                 chunk_id, document_id, tenant_id, owner_user_id, source_type,
                                 source_identifier, source_span, content_hash, chunk_text,
                                 embedding, embedding_model, embedding_dimensions, created_at, updated_at
-                            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::vector,$11,$12,$13,$14)
+                            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                             """,
                             str(uuid4()),
                             document_id,
@@ -351,7 +351,7 @@ class PostgresEvidenceStore:
                             source_span,
                             content_hash,
                             text,
-                            _to_vector_literal(emb),
+                            emb,
                             embedding_model,
                             embedding_dimensions,
                             now,
@@ -420,15 +420,15 @@ class PostgresEvidenceStore:
                            source_identifier, source_span, content_hash, chunk_text,
                            embedding::text AS embedding, embedding_model, embedding_dimensions,
                            created_at, updated_at,
-                           1 - (embedding <=> $3::vector) AS score
+                           1 - (embedding <=> $3) AS score
                     FROM evidence_chunks
                     WHERE tenant_id = $1 AND owner_user_id = $2
-                    ORDER BY embedding <=> $3::vector
+                    ORDER BY embedding <=> $3
                     LIMIT $4
                     """,
                     tenant_id,
                     owner_user_id,
-                    _to_vector_literal(query_embedding),
+                    query_embedding,
                     max(1, limit),
                 )
             results: list[EvidenceSearchResult] = []
