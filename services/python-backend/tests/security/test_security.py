@@ -124,13 +124,12 @@ def test_prompt_injection_jd_not_treated_as_experience(client: TestClient) -> No
             "allowed_technologies": ["Python", "PyTorch", "OpenSearch"],
         },
     )
-    # Fail closed: injection markers in untrusted JD block the save path.
-    assert response.status_code == 422
-    detail = response.json().get("detail", {})
-    assert detail.get("code") == "GUARDRAIL_VIOLATION"
-    blob = str(detail)
-    assert "JD_INJECTION" in blob
-    assert "built JAX" not in blob.lower() or "JD_INJECTION" in blob
+    # JD injection is untrusted input: generation may proceed, but invented tech must not appear.
+    assert response.status_code == 200
+    body = str(response.json())
+    assert "IGNORE ALL PREVIOUS" not in body
+    assert "JAX" not in body
+    assert "TPU" not in body
 
 
 def test_logging_redaction_no_raw_resume_text(caplog: pytest.LogCaptureFixture) -> None:

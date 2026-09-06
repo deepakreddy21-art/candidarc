@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 from app.domain.schemas import EvidenceItem, RequestContext, ResumeDocument
 from app.main import app
 from app.modules.generation.service import generate_grounded_resume
-from app.modules.guardrails.service import adjudicate_finding, build_grounded_resume, validate_resume_claims
+from app.modules.guardrails.service import (
+    adjudicate_finding,
+    build_grounded_resume,
+    detect_jd_injection,
+    validate_resume_claims,
+)
 from app.modules.parsing.service import parse_job_text
 from app.modules.retrieval import service as retrieval
 from app.modules.retrieval.rankers import CrossEncoderRanker, HybridKeywordVectorRanker
@@ -137,13 +142,15 @@ def test_guardrails_jd_injection_detected_and_not_candidate_evidence(evidence: l
         job_description=jd,
         allowed_technologies=["Python", "PyTorch", "OpenSearch"],
     )
+    # Input JD injection is detectable for evals/logging, but a clean resume is not blocked.
+    assert any(v.startswith("JD_INJECTION:") for v in detect_jd_injection(jd))
     violations = validate_resume_claims(
         resume,
         evidence,
         ["Python", "PyTorch", "OpenSearch"],
         job_description=jd,
     )
-    assert any(v.startswith("JD_INJECTION:") for v in violations)
+    assert not any(v.startswith("JD_INJECTION:") for v in violations)
     # JD tech must not become allowed — stuffing JAX into skills still fails.
     resume.sections[1].bullets[0].technologies.append("JAX")  # type: ignore[index]
     resume.sections[1].bullets[0].text = "Python · JAX · TPU"  # type: ignore[index]
@@ -154,7 +161,6 @@ def test_guardrails_jd_injection_detected_and_not_candidate_evidence(evidence: l
         job_description=jd,
     )
     assert "UNSUPPORTED_TECHNOLOGY" in violations2
-    assert any(v.startswith("JD_INJECTION:") for v in violations2)
 
 
 def test_guardrails_summary_and_skills_unsupported_tech(evidence: list[EvidenceItem]) -> None:

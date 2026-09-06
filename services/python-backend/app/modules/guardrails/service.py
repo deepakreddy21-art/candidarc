@@ -356,12 +356,12 @@ def validate_resume_claims(
             if owner_user_id is not None and item.owner_user_id != owner_user_id:
                 violations.append("CROSS_OWNER_EVIDENCE")
 
-    # JD is untrusted: flag injection, but never treat JD content as candidate evidence.
+    # JD/research inputs are untrusted. Injection *in those inputs* is not a resume
+    # blocking error — callers use detect_jd_injection() for warnings/evals. Markers
+    # that appear in the resume itself remain blocking (PROMPT_INJECTION below).
+    # Research tech leakage into claims is still blocked via research_techs atoms.
     if job_description:
-        violations.extend(detect_jd_injection(job_description))
-
-    for finding in research_findings or []:
-        violations.extend(detect_injection_markers(finding.summary, code_prefix="RESEARCH_INJECTION"))
+        _ = detect_jd_injection(job_description)
 
     # Optional resume-level identity/contact fields (forward-compatible if present).
     for attr in ("candidate_name", "full_name", "contact_email", "contact_phone", "email", "phone"):

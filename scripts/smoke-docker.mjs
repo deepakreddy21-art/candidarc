@@ -105,21 +105,14 @@ if (!waitForExec("python-backend", readySnippet, deadline)) {
 }
 
 console.log("Running Python health/live + /health/ready (postgres evidence store)...");
-code = run("docker", [
-  "compose",
-  "exec",
-  "-T",
-  "python-backend",
-  "python",
-  "-c",
-  (
-    "from app.main import app; from fastapi.testclient import TestClient; "
-    "c=TestClient(app); "
-    "live=c.get('/health/live'); assert live.status_code==200, live.text; "
-    "ready=c.get('/health/ready'); assert ready.status_code==200, ready.text; "
-    "body=ready.json(); assert body.get('status')=='ready', body"
-  ),
-]);
+const readyAssert = [
+  "from app.main import app; from fastapi.testclient import TestClient; ",
+  "c=TestClient(app); ",
+  "live=c.get('/health/live'); assert live.status_code==200, live.text; ",
+  "ready=c.get('/health/ready'); assert ready.status_code==200, ready.text; ",
+  "body=ready.json(); assert body.get('status')=='ready', body",
+].join("");
+code = run("docker", ["compose", "exec", "-T", "python-backend", "python", "-c", readyAssert]);
 if (code !== 0) {
   composeLogs("python-backend", "migrate", "postgres");
   teardown();
