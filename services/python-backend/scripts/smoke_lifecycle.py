@@ -61,13 +61,13 @@ def main() -> int:
             "owner_user_id": "user_smoke",
             "title": "Northwind Labs employment",
             "organization": "Northwind Labs",
-            "claim_text": "Software Engineer at Northwind Labs, January 2024 – Present",
+            "claim_text": "Software Engineer at Northwind Labs, January 2024 – Present. Improved search latency by 35% using Python, PyTorch, and OpenSearch.",
             "technologies": ["Python", "PyTorch", "OpenSearch"],
             "source_type": "employment",
             "verification_status": "user_attested",
             "candidate_confirmation_status": "confirmed",
             "confidence": "high",
-            "metrics": ["latency improved 35%"],
+            "metrics": ["35%"],
         },
         {
             "id": "ev-smoke-2",
@@ -88,10 +88,11 @@ def main() -> int:
 
     resume = None
     for version in range(0, 5):
+        path = "/v1/resumes/generate" if version == 0 else "/v1/resumes/regenerate"
         gen = _post(
-            "/v1/resumes/generate",
+            path,
             {
-                "context": {**ctx, "request_id": f"req_smoke_gen_{version}"},
+                "context": {**ctx, "request_id": f"req_smoke_gen_{version}", "schema_version": "2026-09-resume-intelligence.v1"},
                 "absolute_version": version,
                 "cycle_step": version,
                 "job_description": jd,
@@ -102,14 +103,18 @@ def main() -> int:
             idempotency_key=f"smoke-gen-v{version}",
         )
         resume = gen["resume"]
-        print(f"generate v{version} ok score={resume.get('score')}")
+        print(f"{'generate' if version == 0 else 'regenerate'} v{version} ok score={resume.get('score')}")
 
         if version < 4:
             lens, reviews, produces = AUDIT_SEQUENCE[version]
             audit = _post(
                 "/v1/resumes/audit",
                 {
-                    "context": {**ctx, "request_id": f"req_smoke_audit_{lens}"},
+                    "context": {
+                        **ctx,
+                        "request_id": f"req_smoke_audit_{lens}",
+                        "schema_version": "2026-09-resume-intelligence.v1",
+                    },
                     "lens": lens,
                     "reviews_version": reviews,
                     "produces_version": produces,
@@ -123,26 +128,10 @@ def main() -> int:
             assert audit["lens"] == lens, audit
             print(f"audit {lens} ok findings={len(audit.get('findings') or [])}")
 
-    regen = _post(
-        "/v1/resumes/regenerate",
-        {
-            "context": {**ctx, "request_id": "req_smoke_regen"},
-            "absolute_version": 4,
-            "cycle_step": 4,
-            "job_description": jd,
-            "evidence": evidence,
-            "allowed_technologies": allowed,
-            "previous_resume": resume,
-        },
-        idempotency_key="smoke-regen-v4",
-    )
-    resume = regen["resume"]
-    print("regenerate ok")
-
     final_qa = _post(
         "/v1/resumes/final-qa",
         {
-            "context": {**ctx, "request_id": "req_smoke_final"},
+            "context": {**ctx, "request_id": "req_smoke_final", "schema_version": "2026-09-resume-intelligence.v1"},
             "resume": resume,
             "evidence": evidence,
             "allowed_technologies": allowed,

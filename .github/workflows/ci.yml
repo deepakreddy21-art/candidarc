@@ -234,6 +234,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://candidarc:candidarc@localhost:5432/candidarc_test
+      CANDIDARC_DATA_MODE: postgres
       EVIDENCE_STORE: postgres
       RUN_PGVECTOR_TESTS: "1"
       APP_MODE: demo
@@ -252,6 +253,14 @@ jobs:
           cache: pip
       - run: npm ci
       - run: npm run db:migrate
+      - name: Verify pgvector extension and evidence tables
+        run: |
+          set -euo pipefail
+          docker run --rm --network host pgvector/pgvector:pg16 \
+            psql "postgres://candidarc:candidarc@127.0.0.1:5432/candidarc_test" \
+            -v ON_ERROR_STOP=1 \
+            -c "SELECT extname FROM pg_extension WHERE extname='vector';" \
+            -c "SELECT to_regclass('public.evidence_documents'), to_regclass('public.evidence_chunks');"
       - name: Install Python hashed deps
         working-directory: services/python-backend
         run: |

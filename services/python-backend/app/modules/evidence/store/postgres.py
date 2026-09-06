@@ -166,16 +166,33 @@ class PostgresEvidenceStore:
             ) from exc
 
         try:
+            # Verify extension exists before registering the codec (no DDL here).
+            probe = await asyncpg.connect(dsn=self._dsn, timeout=self._command_timeout)
+            try:
+                has_vector = await probe.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+                )
+                if not has_vector:
+                    raise EvidenceStoreError(
+                        EVIDENCE_SCHEMA_INCOMPATIBLE,
+                        "pgvector extension 'vector' is not installed; apply migration 0009",
+                    )
+            finally:
+                await probe.close()
+
+            async def _init_conn(conn: Any) -> None:
+                await register_vector(conn)
+                await conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
+
             self._pool = await asyncpg.create_pool(
                 dsn=self._dsn,
                 min_size=1,
                 max_size=5,
                 command_timeout=self._command_timeout,
                 timeout=self._command_timeout,
+                init=_init_conn,
             )
             async with self._pool.acquire() as conn:
-                await conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
-                await register_vector(conn)
                 await self._verify_schema(conn)
             self._ready = True
             self._schema_error = None
@@ -192,6 +209,12 @@ class PostgresEvidenceStore:
             if self._pool is not None:
                 await self._pool.close()
                 self._pool = None
+            message = str(exc)
+            if "unknown type" in message.lower() and "vector" in message.lower():
+                raise EvidenceStoreError(
+                    EVIDENCE_SCHEMA_INCOMPATIBLE,
+                    f"pgvector type unavailable (apply migration 0009): {exc}",
+                ) from exc
             raise EvidenceStoreError(EVIDENCE_STORE_UNAVAILABLE, f"Postgres evidence store unavailable: {exc}") from exc
 
     async def close(self) -> None:
