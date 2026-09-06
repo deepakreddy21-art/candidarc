@@ -94,8 +94,12 @@ if (code !== 0) {
 }
 
 const deadline = Date.now() + SMOKE_TIMEOUT_MS;
-const readySnippet =
-  "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health/ready')";
+const readySnippet = [
+  "import json, urllib.request; ",
+  "r=urllib.request.urlopen('http://127.0.0.1:8090/health/ready'); ",
+  "body=json.loads(r.read().decode()); ",
+  "assert r.status==200 and body.get('status')=='ready', body",
+].join("");
 
 if (!waitForExec("python-backend", readySnippet, deadline)) {
   console.error("python-backend readiness timed out");
