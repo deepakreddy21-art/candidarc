@@ -86,47 +86,88 @@ def main() -> int:
     allowed = ["Python", "PyTorch", "OpenSearch"]
     jd = "Northwind Labs fictional role seeking Python platform engineer " + ("detail " * 8)
 
-    resume = None
-    for version in range(0, 5):
-        path = "/v1/resumes/generate" if version == 0 else "/v1/resumes/regenerate"
-        gen = _post(
-            path,
+    mistake_memory = [
+        {
+            "category": "truthfulness",
+            "rule": "unsupported memory phrase",
+            "severity": "major",
+            "originating_audit": "hr-1",
+            "affected_version": "V0",
+        }
+    ]
+    rejected = [
+        {
+            "severity": "major",
+            "section": "experience",
+            "title": "unsupported rejected finding",
+            "explanation": "Must remain rejected",
+            "before_text": "",
+            "suggested_text": "Unsupported rejected Kubernetes claim",
+            "expected_score_impact": 0,
+            "evidence_ids": ["ev-smoke-1"],
+            "status": "rejected",
+            "rejection_reason": "UNSUPPORTED_TECHNOLOGY",
+        }
+    ]
+    generated = _post(
+        "/v1/resumes/generate",
+        {
+            "context": {**ctx, "request_id": "req_smoke_generate_v0"},
+            "absolute_version": 0,
+            "cycle_step": 0,
+            "job_description": jd,
+            "evidence": evidence,
+            "allowed_technologies": allowed,
+        },
+        idempotency_key="smoke-lifecycle-generate-v0",
+    )
+    resume = generated["resume"]
+    print(f"generate v0 ok score={resume.get('score')}")
+
+    for version, (lens, reviews, produces) in enumerate(AUDIT_SEQUENCE, start=1):
+        previous_resume = resume
+        audit = _post(
+            "/v1/resumes/audit",
             {
-                "context": {**ctx, "request_id": f"req_smoke_gen_{version}", "schema_version": "2026-09-resume-intelligence.v1"},
+                "context": {**ctx, "request_id": f"req_smoke_audit_{lens}"},
+                "lens": lens,
+                "reviews_version": reviews,
+                "produces_version": produces,
+                "resume": previous_resume,
+                "evidence": evidence,
+                "job_description": jd,
+                "allowed_technologies": allowed,
+            },
+            idempotency_key=f"smoke-lifecycle-audit-{lens}",
+        )
+        assert audit["lens"] == lens, audit
+        assert audit.get("findings"), audit
+        accepted_text = audit["findings"][0].get("edited_text") or audit["findings"][0]["suggested_text"]
+        resume = _post(
+            "/v1/resumes/regenerate",
+            {
+                "context": {**ctx, "request_id": f"req_smoke_regenerate_v{version}"},
                 "absolute_version": version,
                 "cycle_step": version,
                 "job_description": jd,
                 "evidence": evidence,
                 "allowed_technologies": allowed,
-                "previous_resume": resume,
+                "previous_resume": previous_resume,
+                "accepted_findings": audit["findings"],
+                "rejected_findings": rejected + (audit.get("rejected_findings") or []),
+                "mistake_memory": mistake_memory,
             },
-            idempotency_key=f"smoke-gen-v{version}",
+            idempotency_key=f"smoke-lifecycle-regenerate-v{version}",
+        )["resume"]
+        blob = " ".join(
+            bullet["text"]
+            for section in resume["sections"]
+            for bullet in section.get("bullets") or []
         )
-        resume = gen["resume"]
-        print(f"{'generate' if version == 0 else 'regenerate'} v{version} ok score={resume.get('score')}")
-
-        if version < 4:
-            lens, reviews, produces = AUDIT_SEQUENCE[version]
-            audit = _post(
-                "/v1/resumes/audit",
-                {
-                    "context": {
-                        **ctx,
-                        "request_id": f"req_smoke_audit_{lens}",
-                        "schema_version": "2026-09-resume-intelligence.v1",
-                    },
-                    "lens": lens,
-                    "reviews_version": reviews,
-                    "produces_version": produces,
-                    "resume": resume,
-                    "evidence": evidence,
-                    "job_description": jd,
-                    "allowed_technologies": allowed,
-                },
-                idempotency_key=f"smoke-audit-{lens}",
-            )
-            assert audit["lens"] == lens, audit
-            print(f"audit {lens} ok findings={len(audit.get('findings') or [])}")
+        assert accepted_text in blob, (lens, accepted_text)
+        assert "Unsupported rejected Kubernetes claim" not in blob
+        assert "unsupported memory phrase" not in blob.lower()
+        print(f"audit {lens} → regenerate v{version} ok score={resume.get('score')}")
 
     final_qa = _post(
         "/v1/resumes/final-qa",
@@ -141,6 +182,27 @@ def main() -> int:
     if not final_qa.get("passed"):
         raise SystemExit(f"final-qa did not pass: {final_qa}")
     print("final-qa passed")
+
+    score_v4 = resume["score"]
+    enhancement = _post(
+        "/v1/resumes/regenerate",
+        {
+            "context": {**ctx, "request_id": "req_smoke_enhancement_v9"},
+            "absolute_version": 9,
+            "cycle_step": 0,
+            "job_description": jd,
+            "evidence": evidence,
+            "allowed_technologies": allowed,
+            "previous_resume": resume,
+            "accepted_findings": [],
+            "rejected_findings": rejected,
+            "mistake_memory": mistake_memory,
+        },
+        idempotency_key="smoke-lifecycle-enhancement-v9",
+    )["resume"]
+    assert enhancement["absolute_version"] == 9
+    assert enhancement["score"] == score_v4, "score increased from version number alone"
+    print("enhancement cycle v9 preserved content-derived score")
     print("smoke_lifecycle PASSED")
     return 0
 

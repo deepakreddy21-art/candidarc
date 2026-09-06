@@ -49,6 +49,15 @@ def apply_accepted_findings(
     if not actionable:
         return previous
 
+    def applies(finding: AuditFinding, bullet: ResumeBullet, section_type: str) -> bool:
+        if finding.before_text and finding.before_text in bullet.text:
+            return True
+        cited = set(bullet.evidence_ids)
+        finding_evidence = set(finding.evidence_ids)
+        if finding.evidence_source:
+            finding_evidence.add(finding.evidence_source)
+        return finding.section == section_type and bool(cited.intersection(finding_evidence))
+
     sections = []
     for section in previous.sections:
         new_bullets = None
@@ -57,7 +66,7 @@ def apply_accepted_findings(
             for bullet in section.bullets:
                 text = bullet.text
                 for finding in actionable:
-                    if finding.section == section.type or finding.before_text in text:
+                    if applies(finding, bullet, section.type):
                         text = _apply_finding_text(text, finding)
                 # Respect mistake memory: do not reintroduce banned phrases
                 if any(banned in text.lower() for banned in banned_phrases):
@@ -71,7 +80,7 @@ def apply_accepted_findings(
                 for bullet in item.bullets:
                     text = bullet.text
                     for finding in actionable:
-                        if finding.section == section.type or finding.before_text in text:
+                        if applies(finding, bullet, section.type):
                             text = _apply_finding_text(text, finding)
                     if any(banned in text.lower() for banned in banned_phrases):
                         text = bullet.text

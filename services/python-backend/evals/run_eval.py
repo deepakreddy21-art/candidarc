@@ -11,7 +11,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
-from app.domain.schemas import EvidenceItem, RequestContext, ResearchFinding, ResumeDocument
+from app.domain.schemas import EvidenceItem, RequestContext, ResearchFinding, ResumeDocument, UserConfirmation
 from app.main import create_app
 from app.modules.guardrails.service import ATS_MARKERS, validate_resume_claims
 from app.modules.retrieval import service as retrieval
@@ -52,7 +52,8 @@ def _load_adversarial_fixtures() -> list[dict[str, Any]]:
         return []
     fixtures: list[dict[str, Any]] = []
     for path in sorted(ADVERSARIAL_DIR.glob("*.json")):
-        fixtures.append(json.loads(path.read_text(encoding="utf-8-sig")))
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+        fixtures.extend(loaded if isinstance(loaded, list) else [loaded])
     return fixtures
 
 
@@ -304,26 +305,77 @@ def _run_adversarial_cases() -> PersonaResult:
     """Assert expected guardrail violations without full generation lifecycle."""
     persona = PersonaResult(persona_id="_adversarial")
     for fixture in _load_adversarial_fixtures():
-        evidence = [EvidenceItem.model_validate(item) for item in fixture["evidence"]]
-        resume = ResumeDocument.model_validate(fixture["resume"])
+        evidence_rows = []
+        for row in fixture["evidence"]:
+            data = {
+                "tenant_id": "ten_adv",
+                "owner_user_id": "user_adv",
+                "title": "Adversarial evidence",
+                "technologies": [],
+                "verification_status": "user_attested",
+                "candidate_confirmation_status": "confirmed",
+                "confidence": "high",
+                **row,
+            }
+            evidence_rows.append(data)
+        evidence = [EvidenceItem.model_validate(item) for item in evidence_rows]
+        if "resume" in fixture:
+            resume = ResumeDocument.model_validate(fixture["resume"])
+        else:
+            score = {
+                "atsCompatibility": 50, "jobAlignment": 50, "recruiterReadability": 50, "impact": 50,
+                "quantification": 50, "technicalDepth": 50, "competencyCoverage": 50,
+                "evidenceConfidence": 50, "writingQuality": 50, "formatIntegrity": 50,
+            }
+            bullet = {
+                "text": fixture["claim_text"],
+                "evidence_ids": fixture.get("evidence_ids") or [evidence[0].id],
+                "technologies": fixture.get("technologies") or [],
+            }
+            section: dict[str, Any] = {
+                "type": fixture.get("section_type", "experience"),
+                "title": fixture.get("section_title", "Experience"),
+                "order": 0,
+            }
+            if fixture.get("resume_item"):
+                section["items"] = [{**fixture["resume_item"], "bullets": [bullet]}]
+            else:
+                section["bullets"] = [bullet]
+            resume = ResumeDocument.model_validate(
+                {
+                    "absolute_version": 0,
+                    "cycle_step": 0,
+                    "version_number": 0,
+                    "score": 50,
+                    "score_breakdown": score,
+                    "notes": f"adversarial {fixture['id']}",
+                    "sections": [section],
+                }
+            )
         research_raw = fixture.get("research_findings") or []
         research = [ResearchFinding.model_validate(r) for r in research_raw]
+        confirmations = [UserConfirmation.model_validate(row) for row in fixture.get("user_confirmations") or []]
         violations = set(
             validate_resume_claims(
                 resume,
                 evidence,
                 list(fixture.get("allowed_technologies") or []),
+                tenant_id=fixture.get("tenant_id"),
+                owner_user_id=fixture.get("owner_user_id"),
                 research_findings=research,
+                job_description=fixture.get("job_description"),
+                user_confirmations=confirmations,
             )
         )
         expected = set(fixture.get("expected_violations") or [])
         missing = sorted(expected - violations)
+        unexpected = sorted(violations) if fixture.get("expected_clean") else []
         persona.checks.append(
             CheckResult(
                 f"adversarial_{fixture.get('id', 'case')}",
-                not missing,
-                "ok" if not missing else f"missing={missing} got={sorted(violations)}",
-                category="adversarial",
+                not missing and not unexpected,
+                "ok" if not missing and not unexpected else f"missing={missing} unexpected={unexpected} got={sorted(violations)}",
+                category=f"claim:{fixture.get('claim_category', 'uncategorized')}",
             )
         )
     return persona
