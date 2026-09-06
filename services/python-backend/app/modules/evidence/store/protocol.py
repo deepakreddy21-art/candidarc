@@ -9,6 +9,7 @@ from typing import Protocol, runtime_checkable
 from app.core.errors import (
     EVIDENCE_CROSS_TENANT,
     EVIDENCE_NOT_FOUND,
+    EVIDENCE_SCHEMA_INCOMPATIBLE,
     EVIDENCE_STORE_UNAVAILABLE,
 )
 
@@ -125,6 +126,7 @@ class EvidenceStore(Protocol):
 __all__ = [
     "EVIDENCE_CROSS_TENANT",
     "EVIDENCE_NOT_FOUND",
+    "EVIDENCE_SCHEMA_INCOMPATIBLE",
     "EVIDENCE_STORE_UNAVAILABLE",
     "EvidenceChunkRecord",
     "EvidenceDocumentRecord",

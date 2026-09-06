@@ -33,7 +33,7 @@ async def create_evidence_store(
     *,
     openai_client: Any | None = None,
 ) -> tuple[EvidenceStore, EmbeddingProvider]:
-    """Construct store + embedder. Production requires DATABASE_URL + pgvector."""
+    """Construct store + embedder. Production requires DATABASE_URL + migrated pgvector schema."""
     cfg = settings or get_settings()
     backend = resolve_evidence_store_backend(cfg)
     embedder = build_embedding_provider(
@@ -57,13 +57,16 @@ async def create_evidence_store(
         statement_timeout_ms=cfg.evidence_store_timeout_ms,
         command_timeout=cfg.evidence_store_timeout_ms / 1000.0,
     )
-    await store.connect()
+    try:
+        await store.connect()
+    except EvidenceStoreError:
+        raise
     healthy = await store.health_check()
     if not healthy:
         await store.close()
         raise EvidenceStoreError(
             EVIDENCE_STORE_UNAVAILABLE,
-            "Postgres/pgvector evidence store failed health check",
+            "Postgres/pgvector evidence store failed health check (schema must be migrated via 0009)",
         )
     return store, embedder
 

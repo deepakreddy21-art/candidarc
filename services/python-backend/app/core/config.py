@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     openai_final_model: str = "gpt-4o-mini"
     embedding_provider: Literal["mock", "openai"] = "mock"
     embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = Field(default=64, ge=8, le=3072, alias="EMBEDDING_DIMENSIONS")
+    embedding_dimensions: int = Field(default=1536, ge=8, le=3072, alias="EMBEDDING_DIMENSIONS")
     ranker_backend: Literal["hybrid", "cross_encoder"] = "hybrid"
     ranker_artifact_path: str | None = Field(default=None, alias="RANKER_ARTIFACT_PATH")
     ranker_artifact_checksum: str | None = Field(default=None, alias="RANKER_ARTIFACT_CHECKSUM")

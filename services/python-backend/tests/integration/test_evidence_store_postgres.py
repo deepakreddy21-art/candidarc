@@ -1,4 +1,4 @@
-"""Postgres evidence store integration — skipped without DATABASE_URL/pgvector."""
+"""Postgres evidence store integration — skipped without migrated DATABASE_URL/pgvector."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ import os
 
 import pytest
 
+from app.core.errors import EVIDENCE_SCHEMA_INCOMPATIBLE
 from app.modules.evidence.store.embeddings import MockEmbeddingProvider
+from app.modules.evidence.store.protocol import EvidenceStoreError
 
 pytestmark = pytest.mark.asyncio
 
@@ -28,21 +30,26 @@ async def pg_store():  # type: ignore[no-untyped-def]
         pytest.skip(_skip_reason())
     from app.modules.evidence.store.postgres import PostgresEvidenceStore
 
-    store = PostgresEvidenceStore(dsn=DSN, embedding_dimensions=32, statement_timeout_ms=5000)
+    # Must match migration 0009 vector(1536); store no longer ALTER TABLE at runtime.
+    store = PostgresEvidenceStore(dsn=DSN, embedding_dimensions=1536, statement_timeout_ms=5000)
     try:
         await store.connect()
+    except EvidenceStoreError as exc:
+        if exc.code == EVIDENCE_SCHEMA_INCOMPATIBLE:
+            pytest.skip(f"evidence schema not migrated: {exc.message}")
+        pytest.skip(f"pgvector unavailable: {exc}")
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"pgvector unavailable: {exc}")
     if not await store.health_check():
         await store.close()
-        pytest.skip("pgvector health check failed")
+        pytest.skip("pgvector health check failed (apply migration 0009)")
     yield store
     await store.close()
 
 
 @pytest.fixture()
 def embedder() -> MockEmbeddingProvider:
-    return MockEmbeddingProvider(dimensions=32)
+    return MockEmbeddingProvider(dimensions=1536)
 
 
 async def test_postgres_upsert_search_delete_cascade(pg_store, embedder: MockEmbeddingProvider) -> None:  # type: ignore[no-untyped-def]

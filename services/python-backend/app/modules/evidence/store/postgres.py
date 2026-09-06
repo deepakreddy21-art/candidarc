@@ -1,15 +1,28 @@
 """asyncpg + pgvector EvidenceStore implementation.
 
-Tables (match TS migration naming): evidence_documents, evidence_chunks.
+Schema is owned by TypeScript migration `0009_evidence_embeddings.sql`.
+Python never applies DDL at runtime — connect() only verifies readiness.
+
+Documentation mirror of the migrated schema (do not execute):
+
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE TABLE evidence_documents (...);
+    CREATE TABLE evidence_chunks (... embedding vector(N) ...);
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from re import IGNORECASE, search
 from typing import Any
 from uuid import uuid4
 
-from app.core.errors import EVIDENCE_CROSS_TENANT, EVIDENCE_NOT_FOUND, EVIDENCE_STORE_UNAVAILABLE
+from app.core.errors import (
+    EVIDENCE_CROSS_TENANT,
+    EVIDENCE_NOT_FOUND,
+    EVIDENCE_SCHEMA_INCOMPATIBLE,
+    EVIDENCE_STORE_UNAVAILABLE,
+)
 from app.modules.evidence.store.protocol import (
     EvidenceChunkRecord,
     EvidenceDocumentRecord,
@@ -17,48 +30,11 @@ from app.modules.evidence.store.protocol import (
     EvidenceStoreError,
 )
 
-SCHEMA_SQL = """
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE IF NOT EXISTS evidence_documents (
-    document_id TEXT NOT NULL,
-    tenant_id TEXT NOT NULL,
-    owner_user_id TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    source_identifier TEXT NOT NULL,
-    source_span TEXT NULL,
-    content_hash TEXT NOT NULL,
-    embedding_model TEXT NOT NULL,
-    embedding_dimensions INTEGER NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (tenant_id, owner_user_id, document_id)
-);
-
-CREATE TABLE IF NOT EXISTS evidence_chunks (
-    chunk_id TEXT PRIMARY KEY,
-    document_id TEXT NOT NULL,
-    tenant_id TEXT NOT NULL,
-    owner_user_id TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    source_identifier TEXT NOT NULL,
-    source_span TEXT NULL,
-    content_hash TEXT NOT NULL,
-    chunk_text TEXT NOT NULL,
-    embedding vector(1536),
-    embedding_model TEXT NOT NULL,
-    embedding_dimensions INTEGER NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT evidence_chunks_document_fk
-        FOREIGN KEY (tenant_id, owner_user_id, document_id)
-        REFERENCES evidence_documents (tenant_id, owner_user_id, document_id)
-        ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS evidence_chunks_owner_idx
-    ON evidence_chunks (tenant_id, owner_user_id);
-"""
+# Kept as a documentation pointer only — never executed. See migration 0009.
+SCHEMA_SQL_DOCS = (
+    "Owned by server/database/migrations/0009_evidence_embeddings.sql. "
+    "Python connect() verifies extension/tables/columns/dimension read-only."
+)
 
 
 def _to_vector_literal(values: list[float]) -> str:
@@ -95,6 +71,89 @@ class PostgresEvidenceStore:
         self._command_timeout = command_timeout
         self._pool: Any | None = None
         self._ready = False
+        self._schema_error: str | None = None
+
+    async def _verify_schema(self, conn: Any) -> None:
+        """Read-only checks that migration 0009 (or equivalent) was applied."""
+        has_vector = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')")
+        if not has_vector:
+            raise EvidenceStoreError(
+                EVIDENCE_SCHEMA_INCOMPATIBLE,
+                "pgvector extension 'vector' is not installed; apply migration 0009",
+            )
+
+        for table in ("evidence_documents", "evidence_chunks"):
+            exists = await conn.fetchval("SELECT to_regclass($1)", f"public.{table}")
+            if exists is None:
+                raise EvidenceStoreError(
+                    EVIDENCE_SCHEMA_INCOMPATIBLE,
+                    f"Missing table {table}; apply migration 0009_evidence_embeddings.sql",
+                )
+
+        required_doc_cols = {
+            "document_id",
+            "tenant_id",
+            "owner_user_id",
+            "source_type",
+            "source_identifier",
+            "content_hash",
+            "embedding_model",
+            "embedding_dimensions",
+        }
+        required_chunk_cols = required_doc_cols | {"chunk_id", "chunk_text", "embedding"}
+        for table, required in (
+            ("evidence_documents", required_doc_cols),
+            ("evidence_chunks", required_chunk_cols),
+        ):
+            rows = await conn.fetch(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = $1
+                """,
+                table,
+            )
+            present = {row["column_name"] for row in rows}
+            missing = sorted(required - present)
+            if missing:
+                raise EvidenceStoreError(
+                    EVIDENCE_SCHEMA_INCOMPATIBLE,
+                    f"Table {table} missing columns {missing}; apply migration 0009",
+                )
+
+        # embedding column type: vector(N) — verify declared dimension when available
+        dim_row = await conn.fetchrow(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod) AS formatted
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = 'evidence_chunks'
+              AND a.attname = 'embedding'
+              AND NOT a.attisdropped
+            """
+        )
+        if dim_row is None:
+            raise EvidenceStoreError(
+                EVIDENCE_SCHEMA_INCOMPATIBLE,
+                "evidence_chunks.embedding column missing; apply migration 0009",
+            )
+        formatted = str(dim_row["formatted"] or "")
+        # format_type for vector(1536) looks like 'vector(1536)'
+        match = search(r"vector\((\d+)\)", formatted, flags=IGNORECASE)
+        if match is None and "vector" not in formatted.lower():
+            raise EvidenceStoreError(
+                EVIDENCE_SCHEMA_INCOMPATIBLE,
+                f"evidence_chunks.embedding type is {formatted!r}, expected vector(...)",
+            )
+        if match is not None:
+            declared = int(match.group(1))
+            if declared != self._embedding_dimensions:
+                raise EvidenceStoreError(
+                    EVIDENCE_SCHEMA_INCOMPATIBLE,
+                    f"embedding dimension mismatch: DB={declared} config={self._embedding_dimensions}",
+                )
 
     async def connect(self) -> None:
         try:
@@ -116,27 +175,23 @@ class PostgresEvidenceStore:
             )
             async with self._pool.acquire() as conn:
                 await conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
-                await conn.execute(SCHEMA_SQL)
                 await register_vector(conn)
-                # Ensure embedding column dimension matches config when possible
-                await conn.execute(
-                    f"""
-                    DO $$
-                    BEGIN
-                      BEGIN
-                        ALTER TABLE evidence_chunks
-                          ALTER COLUMN embedding TYPE vector({self._embedding_dimensions});
-                      EXCEPTION WHEN others THEN
-                        NULL;
-                      END;
-                    END $$;
-                    """
-                )
+                await self._verify_schema(conn)
             self._ready = True
-        except EvidenceStoreError:
+            self._schema_error = None
+        except EvidenceStoreError as exc:
+            self._ready = False
+            self._schema_error = exc.message
+            if self._pool is not None:
+                await self._pool.close()
+                self._pool = None
             raise
         except Exception as exc:  # noqa: BLE001
             self._ready = False
+            self._schema_error = str(exc)
+            if self._pool is not None:
+                await self._pool.close()
+                self._pool = None
             raise EvidenceStoreError(EVIDENCE_STORE_UNAVAILABLE, f"Postgres evidence store unavailable: {exc}") from exc
 
     async def close(self) -> None:
@@ -429,12 +484,12 @@ class PostgresEvidenceStore:
             raise EvidenceStoreError(EVIDENCE_STORE_UNAVAILABLE, f"List failed: {exc}") from exc
 
     async def health_check(self) -> bool:
-        if self._pool is None:
+        if self._pool is None or not self._ready:
             return False
         try:
             async with self._pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
-                has_vector = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')")
-                return bool(has_vector)
+                await self._verify_schema(conn)
+                return True
         except Exception:  # noqa: BLE001
             return False

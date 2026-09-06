@@ -105,7 +105,9 @@ def create_app() -> FastAPI:
         errors = runtime_settings.ready_errors()
         store_err = getattr(request.app.state, "evidence_store_error", None)
         store = getattr(request.app.state, "evidence_store", None)
-        if runtime_settings.app_mode == "production":
+        # Production always requires a healthy store; postgres-backed demo/smoke must too.
+        require_store = runtime_settings.app_mode == "production" or runtime_settings.evidence_store == "postgres"
+        if require_store:
             if store_err is not None:
                 errors.append(f"Evidence store unavailable: {store_err.message}")
             elif store is None:
