@@ -23,6 +23,7 @@
     "test:watch": "vitest",
     "test:integration": "vitest run src/test/integration",
     "test:production": "vitest run src/test/production-readiness",
+    "test:python-cutover": "vitest run src/test/python-cutover-routing.test.ts src/test/python-cutover-journey.test.ts",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx server/database/migrate.ts",
