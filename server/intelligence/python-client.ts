@@ -113,11 +113,11 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
   if (code === "IDEMPOTENCY_KEY_REUSED" || (status === 409 && code === "IDEMPOTENCY_KEY_REUSED")) {
     return new AppError("IDEMPOTENCY_KEY_REUSED", "This request was already processed", 409, details);
   }
-  if (code === "IDEMPOTENCY_IN_PROGRESS") {
+  if (code === "IDEMPOTENCY_IN_PROGRESS" || (status === 409 && code === "IDEMPOTENCY_IN_PROGRESS")) {
     return new AppError(
       "IDEMPOTENCY_IN_PROGRESS",
       "A matching request is already in progress",
-      503,
+      409,
       details,
       true,
     );
@@ -495,19 +495,15 @@ function parseTenantAllowlist(raw: string): Set<string> {
 
 /**
  * Tenant-aware backend resolution.
- * Global `typescript` env is a kill switch. python/shadow require allowlist or metadata override.
+ * Global `typescript` env is a kill switch. `python`/`shadow` require an explicit tenant allowlist.
+ * (Tenants table has no metadata column — application metadata is not used for routing.)
  */
 export function resolveIntelligenceBackendForTenant(opts: {
   tenantId: string;
-  tenantMetadata?: Record<string, unknown> | null;
 }): IntelligenceBackendMode {
   const envMode = getEnv().RESUME_INTELLIGENCE_BACKEND;
+  // Global kill switch — instant rollback for all tenants.
   if (envMode === "typescript") return "typescript";
-
-  const metaRaw = opts.tenantMetadata?.resumeIntelligenceBackend;
-  if (metaRaw === "python" || metaRaw === "shadow" || metaRaw === "typescript") {
-    return metaRaw;
-  }
 
   if (envMode === "python" || envMode === "shadow") {
     const allowlist = parseTenantAllowlist(getEnv().PYTHON_INTELLIGENCE_TENANT_ALLOWLIST);
@@ -516,6 +512,143 @@ export function resolveIntelligenceBackendForTenant(opts: {
   }
 
   return "typescript";
+}
+
+const RESEARCH_CATEGORIES = new Set([
+  "role",
+  "company",
+  "team",
+  "project",
+  "technology",
+  "hiring-signal",
+]);
+
+/** Map Python research synthesize response into the TypeScript researchSchema shape. */
+export function mapPythonResearchToTs(py: {
+  findings: Array<{
+    category: string;
+    title: string;
+    summary: string;
+    confidence: "high" | "medium" | "low";
+    status?: string;
+    source_ids?: string[];
+  }>;
+  sources: Array<{
+    id: string;
+    url: string;
+    title: string;
+    accessed_at: string;
+    supporting_text: string;
+    confidence?: "high" | "medium" | "low";
+    classification?: "explicit" | "inferred" | "uncertain";
+    relevance?: number;
+  }>;
+  overall_confidence: number;
+  company_research_status?: string | null;
+}) {
+  const statusMap: Record<string, "verified" | "inferred" | "unverified" | "disputed"> = {
+    verified: "verified",
+    supported: "verified",
+    inferred: "inferred",
+    uncertain: "inferred",
+    unverified: "unverified",
+    unavailable: "unverified",
+    disputed: "disputed",
+  };
+  return {
+    findings: py.findings.map((f) => ({
+      category: (RESEARCH_CATEGORIES.has(f.category) ? f.category : "company") as
+        | "role"
+        | "company"
+        | "team"
+        | "project"
+        | "technology"
+        | "hiring-signal",
+      title: f.title,
+      summary: f.summary,
+      confidence: f.confidence,
+      status: statusMap[String(f.status ?? "inferred")] ?? "inferred",
+      sourceIds: f.source_ids ?? [],
+    })),
+    sources: py.sources.map((s) => ({
+      id: s.id,
+      url: s.url,
+      title: s.title,
+      accessedAt: s.accessed_at,
+      supportingText: s.supporting_text,
+      confidence: s.confidence ?? "medium",
+      classification: s.classification ?? "explicit",
+      relevance:
+        typeof s.relevance === "number"
+          ? `relevance=${s.relevance.toFixed(2)}`
+          : "Permitted public source collected for this job application",
+    })),
+    overallConfidence: Math.round(Math.min(1, Math.max(0, py.overall_confidence)) * 100),
+    companyResearchStatus:
+      py.company_research_status === "unavailable" ? ("unavailable" as const) : ("available" as const),
+  };
+}
+
+/** Map Python evidence match response into the TypeScript evidenceMatchSchema shape. */
+export function mapPythonEvidenceMatchToTs(py: {
+  evidence_coverage: number;
+  rows: Array<{
+    requirement: string;
+    importance?: "required" | "preferred" | "responsibility";
+    evidence_ids: string[];
+    evidence_strength: "strong" | "partial" | "none";
+    resume_usage?: "use" | "consider" | "skip";
+    coverage_gap?: string | null;
+  }>;
+}) {
+  const strengthMap = {
+    strong: "high" as const,
+    partial: "medium" as const,
+    none: "low" as const,
+  };
+  const usageMap = {
+    use: "used" as const,
+    consider: "partial" as const,
+    skip: "unused" as const,
+  };
+  return {
+    rows: py.rows.map((row) => ({
+      requirement: row.requirement,
+      importance: row.importance === "preferred" ? ("preferred" as const) : ("required" as const),
+      evidenceIds: row.evidence_ids,
+      evidenceStrength: strengthMap[row.evidence_strength] ?? "low",
+      resumeUsage: usageMap[row.resume_usage ?? "consider"] ?? "partial",
+      coverageGap: row.coverage_gap ?? undefined,
+    })),
+    evidenceCoverage: Math.round(Math.min(1, Math.max(0, py.evidence_coverage)) * 100),
+  };
+}
+
+/** Map Python job parse into JobExtractionOutput. */
+export function mapPythonJobParseToExtraction(py: {
+  title?: string | null;
+  company?: string | null;
+  role?: string | null;
+  location?: string | null;
+  employment_type?: string | null;
+  seniority?: string | null;
+  required_qualifications?: string[];
+  preferred_qualifications?: string[];
+  responsibilities?: string[];
+  target_technologies?: string[];
+}) {
+  return {
+    title: py.title ?? undefined,
+    company: py.company ?? undefined,
+    role: py.role ?? undefined,
+    location: py.location ?? undefined,
+    employmentType: py.employment_type ?? undefined,
+    seniority: py.seniority ?? undefined,
+    requiredQualifications: py.required_qualifications ?? [],
+    preferredQualifications: py.preferred_qualifications ?? [],
+    responsibilities: py.responsibilities ?? [],
+    targetTechnologies: py.target_technologies ?? [],
+  };
 }
 
 export type GenerateResumeInput = {
@@ -943,17 +1076,19 @@ export class PythonIntelligenceClient {
           typeof detail.message === "string" && detail.message
             ? detail.message.slice(0, 200)
             : `Python backend error ${response.status}`;
+        // In-progress is workflow-retryable but proves the backend is reachable — never trips the circuit.
+        const inProgress = code === "IDEMPOTENCY_IN_PROGRESS";
         const pyError = new PythonBackendError({
           status: response.status,
           code,
           sanitizedMessage,
           details: detail,
-          retryable: isRetryableStatus(response.status),
+          retryable: inProgress || isRetryableStatus(response.status),
         });
-        if (pyError.retryable) {
+        if (pyError.retryable && !inProgress) {
           this.recordRetryableFailure();
         } else {
-          // Non-retryable HTTP response proves the backend is reachable.
+          // Reachable non-infra response (incl. 409 in-progress / validation).
           this.recordSuccess();
         }
         logger.warn(

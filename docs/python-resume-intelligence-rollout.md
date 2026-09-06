@@ -12,11 +12,14 @@ These are the mechanisms implemented in `server/config/env.ts`, `server/intellig
 | --- | --- |
 | Global kill switch | `RESUME_INTELLIGENCE_BACKEND=typescript` forces TypeScript for **all** tenants. This is the instant rollback. |
 | Env mode + allowlist | When env is `python` or `shadow`, only tenants listed in `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST` (comma-separated ids) get that mode. Others stay on TypeScript. |
-| Tenant metadata override | Tenant metadata key `resumeIntelligenceBackend` (`typescript` \| `python` \| `shadow`) overrides allowlist routing when the global env is **not** the typescript kill switch. |
+| No tenant-metadata override | The `tenants` table has **no metadata column**. Routing does **not** read application or tenant metadata for backend selection — allowlist only. |
 | Deterministic shadow sampling | `shouldSampleShadow(seed)` uses `sha256(seed)[0] % 100 < SHADOW_SAMPLE_PERCENT` — **not** `Math.random()`. Seed is typically `tenantId:applicationPublicId:workflowRunPublicId`. |
-| Shadow coverage | When backend resolves to `shadow` and the seed is sampled, the pipeline fire-and-forgets Python calls for **generate**, **audit**, and **final QA**. Results are comparison logs only (sanitized counts/scores/latency). Customer-facing output stays TypeScript. Shadow calls use `shadow:` idempotency keys and are **non-billable** (no customer usage commit for the shadow path). |
-| Unknown cost | Provider usage with missing/unknown `estimatedCostCents` is **not billed** as `$0` — `commit` skips the `provider_cost` line when cost is null/`costUnknown`. |
+| Authoritative Python stages | When resolved backend is `python`, the pipeline uses FastAPI for **parse**, **research synthesize**, **evidence match**, **generate/regenerate**, **HR/EM audits**, and **final QA**. TypeScript still owns source collection, orchestration, persistence, billing, and PDF/DOCX. |
+| Stage metadata | Workflow events record `{ executionBackend, operation }` for each intelligence stage (no prompts/resumes/secrets). |
+| Shadow coverage | When backend resolves to `shadow` and the seed is sampled, the pipeline fire-and-forgets Python calls for **generate**, **audit**, and **final QA**. Results are comparison logs only. Customer-facing output stays TypeScript. Shadow is **non-billable**. |
+| Unknown cost | Provider usage with missing/unknown cost writes a non-billable `costStatus: "unknown"` marker — never a known zero-dollar charge. Token rows keep `costCents=0`; monetary amount lives only on `provider_cost`. |
 | Pricing table | Python estimates use `candidarc-pricing@v2` (`services/python-backend/app/core/pricing.py`). Rates are observability estimates and **require review** before any production billing. |
+| Usage isolation | Usage ledger lookups/updates are scoped by `(tenant_id, idempotency_key)` (migration `0010_usage_ledger_tenant_idempotency.sql`). |
 
 ## Executable sequence
 
@@ -26,9 +29,9 @@ These are the mechanisms implemented in `server/config/env.ts`, `server/intellig
 4. **Readiness / schema checks** — Verify `/health/live`, `/health/ready`, pgvector extension, and evidence tables. Confirm embedding dimensions match config (**1536**). Fail closed if the store is unavailable. CI job `python-pgvector` runs the Postgres evidence-store suite with `RUN_PGVECTOR_TESTS=1` (skips are failures).
 5. **Shadow for approved tenants** — Set `RESUME_INTELLIGENCE_BACKEND=shadow`, populate `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST`, set `SHADOW_SAMPLE_PERCENT=1` (then 10). Shadow never charges customers and never serves Python output.
 6. **Compare gates** — Side-by-side vs TypeScript baseline on unsupported-claim / truthfulness rate, error rate, P95 latency, token cost / cost per resume, audit acceptance, final QA pass rate.
-7. **Internal Python canary** — Route allowlisted internal tenants to Python (`RESUME_INTELLIGENCE_BACKEND=python` + allowlist, and/or tenant metadata `resumeIntelligenceBackend=python`).
-8. **Small customer canary** — Single-digit % of eligible customer traffic (allowlist / metadata), with stop thresholds armed.
-9. **Gradual ramp** — Expand allowlist / metadata cohort only while all gates stay green.
+7. **Internal Python canary** — Route allowlisted internal tenants to Python (`RESUME_INTELLIGENCE_BACKEND=python` + `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST`).
+8. **Small customer canary** — Single-digit % of eligible customer traffic via allowlist expansion, with stop thresholds armed.
+9. **Gradual ramp** — Expand allowlist only while all gates stay green.
 10. **Full Python** — Broaden only after sustained green gates. Keep TypeScript deployable for instant rollback via the global kill switch.
 
 ## Stop / rollback thresholds

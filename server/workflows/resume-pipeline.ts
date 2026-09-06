@@ -194,7 +194,7 @@ export class ResumePipeline {
   }
 
   private async reserve(run: WorkflowRunRecord, kind: string, units: number) {
-    const key = `usage:${run.idempotencyKey}:${run.stage}:${kind}`;
+    const key = `${run.tenantId}:usage:${run.idempotencyKey}:${run.stage}:${kind}`;
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind,
@@ -214,25 +214,44 @@ export class ResumePipeline {
     return hasUnansweredTechQuestions(questions);
   }
 
-  private async commit(key: string, costCents: string | null) {
-    const entry = await this.deps.usage.findByIdempotency(key);
+  private async commit(key: string, costCents: string | null, opts?: { tenantId?: string; billable?: boolean }) {
+    const tenantId = opts?.tenantId;
+    if (!tenantId) {
+      // Legacy callers must pass tenant — look up is unsafe without it.
+      throw new AppError("USAGE_TENANT_REQUIRED", "tenantId required to commit usage", 500);
+    }
+    const entry = await this.deps.usage.findByIdempotency(tenantId, key);
     if (!entry) return;
-    await this.deps.usage.updateStatus(key, "committed");
-    // Null cost means unknown — do not bill a provider_cost line as 0.
-    if (costCents == null) return;
-    if (costCents !== entry.costCents) {
+    if (entry.tenantId !== tenantId) {
+      throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
+    }
+    await this.deps.usage.updateStatus(tenantId, key, "committed");
+    const billable = opts?.billable !== false;
+    if (costCents == null) {
       await this.deps.usage.append({
         tenantId: entry.tenantId,
         userId: entry.userId,
         kind: "provider_cost",
         units: "0",
-        costCents,
+        costCents: "0",
         workflowRunId: entry.workflowRunId,
-        idempotencyKey: `${key}:cost`,
+        idempotencyKey: `${key}:cost-unknown`,
         status: "committed",
-        metadata: {},
+        metadata: { costStatus: "unknown", billable: false },
       });
+      return;
     }
+    await this.deps.usage.append({
+      tenantId: entry.tenantId,
+      userId: entry.userId,
+      kind: "provider_cost",
+      units: "0",
+      costCents,
+      workflowRunId: entry.workflowRunId,
+      idempotencyKey: `${key}:cost`,
+      status: "committed",
+      metadata: { costStatus: "known", billable },
+    });
   }
 
   private async recordProviderUsage(
@@ -241,11 +260,19 @@ export class ResumePipeline {
     result: {
       model: { provider: string; model: string };
       prompt: { version: string };
-      usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number | null; costUnknown?: boolean };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        estimatedCostCents: number | null;
+        costUnknown?: boolean;
+        pricingVersion?: string;
+      };
       latencyMs: number;
     },
+    opts?: { billable?: boolean; shadow?: boolean },
   ) {
     const costUnknown = result.usage.estimatedCostCents == null || result.usage.costUnknown === true;
+    const billable = opts?.billable !== false && opts?.shadow !== true;
     if (costUnknown) {
       logger.warn(
         {
@@ -258,12 +285,12 @@ export class ResumePipeline {
         "PROVIDER_COST_UNKNOWN",
       );
     }
+    // Token row carries units only — monetary amount lives solely on provider_cost.
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind: "input_tokens",
       units: String(result.usage.inputTokens + result.usage.outputTokens),
-      // When cost is unknown, keep this line at 0 and skip provider_cost billing in commit.
-      costCents: costUnknown ? "0" : String(result.usage.estimatedCostCents),
+      costCents: "0",
       workflowRunId: run.id,
       idempotencyKey: `${key}:provider-usage`,
       status: "committed",
@@ -271,11 +298,15 @@ export class ResumePipeline {
         provider: result.model.provider,
         model: result.model.model,
         promptVersion: result.prompt.version,
+        pricingVersion: result.usage.pricingVersion,
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
         latencyMs: result.latencyMs,
         estimatedCostCents: result.usage.estimatedCostCents,
         costUnknown,
+        costStatus: costUnknown ? "unknown" : "known",
+        billable: billable && !costUnknown,
+        shadow: opts?.shadow === true,
       },
     });
     logger.info(
@@ -287,6 +318,7 @@ export class ResumePipeline {
         latencyMs: result.latencyMs,
         tokens: result.usage.inputTokens + result.usage.outputTokens,
         costUnknown,
+        billable: billable && !costUnknown,
       },
       "pipeline AI stage completed",
     );
@@ -296,9 +328,27 @@ export class ResumePipeline {
     return estimatedCostCents == null ? null : String(estimatedCostCents);
   }
 
-  private async resolveBackend(tenantId: string, metadata?: Record<string, unknown> | null) {
+  private async resolveBackend(tenantId: string) {
     const { resolveIntelligenceBackendForTenant } = await import("../intelligence/python-client");
-    return resolveIntelligenceBackendForTenant({ tenantId, tenantMetadata: metadata ?? null });
+    return resolveIntelligenceBackendForTenant({ tenantId });
+  }
+
+  private async recordStageBackend(
+    run: WorkflowRunRecord,
+    operation: "parse" | "research" | "match" | "generate" | "regenerate" | "audit" | "final-qa",
+    executionBackend: "typescript" | "python",
+  ) {
+    await this.deps.workflows.appendEvent({
+      workflowRunId: run.id,
+      workflowRunPublicId: run.publicId,
+      tenantId: run.tenantId,
+      applicationId: run.applicationId,
+      applicationPublicId: run.applicationPublicId,
+      stage: run.stage,
+      status: run.status,
+      message: `intelligence:${operation}:${executionBackend}`,
+      metadata: { executionBackend, operation },
+    });
   }
 
   private async runResearch(run: WorkflowRunRecord) {
@@ -323,10 +373,36 @@ export class ResumePipeline {
         }
       }
       if (jobDescription.trim()) {
-        const extraction = await extractJobFromText(jobDescription, {
-          company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
-          role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
-        });
+        const backend = await this.resolveBackend(run.tenantId);
+        let extraction;
+        if (backend === "python") {
+          const { getPythonIntelligenceClient, mapPythonJobParseToExtraction, mapPythonBackendErrorToAppError } =
+            await import("../intelligence/python-client");
+          try {
+            await this.recordStageBackend(run, "parse", "python");
+            const parsed = await getPythonIntelligenceClient().parseJob({
+              context: {
+                tenantId: run.tenantId,
+                userId: application.ownerUserId ?? "unknown",
+                applicationId: run.applicationPublicId,
+                workflowRunId: run.publicId,
+                requestId: run.id,
+              },
+              jobText: jobDescription,
+              company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
+              role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
+            });
+            extraction = mapPythonJobParseToExtraction(parsed);
+          } catch (error) {
+            throw mapPythonBackendErrorToAppError(error);
+          }
+        } else {
+          await this.recordStageBackend(run, "parse", "typescript");
+          extraction = await extractJobFromText(jobDescription, {
+            company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
+            role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
+          });
+        }
         const applied = applyJobExtractionToApplication(application, extraction);
         application = await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
           company: applied.company,
@@ -374,8 +450,7 @@ export class ResumePipeline {
     }
 
     const usageKey = await this.reserve(run, "research", 1);
-    const provider = getProviderForRole("generation");
-    const prompt = getPrompt("research-synthesis");
+    const backend = await this.resolveBackend(run.tenantId);
     const jobDescription = typeof application.metadata?.jobDescription === "string"
       ? application.metadata.jobDescription
       : "";
@@ -383,6 +458,7 @@ export class ResumePipeline {
     const researchDepth = typeof application.metadata?.researchDepth === "string"
       ? application.metadata.researchDepth
       : "standard";
+    // Public source collection stays in TypeScript — Python never fetches arbitrary URLs.
     const collectedSources = await collectResearchSources({
       company: application.company,
       role: application.role,
@@ -391,30 +467,107 @@ export class ResumePipeline {
       researchDepth,
     });
 
-    const result = await provider.generateStructured({
-      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: `${prompt.system}
+    let result: {
+      data: z.infer<typeof researchSchema>;
+      model: { provider: string; model: string };
+      prompt: { version: string };
+      usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number | null; costUnknown?: boolean };
+      latencyMs: number;
+    };
+    let promptVersion = "research-synthesis";
+
+    if (backend === "python") {
+      const {
+        getPythonIntelligenceClient,
+        mapPythonResearchToTs,
+        mapPythonBackendErrorToAppError,
+        mapProviderUsage,
+      } = await import("../intelligence/python-client");
+      try {
+        await this.recordStageBackend(run, "research", "python");
+        const started = Date.now();
+        const py = await getPythonIntelligenceClient().synthesizeResearch({
+          context: {
+            tenantId: run.tenantId,
+            userId: application.ownerUserId ?? "unknown",
+            applicationId: run.applicationPublicId,
+            workflowRunId: run.publicId,
+            requestId: run.id,
+          },
+          company: application.company,
+          role: application.role,
+          jobDescription,
+          sources: collectedSources.map((source) => ({
+            id: source.id,
+            url: source.url,
+            title: source.title,
+            accessed_at: source.accessedAt,
+            supporting_text: source.excerpt,
+            confidence: source.confidence,
+            classification: "explicit",
+          })),
+        });
+        const mapped = mapPythonResearchToTs(py);
+        const usage = mapProviderUsage({
+          provider: "python",
+          model: "research-synthesize",
+          prompt_version: "research@python-v1",
+          latency_ms: Date.now() - started,
+          input_tokens: 0,
+          output_tokens: 0,
+          estimated_cost_cents: null,
+        });
+        result = {
+          data: mapped,
+          model: { provider: "python", model: "research-synthesize" },
+          prompt: { version: "research@python-v1" },
+          usage: {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            estimatedCostCents: usage.estimatedCostCents,
+            costUnknown: usage.costUnknown,
+          },
+          latencyMs: Date.now() - started,
+        };
+        promptVersion = "research@python-v1";
+      } catch (error) {
+        throw mapPythonBackendErrorToAppError(error);
+      }
+    } else {
+      await this.recordStageBackend(run, "research", "typescript");
+      const provider = getProviderForRole("generation");
+      const prompt = getPrompt("research-synthesis");
+      promptVersion = prompt.version;
+      result = await provider.generateStructured({
+        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+        system: `${prompt.system}
 Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims without direct source support must be classified as inferred or uncertain.`,
-      user: JSON.stringify({
-        applicationPublicId: run.applicationPublicId,
-        company: application.company,
-        role: application.role,
-        jobUrl,
-        jobDescription,
-        collectedSources,
-      }),
-      schema: researchSchema,
-    });
+        user: JSON.stringify({
+          applicationPublicId: run.applicationPublicId,
+          company: application.company,
+          role: application.role,
+          jobUrl,
+          jobDescription,
+          collectedSources,
+        }),
+        schema: researchSchema,
+      });
+    }
     const candidateEvidence = (await this.listScopedEvidence(run)).evidence;
     const techQuestions = extractTechQuestions({
       jobDescription,
       researchFindings: result.data.findings,
       candidateTechnologies: candidateEvidence.flatMap((item) => item.technologies),
     });
+    const jobRequirements = Array.isArray(application.metadata?.jobRequirements)
+      ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+      : [];
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       metadata: {
         ...application.metadata,
         techQuestions,
+        jobRequirements,
+        researchFindings: result.data.findings,
         researchSourceCount: result.data.sources.length,
         excludedTechnologies: [],
       },
@@ -439,7 +592,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
 
     const existing = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     if (existing && existing.status === "completed") {
-      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
       const pauseForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
       await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
         status: pauseForTech ? "waiting_review" : undefined,
@@ -493,7 +646,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       });
     }
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
     const waitingForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
     await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
       status: waitingForTech ? "waiting_review" : undefined,
@@ -503,7 +656,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       patch: {
         provider: result.model.provider,
         model: result.model.model,
-        promptVersion: prompt.version,
+        promptVersion,
         tokenUsage: {
           input: result.usage.inputTokens,
           output: result.usage.outputTokens,
@@ -539,39 +692,140 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
 
   private async runEvidenceMatching(run: WorkflowRunRecord) {
     const usageKey = await this.reserve(run, "research", 1);
-    const provider = getProviderForRole("generation");
-    const prompt = getPrompt("evidence-matching");
+    const backend = await this.resolveBackend(run.tenantId);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     const { evidence } = await this.listScopedEvidence(run);
-    const result = await provider.generateStructured({
-      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: prompt.system,
-      user: JSON.stringify({
-        applicationPublicId: run.applicationPublicId,
-        jobDescription: application?.metadata?.jobDescription,
-        requirements: application?.metadata?.jobDescription,
-        research: { findings: research?.findings ?? [], sources: research?.sources ?? [] },
-        evidence: evidence.map((item) => ({
-          id: item.publicId,
-          title: item.title,
-          situation: item.situation,
-          task: item.task,
-          actions: item.actions,
-          result: item.result,
-          technologies: item.technologies,
-          payload: item.payload,
-        })),
-      }),
-      schema: evidenceMatchSchema,
-      metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
-    });
+    const requirements = Array.isArray(application?.metadata?.jobRequirements)
+      ? (application!.metadata!.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+      : typeof application?.metadata?.jobDescription === "string"
+        ? [String(application.metadata.jobDescription).slice(0, 2000)]
+        : [];
+
+    let result: {
+      data: z.infer<typeof evidenceMatchSchema>;
+      model: { provider: string; model: string };
+      prompt: { version: string };
+      usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number | null; costUnknown?: boolean };
+      latencyMs: number;
+    };
+    let promptVersion = "evidence-matching";
+
+    if (backend === "python") {
+      const {
+        getPythonIntelligenceClient,
+        mapPythonEvidenceMatchToTs,
+        mapPythonBackendErrorToAppError,
+        mapProviderUsage,
+      } = await import("../intelligence/python-client");
+      try {
+        await this.recordStageBackend(run, "match", "python");
+        const started = Date.now();
+        const py = await getPythonIntelligenceClient().matchEvidence({
+          context: {
+            tenantId: run.tenantId,
+            userId: application?.ownerUserId ?? "unknown",
+            applicationId: run.applicationPublicId,
+            workflowRunId: run.publicId,
+            requestId: run.id,
+          },
+          requirements: requirements.length ? requirements : ["general platform engineering"],
+          evidence: evidence.map((item) => ({
+            id: item.publicId,
+            tenantId: item.tenantId,
+            ownerUserId: item.ownerUserId,
+            title: item.title,
+            organization: item.organization,
+            situation: item.situation,
+            task: item.task,
+            actions: item.actions,
+            result: item.result,
+            technologies: item.technologies,
+            confidence: item.confidence,
+            sourceType: item.sourceType,
+            claimText: item.claimText,
+            employerAssociation: item.employerAssociation,
+            projectAssociation: item.projectAssociation,
+            verificationStatus: item.verificationStatus,
+            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+            privacyLevel: item.privacyLevel,
+            metrics: item.payload?.metrics,
+            payload: item.payload,
+          })),
+          researchFindings: Array.isArray(research?.findings)
+            ? (research!.findings as Array<Record<string, unknown>>)
+            : [],
+        });
+        const mapped = mapPythonEvidenceMatchToTs(py);
+        const usage = mapProviderUsage({
+          provider: "python",
+          model: "evidence-match",
+          prompt_version: "evidence-match@lexical-v1",
+          latency_ms: Date.now() - started,
+          input_tokens: 0,
+          output_tokens: 0,
+          estimated_cost_cents: null,
+        });
+        result = {
+          data: mapped,
+          model: { provider: "python", model: "evidence-match" },
+          prompt: { version: "evidence-match@lexical-v1" },
+          usage: {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            estimatedCostCents: usage.estimatedCostCents,
+            costUnknown: usage.costUnknown,
+          },
+          latencyMs: Date.now() - started,
+        };
+        promptVersion = "evidence-match@lexical-v1";
+      } catch (error) {
+        throw mapPythonBackendErrorToAppError(error);
+      }
+    } else {
+      await this.recordStageBackend(run, "match", "typescript");
+      const provider = getProviderForRole("generation");
+      const prompt = getPrompt("evidence-matching");
+      promptVersion = prompt.version;
+      result = await provider.generateStructured({
+        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+        system: prompt.system,
+        user: JSON.stringify({
+          applicationPublicId: run.applicationPublicId,
+          jobDescription: application?.metadata?.jobDescription,
+          requirements,
+          research: { findings: research?.findings ?? [], sources: research?.sources ?? [] },
+          evidence: evidence.map((item) => ({
+            id: item.publicId,
+            title: item.title,
+            situation: item.situation,
+            task: item.task,
+            actions: item.actions,
+            result: item.result,
+            technologies: item.technologies,
+            payload: item.payload,
+          })),
+        }),
+        schema: evidenceMatchSchema,
+        metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
+      });
+    }
     await this.recordProviderUsage(run, usageKey, result);
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+      metadata: {
+        ...(application?.metadata ?? {}),
+        evidenceMatches: result.data.rows,
+        evidenceCoverage: result.data.evidenceCoverage,
+        jobRequirements: requirements,
+      },
+      evidenceCoverage: result.data.evidenceCoverage,
+    });
+
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
     await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_COMPLETED", {
       message: "Evidence matching completed",
-      patch: { provider: result.model.provider, model: result.model.model, promptVersion: prompt.version },
+      patch: { provider: result.model.provider, model: result.model.model, promptVersion },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       stage: "V0_GENERATING",
@@ -608,8 +862,6 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     }
 
     const usageKey = await this.reserve(run, "resume_generation", 1);
-    const provider = getProviderForRole("generation");
-    const prompt = getPrompt("resume-generation");
     const { application, evidence } = await this.listScopedEvidence(run);
     if (!evidence.length && versionNumber === 0) {
       throw new AppError(
@@ -635,10 +887,11 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       ...attestedTechnologies,
     ])];
 
-    const backend = await this.resolveBackend(run.tenantId, application?.metadata);
+    const backend = await this.resolveBackend(run.tenantId);
     const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
     let result: ResumeGenerationResult;
     if (backend === "python") {
+      await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "python");
       const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
       const client = getPythonIntelligenceClient();
       const context = {
@@ -736,9 +989,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           rawText: "",
           model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
           prompt: {
-            id: prompt.id,
-            version: py.promptVersion || prompt.version,
-            rubricVersion: prompt.rubricVersion,
+            id: versionNumber === 0 ? "resume-generation" : "resume-regeneration",
+            version: py.promptVersion || "python@v1",
+            rubricVersion: "candidarc-rubric@v1",
           },
           usage: {
             inputTokens: py.usage.inputTokens,
@@ -753,6 +1006,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         throw mapPythonBackendErrorToAppError(error);
       }
     } else {
+      await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "typescript");
+      const provider = getProviderForRole("generation");
+      const prompt = getPrompt("resume-generation");
       result = await provider.generateStructured({
       prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
       system: prompt.system,
@@ -925,11 +1181,11 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         storedVersionNumber,
       ),
       idempotencyKey,
-      promptVersion: prompt.version,
+      promptVersion: result.prompt.version,
     });
 
     await this.deps.resumes.setCurrentVersion(run.tenantId, resume.publicId, version.publicId);
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
 
     const readyStage = `V${versionNumber}_READY` as WorkflowStage;
     await this.deps.engine.transition(run.id, readyStage, {
@@ -938,7 +1194,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       patch: {
         provider: result.model.provider,
         model: result.model.model,
-        promptVersion: prompt.version,
+        promptVersion: result.prompt.version,
         tokenUsage: {
           input: result.usage.inputTokens,
           output: result.usage.outputTokens,
@@ -987,8 +1243,6 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     });
 
     const usageKey = await this.reserve(run, "audit", 1);
-    const provider = getProviderForRole(promptId.startsWith("hr-") ? "hr-audit" : "em-audit");
-    const prompt = getPrompt(promptId);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const { evidence } = await this.listScopedEvidence(run);
     const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
@@ -1007,10 +1261,11 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     } as const;
     const lens = lensMap[promptId];
     const auditIdempotencyKey = `audit:${run.applicationPublicId}:${lens}:v${storedReviewsVersion}:${run.idempotencyKey}`;
-    const backend = await this.resolveBackend(run.tenantId, application?.metadata);
+    const backend = await this.resolveBackend(run.tenantId);
     const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
     let result: AuditGenerationResult;
     if (backend === "python") {
+      await this.recordStageBackend(run, "audit", "python");
       const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
       const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
       const client = getPythonIntelligenceClient();
@@ -1067,7 +1322,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           data: auditOutputSchema.parse(py.data),
           rawText: "",
           model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-          prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+          prompt: { id: promptId, version: "python-audit@v1", rubricVersion: "candidarc-rubric@v1" },
           usage: {
             inputTokens: py.usage.inputTokens,
             outputTokens: py.usage.outputTokens,
@@ -1081,6 +1336,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         throw mapPythonBackendErrorToAppError(error);
       }
     } else {
+      await this.recordStageBackend(run, "audit", "typescript");
+      const provider = getProviderForRole(promptId.startsWith("hr-") ? "hr-audit" : "em-audit");
+      const prompt = getPrompt(promptId);
       result = await provider.generateStructured({
         prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
         system: prompt.system,
@@ -1198,7 +1456,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         { expectedLens: expectedRule.lens, actualLens: result.data.lens, stage: run.stage },
         "audit lens mismatch — skipping invalid audit output",
       );
-      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
       const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
       await this.deps.engine.transition(run.id, nextStage, {
         message: "Skipped audit with mismatched lens",
@@ -1249,12 +1507,12 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       );
     }
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
 
     const reviewStage = run.stage.replace("_RUNNING", "_REVIEW") as WorkflowStage;
     await this.deps.engine.transition(run.id, reviewStage, {
       message: `${promptId} ready for review`,
-      patch: { promptVersion: prompt.version, provider: result.model.provider, model: result.model.model },
+      patch: { promptVersion: result.prompt.version, provider: result.model.provider, model: result.model.model },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       stage: reviewStage,
@@ -1393,13 +1651,12 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     }
 
     const usageKey = await this.reserve(run, "final_review", 1);
-    const provider = getProviderForRole("final-review");
-    const prompt = getPrompt("final-qa");
     const finalQaIdempotencyKey = `final-qa:${run.applicationPublicId}:v${latest.versionNumber}:${run.idempotencyKey}`;
-    const backend = await this.resolveBackend(run.tenantId, application?.metadata);
+    const backend = await this.resolveBackend(run.tenantId);
     const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
     let supplement: FinalQaSupplementResult;
     if (backend === "python") {
+      await this.recordStageBackend(run, "final-qa", "python");
       const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
       const { finalQaSchema: finalQaOutputSchema } = await import("../ai/schemas");
       const client = getPythonIntelligenceClient();
@@ -1451,7 +1708,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           data: finalQaOutputSchema.parse(py.data),
           rawText: "",
           model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-          prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+          prompt: { id: "final-qa", version: "final-qa@python-v2", rubricVersion: "candidarc-rubric@v1" },
           usage: {
             inputTokens: py.usage.inputTokens,
             outputTokens: py.usage.outputTokens,
@@ -1465,6 +1722,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         throw mapPythonBackendErrorToAppError(error);
       }
     } else {
+      await this.recordStageBackend(run, "final-qa", "typescript");
+      const provider = getProviderForRole("final-review");
+      const prompt = getPrompt("final-qa");
       supplement = await provider.generateStructured({
         prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
         system: `${prompt.system}
@@ -1556,7 +1816,7 @@ This is a supplement to deterministic checks. Do not claim deterministic or visu
       }
     }
     await this.recordProviderUsage(run, usageKey, supplement);
-    await this.commit(usageKey, this.commitCostCents(supplement.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(supplement.usage.estimatedCostCents), { tenantId: run.tenantId });
 
     await this.deps.engine.transition(run.id, "FINAL_READY", {
       message: "Final QA passed",
