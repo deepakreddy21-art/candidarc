@@ -151,12 +151,19 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
+      - name: Verify hashed lock
+        run: python scripts/verify_lock.py
       - name: Install pinned requirements
         run: |
-          if [ -f requirements.txt ]; then
-            pip install --require-hashes -r requirements.txt || pip install -r requirements.txt
-          fi
-          pip install -e ".[dev]"
+          pip install --require-hashes -r requirements.txt
+          pip install --no-deps -e .
+          pip install --require-hashes -r requirements-dev.txt
+      - name: Python dependency vulnerability audit
+        run: |
+          pip install pip-audit
+          # Prefer fail on high/critical. Document any --ignore-vuln in
+          # docs/python-resume-intelligence-rollout.md with expiry 2026-12-01.
+          pip-audit -r requirements.txt --strict
       - run: ruff check app tests evals
       - run: mypy app
       - run: pytest -q
@@ -192,10 +199,10 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            .venv/bin/pip install --require-hashes -r requirements.txt || .venv/bin/pip install -r requirements.txt
-          fi
-          .venv/bin/pip install -e ".[dev]"
+          .venv/bin/python scripts/verify_lock.py
+          .venv/bin/pip install --require-hashes -r requirements.txt
+          .venv/bin/pip install --no-deps -e .
+          .venv/bin/pip install --require-hashes -r requirements-dev.txt
       - run: npm run test:python-mode
         env:
           APP_MODE: demo
@@ -208,6 +215,11 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build --target web -t candidarc:web .
       - run: docker build --target worker -t candidarc:worker .
+      - name: Verify Python lock before image build
+        working-directory: services/python-backend
+        run: |
+          python -m pip install --upgrade pip
+          python scripts/verify_lock.py
       - run: docker build -t candidarc:python-backend ./services/python-backend
       - name: Ensure secrets and private fixtures are not in image
         run: |

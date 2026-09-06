@@ -12,7 +12,7 @@ COPY requirements.txt pyproject.toml README.md ./
 COPY app ./app
 
 RUN pip install --upgrade pip \
-    && if [ -f requirements.txt ]; then pip install --require-hashes -r requirements.txt || pip install -r requirements.txt; fi \
+    && pip install --require-hashes -r requirements.txt \
     && pip install --no-deps .
 
 USER appuser
