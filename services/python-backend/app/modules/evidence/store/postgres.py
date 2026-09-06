@@ -30,15 +30,11 @@ from app.modules.evidence.store.protocol import (
     EvidenceStoreError,
 )
 
-# Kept as a documentation pointer only — never executed. See migration 0009.
+# Documentation pointer only — never executed. See migration 0009.
 SCHEMA_SQL_DOCS = (
     "Owned by server/database/migrations/0009_evidence_embeddings.sql. "
     "Python connect() verifies extension/tables/columns/dimension read-only."
 )
-
-
-def _to_vector_literal(values: list[float]) -> str:
-    return "[" + ",".join(f"{v:.8f}" for v in values) + "]"
 
 
 def _parse_vector(value: Any) -> list[float]:
