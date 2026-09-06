@@ -61,8 +61,8 @@ services:
     environment:
       APP_MODE: demo
       AI_MODE: mock
-      PYTHON_BACKEND_TOKEN: dev-python-backend-token-change-me
-      EVIDENCE_STORE: memory
+      PYTHON_BACKEND_TOKEN: smoke-python-backend-token-not-default
+      EVIDENCE_STORE: postgres
       DATABASE_URL: postgres://candidarc:candidarc@postgres:5432/candidarc
       REDIS_URL: redis://redis:6379
       EMBEDDING_PROVIDER: mock
@@ -100,8 +100,8 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_BACKEND: redis
       PYTHON_BACKEND_URL: http://python-backend:8090
-      PYTHON_BACKEND_TOKEN: dev-python-backend-token-change-me
-      RESUME_INTELLIGENCE_BACKEND: typescript
+      PYTHON_BACKEND_TOKEN: smoke-python-backend-token-not-default
+      RESUME_INTELLIGENCE_BACKEND: python
       SHADOW_SAMPLE_PERCENT: "0"
       APP_URL: http://localhost:3000
       STORAGE_DRIVER: s3
@@ -134,8 +134,8 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_BACKEND: redis
       PYTHON_BACKEND_URL: http://python-backend:8090
-      PYTHON_BACKEND_TOKEN: dev-python-backend-token-change-me
-      RESUME_INTELLIGENCE_BACKEND: typescript
+      PYTHON_BACKEND_TOKEN: smoke-python-backend-token-not-default
+      RESUME_INTELLIGENCE_BACKEND: python
       STORAGE_DRIVER: s3
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET: candidarc

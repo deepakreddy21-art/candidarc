@@ -173,6 +173,73 @@ def detect_jd_injection(job_description: str) -> list[str]:
     return [f"JD_INJECTION:{marker}" for marker in INJECTION_MARKERS if marker in lower]
 
 
+def detect_injection_markers(text: str, *, code_prefix: str = "PROMPT_INJECTION") -> list[str]:
+    lower = text.lower()
+    return [f"{code_prefix}:{marker}" for marker in INJECTION_MARKERS if marker in lower]
+
+
+def _section_type_aliases(section_type: str) -> set[str]:
+    raw = (section_type or "").strip().lower()
+    aliases = {raw}
+    if raw in {"summary", "professional_summary"}:
+        aliases.update({"summary", "professional_summary"})
+    if raw in {"certifications", "awards", "certification", "award"}:
+        aliases.update({"certifications", "awards"})
+    return aliases
+
+
+def _append_atom_violations(
+    atoms: ClaimAtoms,
+    *,
+    corpus: str,
+    allowed: set[str],
+    research_techs: set[str],
+    evidence_orgs: set[str],
+    violations: list[str],
+    org_code: str = "UNSUPPORTED_COMPANY",
+) -> None:
+    for tech in atoms.technologies:
+        if tech not in allowed:
+            violations.append("UNSUPPORTED_TECHNOLOGY")
+        if tech in research_techs and tech not in allowed:
+            violations.append("RESEARCH_TECH_AS_CLAIM")
+
+    for pct in atoms.percentages:
+        if pct.lower().replace(" ", "") not in corpus.replace(" ", ""):
+            bare = re.sub(r"[^\d.]", "", pct)
+            if bare and bare not in corpus:
+                violations.append("UNSUPPORTED_PERCENT")
+
+    for dollar in atoms.dollars:
+        digits = re.sub(r"[^\d]", "", dollar)
+        if digits and digits not in re.sub(r"[^\d]", "", corpus):
+            violations.append("UNSUPPORTED_DOLLAR")
+
+    for team in atoms.team_sizes:
+        digits = re.sub(r"\D", "", team)
+        if digits and digits not in corpus:
+            violations.append("UNSUPPORTED_TEAM_SIZE")
+
+    for date in atoms.dates:
+        if date.lower() not in corpus and not any(tok in corpus for tok in date.lower().split()):
+            violations.append("UNSUPPORTED_DATE")
+
+    for org in atoms.orgs:
+        org_l = org.lower()
+        if evidence_orgs and org_l not in corpus and not any(org_l in eo or eo in org_l for eo in evidence_orgs if eo):
+            if len(org.split()) >= 2 and org_l not in corpus:
+                violations.append(org_code)
+
+
+def _text_grounded_in_corpus(value: str | None, corpus: str, evidence_orgs: set[str]) -> bool:
+    text = (value or "").strip().lower()
+    if not text:
+        return True
+    if text in corpus:
+        return True
+    return any(text in eo or eo in text for eo in evidence_orgs if eo)
+
+
 def claim_source_allows_first_person(kind: ClaimSourceKind) -> bool:
     return kind in FIRST_PERSON_CLAIM_SOURCES
 
@@ -278,6 +345,9 @@ def validate_resume_claims(
         if item.organization or item.employer_association
     }
     bare_yes_topics = {c.topic.lower() for c in confirmation_without_evidence(user_confirmations)}
+    full_corpus = _evidence_corpus(evidence)
+    for conf in evidence_backed_confirmations(user_confirmations):
+        full_corpus = f"{full_corpus} {(conf.evidence_description or '').lower()}"
 
     if tenant_id is not None:
         for item in evidence:
@@ -286,13 +356,118 @@ def validate_resume_claims(
             if owner_user_id is not None and item.owner_user_id != owner_user_id:
                 violations.append("CROSS_OWNER_EVIDENCE")
 
-    _ = job_description
+    # JD is untrusted: flag injection, but never treat JD content as candidate evidence.
+    if job_description:
+        violations.extend(detect_jd_injection(job_description))
+
+    for finding in research_findings or []:
+        violations.extend(detect_injection_markers(finding.summary, code_prefix="RESEARCH_INJECTION"))
+
+    # Optional resume-level identity/contact fields (forward-compatible if present).
+    for attr in ("candidate_name", "full_name", "contact_email", "contact_phone", "email", "phone"):
+        value = getattr(resume, attr, None)
+        if isinstance(value, str) and value.strip():
+            violations.extend(detect_injection_markers(value, code_prefix="PROMPT_INJECTION"))
+            atoms = extract_claim_atoms(value)
+            _append_atom_violations(
+                atoms,
+                corpus=full_corpus,
+                allowed=allowed,
+                research_techs=research_techs,
+                evidence_orgs=evidence_orgs,
+                violations=violations,
+            )
+    contact = getattr(resume, "contact", None)
+    if isinstance(contact, dict):
+        for key in ("name", "email", "phone", "location"):
+            raw = contact.get(key)
+            if isinstance(raw, str) and raw.strip():
+                violations.extend(detect_injection_markers(raw, code_prefix="PROMPT_INJECTION"))
 
     for section in resume.sections:
+        section_types = _section_type_aliases(section.type)
+        org_code = "UNSUPPORTED_COMPANY"
+        if section_types & {"education"}:
+            org_code = "UNSUPPORTED_EDUCATION"
+        elif section_types & {"certifications", "awards"}:
+            org_code = "UNSUPPORTED_CERTIFICATION"
+
+        # Section content (summary / skills / education body / cert text)
+        if section.content:
+            violations.extend(detect_injection_markers(section.content, code_prefix="PROMPT_INJECTION"))
+            if any(marker in section.content.lower() for marker in ATS_MARKERS):
+                violations.append("ATS_MANIPULATION")
+            content_atoms = extract_claim_atoms(section.content)
+            if section_types & {"summary", "professional_summary", "skills", "education", "certifications", "awards"}:
+                _append_atom_violations(
+                    content_atoms,
+                    corpus=full_corpus,
+                    allowed=allowed,
+                    research_techs=research_techs,
+                    evidence_orgs=evidence_orgs,
+                    violations=violations,
+                    org_code=org_code,
+                )
+
+        for resume_item in section.items or []:
+            item_fields = [
+                resume_item.heading,
+                resume_item.subheading or "",
+                resume_item.location or "",
+                resume_item.dates or "",
+            ]
+            item_blob = " ".join(part for part in item_fields if part)
+            if item_blob.strip():
+                violations.extend(detect_injection_markers(item_blob, code_prefix="PROMPT_INJECTION"))
+                item_atoms = extract_claim_atoms(item_blob)
+                _append_atom_violations(
+                    item_atoms,
+                    corpus=full_corpus,
+                    allowed=allowed,
+                    research_techs=research_techs,
+                    evidence_orgs=evidence_orgs,
+                    violations=violations,
+                    org_code=org_code,
+                )
+                # Explicit education / cert grounding for employer/institution/title fields.
+                if section_types & {"experience", "projects"}:
+                    if resume_item.heading and not _text_grounded_in_corpus(
+                        resume_item.heading, full_corpus, evidence_orgs
+                    ):
+                        # Multi-token employer names only (avoid single-word noise)
+                        if len(resume_item.heading.split()) >= 2:
+                            violations.append("UNSUPPORTED_COMPANY")
+                    if resume_item.dates and not _text_grounded_in_corpus(resume_item.dates, full_corpus, set()):
+                        date_atoms = extract_claim_atoms(resume_item.dates)
+                        if date_atoms.dates:
+                            _append_atom_violations(
+                                date_atoms,
+                                corpus=full_corpus,
+                                allowed=allowed,
+                                research_techs=research_techs,
+                                evidence_orgs=evidence_orgs,
+                                violations=violations,
+                            )
+                if section_types & {"education"}:
+                    for field in (resume_item.heading, resume_item.subheading):
+                        if field and not _text_grounded_in_corpus(field, full_corpus, evidence_orgs):
+                            if len((field or "").split()) >= 2 or (field and field.lower() not in full_corpus):
+                                violations.append("UNSUPPORTED_EDUCATION")
+                    if resume_item.dates and not _text_grounded_in_corpus(resume_item.dates, full_corpus, set()):
+                        date_atoms = extract_claim_atoms(resume_item.dates)
+                        if date_atoms.dates or resume_item.dates.strip():
+                            if not any(tok in full_corpus for tok in resume_item.dates.lower().split() if tok):
+                                violations.append("UNSUPPORTED_DATE")
+                if section_types & {"certifications", "awards"}:
+                    for field in (resume_item.heading, resume_item.subheading):
+                        if field and not _text_grounded_in_corpus(field, full_corpus, evidence_orgs):
+                            violations.append("UNSUPPORTED_CERTIFICATION")
+
         bullets = list(section.bullets or [])
         for resume_item in section.items or []:
             bullets.extend(resume_item.bullets)
         for bullet in bullets:
+            violations.extend(detect_injection_markers(bullet.text, code_prefix="PROMPT_INJECTION"))
             if not bullet.evidence_ids:
                 violations.append("MISSING_EVIDENCE_IDS")
                 continue
@@ -306,37 +481,15 @@ def validate_resume_claims(
                     corpus = f"{corpus} {(conf.evidence_description or '').lower()}"
             atoms = extract_claim_atoms(bullet.text, bullet.technologies)
 
-            for tech in atoms.technologies:
-                if tech not in allowed:
-                    violations.append("UNSUPPORTED_TECHNOLOGY")
-                if tech in research_techs and tech not in allowed:
-                    violations.append("RESEARCH_TECH_AS_CLAIM")
-
-            for pct in atoms.percentages:
-                if pct.lower().replace(" ", "") not in corpus.replace(" ", ""):
-                    bare = re.sub(r"[^\d.]", "", pct)
-                    if bare and bare not in corpus:
-                        violations.append("UNSUPPORTED_PERCENT")
-
-            for dollar in atoms.dollars:
-                digits = re.sub(r"[^\d]", "", dollar)
-                if digits and digits not in re.sub(r"[^\d]", "", corpus):
-                    violations.append("UNSUPPORTED_DOLLAR")
-
-            for team in atoms.team_sizes:
-                digits = re.sub(r"\D", "", team)
-                if digits and digits not in corpus:
-                    violations.append("UNSUPPORTED_TEAM_SIZE")
-
-            for date in atoms.dates:
-                if date.lower() not in corpus and not any(tok in corpus for tok in date.lower().split()):
-                    violations.append("UNSUPPORTED_DATE")
-
-            for org in atoms.orgs:
-                org_l = org.lower()
-                if evidence_orgs and org_l not in corpus and not any(org_l in eo or eo in org_l for eo in evidence_orgs if eo):
-                    if len(org.split()) >= 2 and org_l not in corpus:
-                        violations.append("UNSUPPORTED_COMPANY")
+            _append_atom_violations(
+                atoms,
+                corpus=corpus,
+                allowed=allowed,
+                research_techs=research_techs,
+                evidence_orgs=evidence_orgs,
+                violations=violations,
+                org_code=org_code if section_types & {"education", "certifications", "awards"} else "UNSUPPORTED_COMPANY",
+            )
 
             if atoms.individual_ownership:
                 if any(OWNERSHIP_TEAM_RE.search(_evidence_corpus([e])) for e in cited) and not any(
