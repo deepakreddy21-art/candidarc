@@ -15,6 +15,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - name: npm audit (fail on high+)
+        run: npm audit --audit-level=high
+      - name: Document moderate audit exceptions
+        run: |
+          test -f docs/npm-audit-exceptions.md
+          grep -q '2026-12-01' docs/npm-audit-exceptions.md
 
   typecheck:
     runs-on: ubuntu-latest
@@ -125,6 +131,35 @@ jobs:
           APP_MODE: production
           NEXT_PUBLIC_APP_MODE: production
 
+  python-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - name: Install Python deps for OpenAPI export
+        working-directory: services/python-backend
+        run: |
+          python -m pip install --upgrade pip
+          python scripts/verify_lock.py
+          pip install --require-hashes -r requirements.txt
+          pip install --no-deps -e .
+      - name: Regenerate Python→TS contract
+        run: npm run contract:python
+      - name: Fail on OpenAPI / generated contract drift
+        run: |
+          git diff --exit-code -- \
+            services/python-backend/openapi.json \
+            server/intelligence/generated/python-paths.ts \
+            server/intelligence/generated/python-schemas.ts
+
   python:
     runs-on: ubuntu-latest
     services:
@@ -181,6 +216,68 @@ jobs:
           AI_MODE: mock
           EVIDENCE_STORE: memory
 
+  python-pgvector:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: candidarc
+          POSTGRES_PASSWORD: candidarc
+          POSTGRES_DB: candidarc_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U candidarc -d candidarc_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://candidarc:candidarc@localhost:5432/candidarc_test
+      EVIDENCE_STORE: postgres
+      RUN_PGVECTOR_TESTS: "1"
+      APP_MODE: demo
+      AI_MODE: mock
+      EMBEDDING_PROVIDER: mock
+      EMBEDDING_DIMENSIONS: "1536"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: npm run db:migrate
+      - name: Install Python hashed deps
+        working-directory: services/python-backend
+        run: |
+          python -m pip install --upgrade pip
+          python scripts/verify_lock.py
+          pip install --require-hashes -r requirements.txt
+          pip install --no-deps -e .
+          pip install --require-hashes -r requirements-dev.txt
+      - name: Mandatory pgvector evidence-store integration
+        working-directory: services/python-backend
+        run: |
+          set -euo pipefail
+          OUT="$(mktemp)"
+          # pytest -q prints a short summary; capture full output for skip detection.
+          pytest tests/integration/test_evidence_store_postgres.py -v --tb=short | tee "$OUT"
+          if grep -Eiq '(^|[ =])skipped([ =]|$)|SKIPPED' "$OUT"; then
+            echo "pgvector tests skipped unexpectedly under RUN_PGVECTOR_TESTS=1"
+            exit 1
+          fi
+          # Expect at least the known suite size (upsert, tenant, owner, upsert-dim, connect-dim).
+          PASSED="$(grep -Eoc 'PASSED' "$OUT" || true)"
+          if [ "${PASSED}" -lt 5 ]; then
+            echo "Expected >=5 passed pgvector tests, got ${PASSED}"
+            exit 1
+          fi
+
   python-mode:
     runs-on: ubuntu-latest
     steps:
@@ -229,7 +326,7 @@ jobs:
           ! grep -E '(^|/)\.env($|\.)' /tmp/image-files.txt
           ! grep -E '\.local-fixtures' /tmp/image-files.txt
           ! grep -E '(^|/)\.git(/|$)' /tmp/image-files.txt
-      - name: Mock-stack smoke (postgres+redis+python readiness)
+      - name: Full-stack mock smoke (postgres+redis+minio+migrate+python+web+worker)
         run: npm run smoke:docker
         env:
           COMPOSE_DOCKER_CLI_BUILD: 1
@@ -241,7 +338,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Scan for private contact fixtures and secret patterns
+      - name: Gitleaks (pinned)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extra pattern scan (private fixtures + known contacts)
         run: |
           set -euo pipefail
           if git ls-files | grep -E '^\.local-fixtures/'; then

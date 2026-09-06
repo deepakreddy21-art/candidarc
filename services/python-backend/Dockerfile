@@ -10,6 +10,7 @@ RUN useradd --create-home --uid 10001 appuser
 
 COPY requirements.txt pyproject.toml README.md ./
 COPY app ./app
+COPY scripts ./scripts
 
 RUN pip install --upgrade pip \
     && pip install --require-hashes -r requirements.txt \
