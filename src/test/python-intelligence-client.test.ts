@@ -95,6 +95,7 @@ describe("python intelligence client mapping", () => {
       });
     expect(usage.inputTokens).toBe(120);
     expect(usage.outputTokens).toBe(80);
-    expect(usage.estimatedCostCents).toBe(0);
+    expect(usage.estimatedCostCents).toBeNull();
+    expect(usage.costUnknown).toBe(true);
   });
 });

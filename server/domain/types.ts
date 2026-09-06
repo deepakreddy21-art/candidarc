@@ -62,6 +62,7 @@ export class AppError extends Error {
     message: string,
     public status = 400,
     public details?: unknown,
+    public retryable = false,
   ) {
     super(message);
     this.name = "AppError";

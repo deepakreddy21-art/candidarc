@@ -16,7 +16,8 @@ export type PromptRef = {
 export type UsageStats = {
   inputTokens: number;
   outputTokens: number;
-  estimatedCostCents: number;
+  /** Null when provider did not report a billable cost — never coerce to 0 for billing. */
+  estimatedCostCents: number | null;
 };
 
 export type StructuredGenerationRequest<T> = {

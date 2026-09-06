@@ -1,6 +1,8 @@
+import { createHash } from "crypto";
 import { z } from "zod";
 import { resumeSchema } from "../ai/schemas";
 import { getEnv } from "../config/env";
+import { AppError } from "../domain/types";
 import { logger } from "../observability/logger";
 import { PYTHON_BACKEND_PATHS } from "./generated/python-paths";
 import {
@@ -36,11 +38,101 @@ type RequestContext = {
 export type MappedProviderUsage = {
   inputTokens: number;
   outputTokens: number;
-  estimatedCostCents: number;
+  estimatedCostCents: number | null;
   cachedTokens?: number;
   providerRequestId?: string;
   retryCount?: number;
+  pricingTableVersion?: string | null;
+  costUnknown?: boolean;
 };
+
+const SENSITIVE_DETAIL_KEY = /resume|evidence|job_description|token|authorization|api_key|password|secret/i;
+
+export function sanitizeErrorDetails(value: unknown, depth = 0): unknown {
+  if (depth > 8) return "[truncated]";
+  if (typeof value === "string") return value.length > 200 ? value.slice(0, 200) : value;
+  if (typeof value === "number" || typeof value === "boolean" || value == null) return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeErrorDetails(item, depth + 1));
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (SENSITIVE_DETAIL_KEY.test(key)) continue;
+      out[key] = sanitizeErrorDetails(nested, depth + 1);
+    }
+    return out;
+  }
+  return String(value).slice(0, 200);
+}
+
+export function isRetryableStatus(status: number): boolean {
+  return status === 0 || status === 408 || status === 429 || status >= 500;
+}
+
+export class PythonBackendError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly sanitizedMessage: string;
+  readonly details: unknown;
+  readonly retryable: boolean;
+
+  constructor(opts: {
+    status: number;
+    code: string;
+    sanitizedMessage: string;
+    details?: unknown;
+    retryable?: boolean;
+  }) {
+    super(opts.sanitizedMessage);
+    this.name = "PythonBackendError";
+    this.status = opts.status;
+    this.code = opts.code;
+    this.sanitizedMessage = opts.sanitizedMessage;
+    this.details = sanitizeErrorDetails(opts.details ?? null);
+    this.retryable = opts.retryable ?? isRetryableStatus(opts.status);
+  }
+}
+
+/** Map Python backend failures to customer-safe AppErrors. */
+export function mapPythonBackendErrorToAppError(error: unknown): AppError {
+  if (error instanceof AppError) return error;
+  if (!(error instanceof PythonBackendError)) {
+    return new AppError("PYTHON_BACKEND_UNAVAILABLE", "Resume intelligence service is unavailable", 503);
+  }
+  const { code, status, details, retryable } = error;
+  if (code === "PROVIDER_OUTPUT_INVALID") {
+    return new AppError("PROVIDER_OUTPUT_INVALID", "Provider returned invalid output", 422, details);
+  }
+  if (code === "GUARDRAIL_VIOLATION" || status === 422) {
+    return new AppError(
+      "GUARDRAIL_VIOLATION",
+      "This request included unsupported or unverifiable claims. Please revise and try again.",
+      422,
+      details,
+    );
+  }
+  if (code === "IDEMPOTENCY_KEY_REUSED" || (status === 409 && code === "IDEMPOTENCY_KEY_REUSED")) {
+    return new AppError("IDEMPOTENCY_KEY_REUSED", "This request was already processed", 409, details);
+  }
+  if (code === "IDEMPOTENCY_IN_PROGRESS") {
+    return new AppError(
+      "IDEMPOTENCY_IN_PROGRESS",
+      "A matching request is already in progress",
+      503,
+      details,
+      true,
+    );
+  }
+  if (status === 401 || status === 403 || code === "PYTHON_BACKEND_AUTH") {
+    logger.error({ status, code }, "python intelligence auth/config failure");
+    return new AppError("PYTHON_BACKEND_AUTH", "Resume intelligence service is misconfigured", 503);
+  }
+  if (retryable || isRetryableStatus(status) || code === "PYTHON_BACKEND_CIRCUIT_OPEN") {
+    return new AppError("PYTHON_BACKEND_UNAVAILABLE", "Resume intelligence service is unavailable", 503);
+  }
+  return new AppError("PYTHON_BACKEND_UNAVAILABLE", "Resume intelligence service is unavailable", 503);
+}
+
+type CircuitState = "closed" | "open" | "half_open";
 
 function toSnakeContext(context: RequestContext) {
   return {
@@ -230,13 +322,23 @@ export function toSnakeResearchFinding(finding: Record<string, unknown>) {
 export function mapProviderUsage(usage: ProviderUsage | null | undefined): MappedProviderUsage {
   const parsed = usage ? ProviderUsageSchema.partial().passthrough().safeParse(usage) : null;
   const data = parsed?.success ? parsed.data : null;
+  const estimatedCostCents =
+    data?.estimated_cost_cents == null ? null : Number(data.estimated_cost_cents);
+  const pricingRaw =
+    data && typeof data === "object" && "pricing_table_version" in data
+      ? (data as { pricing_table_version?: unknown }).pricing_table_version
+      : undefined;
+  const pricingTableVersion =
+    pricingRaw == null ? null : typeof pricingRaw === "string" ? pricingRaw : String(pricingRaw);
   return {
     inputTokens: Number(data?.input_tokens ?? 0),
     outputTokens: Number(data?.output_tokens ?? 0),
-    estimatedCostCents: Number(data?.estimated_cost_cents ?? 0),
+    estimatedCostCents,
     cachedTokens: data?.cached_tokens == null ? undefined : Number(data.cached_tokens),
     providerRequestId: data?.provider_request_id ?? undefined,
     retryCount: data?.retry_count == null ? undefined : Number(data.retry_count),
+    pricingTableVersion,
+    costUnknown: estimatedCostCents == null,
   };
 }
 
@@ -370,11 +472,50 @@ export function compareResumeShapes(
   };
 }
 
-export function shouldSampleShadow(samplePercent = getEnv().SHADOW_SAMPLE_PERCENT): boolean {
+/** Deterministic shadow sampling — stable for the same seed. */
+export function shouldSampleShadow(
+  seed: string,
+  samplePercent = getEnv().SHADOW_SAMPLE_PERCENT,
+): boolean {
   const bounded = Math.min(100, Math.max(0, samplePercent));
   if (bounded <= 0) return false;
   if (bounded >= 100) return true;
-  return Math.random() * 100 < bounded;
+  const bucket = createHash("sha256").update(seed).digest()[0]! % 100;
+  return bucket < bounded;
+}
+
+function parseTenantAllowlist(raw: string): Set<string> {
+  return new Set(
+    raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Tenant-aware backend resolution.
+ * Global `typescript` env is a kill switch. python/shadow require allowlist or metadata override.
+ */
+export function resolveIntelligenceBackendForTenant(opts: {
+  tenantId: string;
+  tenantMetadata?: Record<string, unknown> | null;
+}): IntelligenceBackendMode {
+  const envMode = getEnv().RESUME_INTELLIGENCE_BACKEND;
+  if (envMode === "typescript") return "typescript";
+
+  const metaRaw = opts.tenantMetadata?.resumeIntelligenceBackend;
+  if (metaRaw === "python" || metaRaw === "shadow" || metaRaw === "typescript") {
+    return metaRaw;
+  }
+
+  if (envMode === "python" || envMode === "shadow") {
+    const allowlist = parseTenantAllowlist(getEnv().PYTHON_INTELLIGENCE_TENANT_ALLOWLIST);
+    if (allowlist.has(opts.tenantId)) return envMode;
+    return "typescript";
+  }
+
+  return "typescript";
 }
 
 export type GenerateResumeInput = {
@@ -433,6 +574,7 @@ function buildGenerateBody(input: GenerateResumeInput) {
 export class PythonIntelligenceClient {
   private failures = 0;
   private openedAt = 0;
+  private circuitState: CircuitState = "closed";
 
   constructor(
     private readonly baseUrl = getEnv().PYTHON_BACKEND_URL,
@@ -440,18 +582,42 @@ export class PythonIntelligenceClient {
     private readonly timeoutMs = 60_000,
   ) {}
 
-  private circuitOpen() {
-    if (this.failures < 5) return false;
-    if (Date.now() - this.openedAt > 30_000) {
-      this.failures = 0;
-      return false;
-    }
-    return true;
+  /** Test helper — current circuit breaker state. */
+  getCircuitState(): CircuitState {
+    return this.circuitState;
   }
 
-  private bumpFailure() {
+  private assertCircuitAllowsRequest() {
+    if (this.circuitState === "open") {
+      if (Date.now() - this.openedAt >= 30_000) {
+        this.circuitState = "half_open";
+        return;
+      }
+      throw new PythonBackendError({
+        status: 0,
+        code: "PYTHON_BACKEND_CIRCUIT_OPEN",
+        sanitizedMessage: "Python intelligence circuit is open",
+        retryable: true,
+      });
+    }
+  }
+
+  private recordSuccess() {
+    this.circuitState = "closed";
+    this.failures = 0;
+  }
+
+  private recordRetryableFailure() {
+    if (this.circuitState === "half_open") {
+      this.circuitState = "open";
+      this.openedAt = Date.now();
+      return;
+    }
     this.failures += 1;
-    if (this.failures >= 5) this.openedAt = Date.now();
+    if (this.failures >= 5) {
+      this.circuitState = "open";
+      this.openedAt = Date.now();
+    }
   }
 
   /** On-demand readiness probe — not called before every request. */
@@ -676,18 +842,23 @@ export class PythonIntelligenceClient {
     evidence: Array<Record<string, unknown>>;
     deterministicChecks?: Array<Record<string, unknown>>;
     allowedTechnologies?: string[];
+    idempotencyKey?: string;
   }) {
-    const data = await this.post(PYTHON_BACKEND_PATHS.resumesFinalQa, {
-      context: toSnakeContext(input.context),
-      resume: toSnakeResume(input.resume),
-      evidence: input.evidence.map((item) => toSnakeEvidence(item)),
-      deterministic_checks: (input.deterministicChecks ?? []).map((check) => ({
-        label: String(check.label ?? ""),
-        status: check.status ?? "pass",
-        detail: String(check.detail ?? ""),
-      })),
-      allowed_technologies: input.allowedTechnologies ?? [],
-    });
+    const data = await this.post(
+      PYTHON_BACKEND_PATHS.resumesFinalQa,
+      {
+        context: toSnakeContext(input.context),
+        resume: toSnakeResume(input.resume),
+        evidence: input.evidence.map((item) => toSnakeEvidence(item)),
+        deterministic_checks: (input.deterministicChecks ?? []).map((check) => ({
+          label: String(check.label ?? ""),
+          status: check.status ?? "pass",
+          detail: String(check.detail ?? ""),
+        })),
+        allowed_technologies: input.allowedTechnologies ?? [],
+      },
+      input.idempotencyKey,
+    );
     const parsed = FinalQaResponseSchema.parse(data);
     const usage = mapProviderUsage(parsed.usage);
     return {
@@ -707,37 +878,93 @@ export class PythonIntelligenceClient {
   }
 
   private async post(path: string, body: unknown, idempotencyKey?: string): Promise<Record<string, unknown>> {
-    if (this.circuitOpen()) {
-      throw new Error("PYTHON_BACKEND_CIRCUIT_OPEN");
-    }
+    this.assertCircuitAllowsRequest();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let failureCounted = false;
     try {
       const headers: Record<string, string> = {
         "content-type": "application/json",
         authorization: `Bearer ${this.token}`,
       };
       if (idempotencyKey) headers["idempotency-key"] = idempotencyKey;
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const json = (await response.json()) as Record<string, unknown>;
-      if (!response.ok) {
-        this.bumpFailure();
-        failureCounted = true;
-        const detail = json.detail as { code?: string; message?: string } | undefined;
-        throw new Error(detail?.code ?? `PYTHON_BACKEND_${response.status}`);
+
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseUrl}${path}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        const aborted =
+          controller.signal.aborted ||
+          (error instanceof Error && (error.name === "AbortError" || /aborted|timeout/i.test(error.message)));
+        const pyError = new PythonBackendError({
+          status: 0,
+          code: aborted ? "PYTHON_BACKEND_TIMEOUT" : "PYTHON_BACKEND_UNAVAILABLE",
+          sanitizedMessage: aborted
+            ? "Python intelligence request timed out"
+            : "Python intelligence backend unavailable",
+          retryable: true,
+        });
+        this.recordRetryableFailure();
+        logger.warn(
+          { path, status: pyError.status, code: pyError.code, retryable: pyError.retryable },
+          "python intelligence request failed",
+        );
+        throw pyError;
       }
-      this.failures = 0;
+
+      let json: Record<string, unknown> = {};
+      const rawText = await response.text();
+      if (rawText.trim()) {
+        try {
+          const parsed = JSON.parse(rawText) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            json = parsed as Record<string, unknown>;
+          }
+        } catch {
+          json = {};
+        }
+      }
+
+      if (!response.ok) {
+        const detail = (json.detail ?? {}) as {
+          code?: string;
+          message?: string;
+          [key: string]: unknown;
+        };
+        const code =
+          typeof detail.code === "string" && detail.code
+            ? detail.code
+            : `PYTHON_BACKEND_${response.status}`;
+        const sanitizedMessage =
+          typeof detail.message === "string" && detail.message
+            ? detail.message.slice(0, 200)
+            : `Python backend error ${response.status}`;
+        const pyError = new PythonBackendError({
+          status: response.status,
+          code,
+          sanitizedMessage,
+          details: detail,
+          retryable: isRetryableStatus(response.status),
+        });
+        if (pyError.retryable) {
+          this.recordRetryableFailure();
+        } else {
+          // Non-retryable HTTP response proves the backend is reachable.
+          this.recordSuccess();
+        }
+        logger.warn(
+          { path, status: pyError.status, code: pyError.code, retryable: pyError.retryable },
+          "python intelligence request failed",
+        );
+        throw pyError;
+      }
+
+      this.recordSuccess();
       return json;
-    } catch (error) {
-      if (!failureCounted) this.bumpFailure();
-      logger.warn({ err: error, path }, "python intelligence request failed");
-      throw error;
     } finally {
       clearTimeout(timer);
     }

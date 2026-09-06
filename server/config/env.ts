@@ -42,6 +42,8 @@ export const envSchema = z.object({
   PYTHON_BACKEND_TOKEN: z.string().default("dev-python-backend-token-change-me"),
   /** Percent of shadow-mode stages that also call Python for comparison metrics (0–100). */
   SHADOW_SAMPLE_PERCENT: z.coerce.number().min(0).max(100).default(0),
+  /** Comma-separated tenant ids allowed to use python/shadow when env mode is python or shadow. Empty = none. */
+  PYTHON_INTELLIGENCE_TENANT_ALLOWLIST: z.string().default(""),
   WORKFLOW_ENGINE: z.enum(["db", "temporal"]).default("db"),
   TEMPORAL_ADDRESS: z.string().default("localhost:7233"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
