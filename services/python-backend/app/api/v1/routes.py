@@ -9,6 +9,7 @@ from app.core.errors import (
     CROSS_OWNER_EVIDENCE,
     CROSS_TENANT_EVIDENCE,
     EVIDENCE_STORE_UNAVAILABLE,
+    IDEMPOTENCY_IN_PROGRESS,
     IDEMPOTENCY_KEY_REUSED,
     ProviderError,
     http_status_for,
@@ -101,10 +102,10 @@ async def _with_idempotency(
     try:
         begun = await store.begin(key, digest, lock_ttl)
     except ProviderError as exc:
-        if exc.code == IDEMPOTENCY_KEY_REUSED:
+        if exc.code in {IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_IN_PROGRESS}:
             raise HTTPException(
                 status_code=409,
-                detail={"code": IDEMPOTENCY_KEY_REUSED, "message": exc.message},
+                detail={"code": exc.code, "message": exc.message},
             ) from exc
         raise HTTPException(status_code=http_status_for(exc.code), detail={"code": exc.code, "message": exc.message}) from exc
 

@@ -7,8 +7,13 @@ import asyncio
 import pytest
 
 from app.core.config import Settings
-from app.core.errors import ProviderError
+from app.core.errors import IDEMPOTENCY_IN_PROGRESS, IDEMPOTENCY_KEY_REUSED, ProviderError, http_status_for
 from app.core.idempotency import MemoryIdempotencyStore, lock_ttl_seconds
+
+
+def test_idempotency_in_progress_maps_to_409() -> None:
+    assert http_status_for(IDEMPOTENCY_IN_PROGRESS) == 409
+    assert http_status_for(IDEMPOTENCY_KEY_REUSED) == 409
 
 
 def test_lock_ttl_setting_above_120() -> None:

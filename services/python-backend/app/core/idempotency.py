@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.core.errors import IDEMPOTENCY_KEY_REUSED, ProviderError
+from app.core.errors import IDEMPOTENCY_IN_PROGRESS, IDEMPOTENCY_KEY_REUSED, ProviderError
 
 # Compare-and-delete: only delete if owner matches.
 _RELEASE_LUA = """
@@ -134,7 +134,7 @@ class MemoryIdempotencyStore:
                     raise ProviderError(IDEMPOTENCY_KEY_REUSED, "Idempotency key reused with different request body")
                 if existing.response is not None:
                     return IdempotencyBeginResult(cached_response=existing.response, owner=None)
-                raise ProviderError("IDEMPOTENCY_IN_PROGRESS", "Request with this idempotency key is in progress")
+                raise ProviderError(IDEMPOTENCY_IN_PROGRESS, "Request with this idempotency key is in progress")
             owner = str(uuid.uuid4())
             self._entries[key] = _MemoryEntry(
                 request_hash=request_hash,
@@ -214,7 +214,7 @@ class RedisIdempotencyStore:
             _, lock_hash = _parse_lock(await self._redis.get(lock_key))
             if lock_hash and lock_hash != request_hash:
                 raise ProviderError(IDEMPOTENCY_KEY_REUSED, "Idempotency key reused with different request body")
-            raise ProviderError("IDEMPOTENCY_IN_PROGRESS", "Request with this idempotency key is in progress")
+            raise ProviderError(IDEMPOTENCY_IN_PROGRESS, "Request with this idempotency key is in progress")
 
         existing = await self._redis.get(data_key)
         if existing:
