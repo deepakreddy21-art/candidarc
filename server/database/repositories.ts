@@ -469,10 +469,10 @@ export interface WorkflowRepository {
 }
 
 export interface UsageRepository {
-  findByIdempotency(idempotencyKey: string): Promise<UsageLedgerRecord | null>;
+  findByIdempotency(tenantId: string, idempotencyKey: string): Promise<UsageLedgerRecord | null>;
   append(entry: Omit<UsageLedgerRecord, "id" | "publicId" | "createdAt"> & { id?: string; publicId?: string }): Promise<UsageLedgerRecord>;
-  updateStatus(idempotencyKey: string, status: UsageLedgerRecord["status"]): Promise<UsageLedgerRecord>;
-  releaseReservedForWorkflowRun(workflowRunId: string): Promise<number>;
+  updateStatus(tenantId: string, idempotencyKey: string, status: UsageLedgerRecord["status"]): Promise<UsageLedgerRecord>;
+  releaseReservedForWorkflowRun(tenantId: string, workflowRunId: string): Promise<number>;
 }
 
 export interface FileRepository {
@@ -751,7 +751,7 @@ export class MemoryRepositories implements Repositories {
           items = items.filter((e) => e.ownerUserId === opts.ownerUserId);
         }
         if (opts?.applicationPublicId) {
-          items = items.filter((e) => !e.excludedFromApplicationIds.includes(opts.applicationPublicId!));
+          items = items.filter((e) => !(e.excludedFromApplicationIds ?? []).includes(opts.applicationPublicId!));
         }
         return items;
       },
@@ -770,6 +770,8 @@ export class MemoryRepositories implements Repositories {
       async create(item) {
         const record: EvidenceRecord = {
           ...item,
+          excludedFromApplicationIds: item.excludedFromApplicationIds ?? [],
+          matchedApplicationIds: item.matchedApplicationIds ?? [],
           version: item.version ?? 1,
           createdAt: nowIso(),
           updatedAt: nowIso(),
@@ -1048,15 +1050,15 @@ export class MemoryRepositories implements Repositories {
     };
 
     this.usage = {
-      async findByIdempotency(idempotencyKey) {
+      async findByIdempotency(tenantId, idempotencyKey) {
         for (const u of store.usageLedger.values()) {
-          if (u.idempotencyKey === idempotencyKey) return u;
+          if (u.tenantId === tenantId && u.idempotencyKey === idempotencyKey) return u;
         }
         return null;
       },
       async append(entry) {
         for (const u of store.usageLedger.values()) {
-          if (u.idempotencyKey === entry.idempotencyKey) return u;
+          if (u.tenantId === entry.tenantId && u.idempotencyKey === entry.idempotencyKey) return u;
         }
         const record: UsageLedgerRecord = {
           ...entry,
@@ -1067,10 +1069,10 @@ export class MemoryRepositories implements Repositories {
         store.usageLedger.set(record.id, record);
         return record;
       },
-      async updateStatus(idempotencyKey, status) {
+      async updateStatus(tenantId, idempotencyKey, status) {
         let existing: UsageLedgerRecord | null = null;
         for (const u of store.usageLedger.values()) {
-          if (u.idempotencyKey === idempotencyKey) {
+          if (u.tenantId === tenantId && u.idempotencyKey === idempotencyKey) {
             existing = u;
             break;
           }
@@ -1080,10 +1082,14 @@ export class MemoryRepositories implements Repositories {
         store.usageLedger.set(existing.id, updated);
         return updated;
       },
-      async releaseReservedForWorkflowRun(workflowRunId) {
+      async releaseReservedForWorkflowRun(tenantId, workflowRunId) {
         let released = 0;
         for (const entry of store.usageLedger.values()) {
-          if (entry.workflowRunId === workflowRunId && entry.status === "reserved") {
+          if (
+            entry.tenantId === tenantId &&
+            entry.workflowRunId === workflowRunId &&
+            entry.status === "reserved"
+          ) {
             entry.status = "released";
             store.usageLedger.set(entry.id, entry);
             released += 1;

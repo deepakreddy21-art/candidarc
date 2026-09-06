@@ -95,7 +95,7 @@ export async function handleWorkflowJobExhausted(
     }
 
     if (run && run.stage !== "FAILED" && run.status !== "failed") {
-      await repos.usage.releaseReservedForWorkflowRun(run.id);
+      await repos.usage.releaseReservedForWorkflowRun(run.tenantId, run.id);
       await engine.transition(run.id, "FAILED", {
         status: "failed",
         message: "Document rendering failed after retries",
@@ -144,7 +144,7 @@ export async function handleWorkflowJobExhausted(
 
   const failedAtStage = (payload.stage ?? run.stage) as WorkflowStage;
 
-  await repos.usage.releaseReservedForWorkflowRun(run.id);
+  await repos.usage.releaseReservedForWorkflowRun(run.tenantId, run.id);
 
   const updated = await engine.transition(run.id, "FAILED", {
     status: "failed",

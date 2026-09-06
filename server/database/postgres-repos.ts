@@ -1283,53 +1283,71 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
 
 function createUsageRepository(db: Db): Repositories["usage"] {
   return {
-    findByIdempotency: async (idempotencyKey) => {
+    findByIdempotency: async (tenantId, idempotencyKey) => {
       const row = (
-        await db.select().from(s.usageLedger).where(eq(s.usageLedger.idempotencyKey, idempotencyKey)).limit(1)
+        await db
+          .select()
+          .from(s.usageLedger)
+          .where(and(eq(s.usageLedger.tenantId, tenantId), eq(s.usageLedger.idempotencyKey, idempotencyKey)))
+          .limit(1)
       )[0];
       return row ? mapUsage(row) : null;
     },
     append: async (entry) => {
+      const inserted = await db
+        .insert(s.usageLedger)
+        .values({
+          id: entry.id,
+          publicId: entry.publicId ?? newId("ulp"),
+          tenantId: entry.tenantId,
+          userId: entry.userId,
+          kind: entry.kind as typeof s.usageLedger.$inferInsert.kind,
+          units: String(entry.units),
+          costCents: String(entry.costCents),
+          workflowRunId: entry.workflowRunId,
+          idempotencyKey: entry.idempotencyKey,
+          status: entry.status,
+          metadata: entry.metadata ?? {},
+        })
+        .onConflictDoNothing({
+          target: [s.usageLedger.tenantId, s.usageLedger.idempotencyKey],
+        })
+        .returning();
+      if (inserted[0]) return mapUsage(inserted[0]);
       const existing = (
-        await db.select().from(s.usageLedger).where(eq(s.usageLedger.idempotencyKey, entry.idempotencyKey)).limit(1)
-      )[0];
-      if (existing) return mapUsage(existing);
-      const row = (
         await db
-          .insert(s.usageLedger)
-          .values({
-            id: entry.id,
-            publicId: entry.publicId ?? newId("ulp"),
-            tenantId: entry.tenantId,
-            userId: entry.userId,
-            kind: entry.kind as typeof s.usageLedger.$inferInsert.kind,
-            units: String(entry.units),
-            costCents: String(entry.costCents),
-            workflowRunId: entry.workflowRunId,
-            idempotencyKey: entry.idempotencyKey,
-            status: entry.status,
-            metadata: entry.metadata ?? {},
-          })
-          .returning()
-      )[0]!;
-      return mapUsage(row);
+          .select()
+          .from(s.usageLedger)
+          .where(
+            and(eq(s.usageLedger.tenantId, entry.tenantId), eq(s.usageLedger.idempotencyKey, entry.idempotencyKey)),
+          )
+          .limit(1)
+      )[0];
+      if (!existing) throw new AppError("USAGE_NOT_FOUND", "Usage ledger entry not found after conflict", 404);
+      return mapUsage(existing);
     },
-    updateStatus: async (idempotencyKey, status) => {
+    updateStatus: async (tenantId, idempotencyKey, status) => {
       const row = (
         await db
           .update(s.usageLedger)
           .set({ status })
-          .where(eq(s.usageLedger.idempotencyKey, idempotencyKey))
+          .where(and(eq(s.usageLedger.tenantId, tenantId), eq(s.usageLedger.idempotencyKey, idempotencyKey)))
           .returning()
       )[0];
       if (!row) throw new AppError("USAGE_NOT_FOUND", "Usage ledger entry not found", 404);
       return mapUsage(row);
     },
-    releaseReservedForWorkflowRun: async (workflowRunId) => {
+    releaseReservedForWorkflowRun: async (tenantId, workflowRunId) => {
       const rows = await db
         .update(s.usageLedger)
         .set({ status: "released" })
-        .where(and(eq(s.usageLedger.workflowRunId, workflowRunId), eq(s.usageLedger.status, "reserved")))
+        .where(
+          and(
+            eq(s.usageLedger.tenantId, tenantId),
+            eq(s.usageLedger.workflowRunId, workflowRunId),
+            eq(s.usageLedger.status, "reserved"),
+          ),
+        )
         .returning();
       return rows.length;
     },

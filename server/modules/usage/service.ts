@@ -31,9 +31,10 @@ export class UsageService {
   ) {
     const user = requireUser(ctx);
     const tenantId = this.tenantId(ctx);
-    const existing = await this.usage.findByIdempotency(input.idempotencyKey);
+    const scopedKey = `${tenantId}:${input.idempotencyKey}`;
+    const existing = await this.usage.findByIdempotency(tenantId, scopedKey);
     if (existing) {
-      logger.debug({ idempotencyKey: input.idempotencyKey }, "usage reserve idempotent hit");
+      logger.debug({ idempotencyKey: scopedKey }, "usage reserve idempotent hit");
       return existing;
     }
     return this.usage.append({
@@ -43,45 +44,70 @@ export class UsageService {
       units: String(input.units),
       costCents: String(input.costCents ?? 0),
       workflowRunId: input.workflowRunId,
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey: scopedKey,
       status: "reserved",
       metadata: input.metadata ?? {},
     });
   }
 
-  async commitUsage(ctx: AuthContext, idempotencyKey: string, costCents?: number | string) {
-    this.tenantId(ctx);
-    const existing = await this.usage.findByIdempotency(idempotencyKey);
+  async commitUsage(ctx: AuthContext, idempotencyKey: string, costCents?: number | string | null) {
+    const tenantId = this.tenantId(ctx);
+    const scopedKey = idempotencyKey.includes(":") ? idempotencyKey : `${tenantId}:${idempotencyKey}`;
+    const existing = await this.usage.findByIdempotency(tenantId, scopedKey);
     if (!existing) throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
+    if (existing.tenantId !== tenantId) {
+      throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
+    }
     if (existing.status === "committed") return existing;
     if (existing.status === "released") {
       throw new AppError("USAGE_ALREADY_RELEASED", "Cannot commit a released reservation", 409);
     }
-    const committed = await this.usage.updateStatus(idempotencyKey, "committed");
-    if (costCents !== undefined && String(costCents) !== existing.costCents) {
+    const committed = await this.usage.updateStatus(tenantId, scopedKey, "committed");
+    // Null/undefined means unknown — never write a zero provider_cost as if cost were known.
+    if (costCents == null) {
       await this.usage.append({
         tenantId: existing.tenantId,
         userId: existing.userId,
         kind: "provider_cost",
         units: "0",
-        costCents: String(costCents),
+        costCents: "0",
         workflowRunId: existing.workflowRunId,
-        idempotencyKey: `${idempotencyKey}:cost`,
+        idempotencyKey: `${scopedKey}:cost-unknown`,
         status: "committed",
-        metadata: { parentKey: idempotencyKey },
+        metadata: {
+          parentKey: scopedKey,
+          costStatus: "unknown",
+          billable: false,
+        },
       });
+      return committed;
     }
+    await this.usage.append({
+      tenantId: existing.tenantId,
+      userId: existing.userId,
+      kind: "provider_cost",
+      units: "0",
+      costCents: String(costCents),
+      workflowRunId: existing.workflowRunId,
+      idempotencyKey: `${scopedKey}:cost`,
+      status: "committed",
+      metadata: { parentKey: scopedKey, costStatus: "known", billable: true },
+    });
     return committed;
   }
 
   async releaseUsage(ctx: AuthContext, idempotencyKey: string) {
-    this.tenantId(ctx);
-    const existing = await this.usage.findByIdempotency(idempotencyKey);
+    const tenantId = this.tenantId(ctx);
+    const scopedKey = idempotencyKey.includes(":") ? idempotencyKey : `${tenantId}:${idempotencyKey}`;
+    const existing = await this.usage.findByIdempotency(tenantId, scopedKey);
     if (!existing) throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
+    if (existing.tenantId !== tenantId) {
+      throw new AppError("USAGE_FORBIDDEN", "Cannot release another tenant's usage", 403);
+    }
     if (existing.status === "committed") {
       throw new AppError("USAGE_ALREADY_COMMITTED", "Cannot release a committed reservation", 409);
     }
     if (existing.status === "released") return existing;
-    return this.usage.updateStatus(idempotencyKey, "released");
+    return this.usage.updateStatus(tenantId, scopedKey, "released");
   }
 }

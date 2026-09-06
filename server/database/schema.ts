@@ -1237,7 +1237,7 @@ export const usageLedger = pgTable(
   },
   (t) => [
     uniqueIndex("usage_ledger_public_id_uidx").on(t.publicId),
-    uniqueIndex("usage_ledger_idempotency_uidx").on(t.idempotencyKey),
+    uniqueIndex("usage_ledger_tenant_idempotency_uidx").on(t.tenantId, t.idempotencyKey),
     index("usage_ledger_tenant_idx").on(t.tenantId),
     index("usage_ledger_created_idx").on(t.createdAt),
   ],
