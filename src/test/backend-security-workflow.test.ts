@@ -186,11 +186,15 @@ describe("workflow integrity", () => {
       costCents: 25,
       idempotencyKey: key,
     });
-    await usage.commitUsage(ctx, key);
-    await usage.commitUsage(ctx, key);
-    const entries = [...store.usageLedger.values()].filter((e) => e.idempotencyKey === key);
-    expect(entries.length).toBe(1);
-    expect(entries[0]?.status).toBe("committed");
+    await usage.commitUsage(ctx, key, 25);
+    await usage.commitUsage(ctx, key, 25);
+    const scoped = `${tenantId}:${key}`;
+    const reservations = [...store.usageLedger.values()].filter((e) => e.idempotencyKey === scoped);
+    const costs = [...store.usageLedger.values()].filter((e) => e.idempotencyKey === `${scoped}:cost`);
+    expect(reservations).toHaveLength(1);
+    expect(reservations[0]?.status).toBe("committed");
+    expect(costs).toHaveLength(1);
+    expect(costs[0]?.costCents).toBe("25");
   });
 
   it("pipeline research handle is safe to re-run without exploding version count", async () => {

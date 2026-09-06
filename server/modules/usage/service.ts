@@ -18,6 +18,11 @@ export class UsageService {
     return ctx.activeTenantId;
   }
 
+  private scopeKey(tenantId: string, idempotencyKey: string) {
+    const prefix = `${tenantId}:`;
+    return idempotencyKey.startsWith(prefix) ? idempotencyKey : `${prefix}${idempotencyKey}`;
+  }
+
   async reserveUsage(
     ctx: AuthContext,
     input: {
@@ -31,7 +36,7 @@ export class UsageService {
   ) {
     const user = requireUser(ctx);
     const tenantId = this.tenantId(ctx);
-    const scopedKey = `${tenantId}:${input.idempotencyKey}`;
+    const scopedKey = this.scopeKey(tenantId, input.idempotencyKey);
     const existing = await this.usage.findByIdempotency(tenantId, scopedKey);
     if (existing) {
       logger.debug({ idempotencyKey: scopedKey }, "usage reserve idempotent hit");
@@ -52,7 +57,7 @@ export class UsageService {
 
   async commitUsage(ctx: AuthContext, idempotencyKey: string, costCents?: number | string | null) {
     const tenantId = this.tenantId(ctx);
-    const scopedKey = idempotencyKey.includes(":") ? idempotencyKey : `${tenantId}:${idempotencyKey}`;
+    const scopedKey = this.scopeKey(tenantId, idempotencyKey);
     const existing = await this.usage.findByIdempotency(tenantId, scopedKey);
     if (!existing) throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
     if (existing.tenantId !== tenantId) {
@@ -98,7 +103,7 @@ export class UsageService {
 
   async releaseUsage(ctx: AuthContext, idempotencyKey: string) {
     const tenantId = this.tenantId(ctx);
-    const scopedKey = idempotencyKey.includes(":") ? idempotencyKey : `${tenantId}:${idempotencyKey}`;
+    const scopedKey = this.scopeKey(tenantId, idempotencyKey);
     const existing = await this.usage.findByIdempotency(tenantId, scopedKey);
     if (!existing) throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
     if (existing.tenantId !== tenantId) {

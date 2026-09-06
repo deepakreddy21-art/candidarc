@@ -100,7 +100,7 @@ describe("python cutover application boundary", () => {
     vi.stubEnv("PYTHON_INTELLIGENCE_TENANT_ALLOWLIST", TENANT);
     resetEnvCache();
 
-    providerSpy = vi.spyOn(aiIndex, "getProviderForRole");
+    providerSpy = vi.spyOn(aiIndex, "getProviderForRole") as ReturnType<typeof vi.spyOn>;
     const client = {
       parseJob: vi.fn(async () => {
         calls.push("parse");
@@ -262,6 +262,7 @@ describe("python cutover application boundary", () => {
       email: "cutover@example.com",
       name: "Cutover Candidate",
       passwordHash: "x",
+      emailVerified: true,
     });
 
     const app = await repos.applications.create({
@@ -280,6 +281,11 @@ describe("python cutover application boundary", () => {
       nextAction: "Research",
       researchConfidence: 0,
       evidenceCoverage: 0,
+      resumeScore: 0,
+      atsAlignment: 0,
+      interviewStatus: "not-started",
+      archived: false,
+      roleFamily: "General",
       metadata: {
         jobDescription:
           "Northwind Labs is seeking a Platform Engineer. Python required. " + "detail ".repeat(10),
@@ -293,6 +299,7 @@ describe("python cutover application boundary", () => {
       publicId: "ev_cutover_1",
       tenantId: TENANT,
       ownerUserId: USER,
+      candidateProfileId: null,
       title: "Northwind",
       organization: "Northwind Labs",
       situation: "s",
