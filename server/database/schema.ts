@@ -1,11 +1,13 @@
 import {
   boolean,
+  customType,
   index,
   integer,
   jsonb,
   numeric,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -24,6 +26,24 @@ const updatedAt = () =>
 const deletedAt = () => ts("deleted_at");
 const publicId = () => text("public_id").notNull();
 const version = () => integer("version").notNull().default(1);
+
+/** pgvector column — dimensions configured at migration time (default 1536). */
+const vector1536 = customType<{ data: number[]; driverData: string }>({
+  dataType() {
+    return "vector(1536)";
+  },
+  toDriver(value: number[]): string {
+    return `[${value.map((v) => Number(v).toFixed(8)).join(",")}]`;
+  },
+  fromDriver(value: unknown): number[] {
+    if (Array.isArray(value)) return value.map(Number);
+    const textValue = String(value ?? "").trim();
+    if (!textValue.startsWith("[") || !textValue.endsWith("]")) return [];
+    const inner = textValue.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner.split(",").map((part) => Number(part.trim()));
+  },
+});
 
 export const tenantRoleEnum = pgEnum("tenant_role", [
   "owner",
@@ -555,6 +575,60 @@ export const evidenceAttachments = pgTable(
     uniqueIndex("evidence_attachments_public_id_uidx").on(t.publicId),
     index("evidence_attachments_tenant_idx").on(t.tenantId),
     index("evidence_attachments_item_idx").on(t.evidenceItemId),
+  ],
+);
+
+/** Python resume-intelligence embedding documents (tenant+owner scoped). */
+export const evidenceDocuments = pgTable(
+  "evidence_documents",
+  {
+    documentId: text("document_id").notNull(),
+    tenantId: text("tenant_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    sourceType: text("source_type").notNull(),
+    sourceIdentifier: text("source_identifier").notNull(),
+    sourceSpan: text("source_span"),
+    contentHash: text("content_hash").notNull(),
+    embeddingModel: text("embedding_model").notNull(),
+    embeddingDimensions: integer("embedding_dimensions").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.ownerUserId, t.documentId] }),
+    uniqueIndex("evidence_documents_content_hash_uidx").on(
+      t.tenantId,
+      t.ownerUserId,
+      t.sourceType,
+      t.sourceIdentifier,
+      t.contentHash,
+    ),
+    index("evidence_documents_tenant_owner_idx").on(t.tenantId, t.ownerUserId),
+  ],
+);
+
+/** Chunked evidence text + pgvector embeddings for retrieval. */
+export const evidenceChunks = pgTable(
+  "evidence_chunks",
+  {
+    chunkId: text("chunk_id").primaryKey(),
+    documentId: text("document_id").notNull(),
+    tenantId: text("tenant_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    sourceType: text("source_type").notNull(),
+    sourceIdentifier: text("source_identifier").notNull(),
+    sourceSpan: text("source_span"),
+    contentHash: text("content_hash").notNull(),
+    chunkText: text("chunk_text").notNull(),
+    embedding: vector1536("embedding"),
+    embeddingModel: text("embedding_model").notNull(),
+    embeddingDimensions: integer("embedding_dimensions").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("evidence_chunks_owner_idx").on(t.tenantId, t.ownerUserId),
+    index("evidence_chunks_document_idx").on(t.tenantId, t.ownerUserId, t.documentId),
   ],
 );
 
@@ -1731,6 +1805,8 @@ export const schema = {
   evidenceItems,
   evidenceMetrics,
   evidenceAttachments,
+  evidenceDocuments,
+  evidenceChunks,
   evidenceApplicationMatches,
   resumes,
   resumeVersions,

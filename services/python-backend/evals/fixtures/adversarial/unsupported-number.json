@@ -1,0 +1,58 @@
+{
+  "id": "unsupported-number",
+  "resume": {
+    "absolute_version": 0,
+    "cycle_step": 0,
+    "version_number": 0,
+    "score": 50,
+    "score_breakdown": {
+      "atsCompatibility": 50,
+      "jobAlignment": 50,
+      "recruiterReadability": 50,
+      "impact": 50,
+      "quantification": 50,
+      "technicalDepth": 50,
+      "competencyCoverage": 50,
+      "evidenceConfidence": 50,
+      "writingQuality": 50,
+      "formatIntegrity": 50
+    },
+    "notes": "adversarial unsupported number",
+    "sections": [
+      {
+        "type": "experience",
+        "title": "Experience",
+        "order": 0,
+        "bullets": [
+          {
+            "text": "Scaled platform to 500 concurrent users at Acme Labs",
+            "evidence_ids": ["ev-num-1"],
+            "matched_requirements": [],
+            "technologies": ["Python"],
+            "confidence": "high",
+            "claim_risk": "high",
+            "source_version": "career-evidence"
+          }
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "ev-num-1",
+      "tenant_id": "ten_adv",
+      "owner_user_id": "user_adv",
+      "title": "Engineer",
+      "organization": "Acme Labs",
+      "claim_text": "Engineer at Acme Labs supporting 50 concurrent users with Python",
+      "technologies": ["Python"],
+      "source_type": "employment",
+      "verification_status": "user_attested",
+      "candidate_confirmation_status": "confirmed",
+      "confidence": "high",
+      "metrics": ["50 concurrent users"]
+    }
+  ],
+  "allowed_technologies": ["Python"],
+  "expected_violations": ["UNSUPPORTED_NUMBER"]
+}

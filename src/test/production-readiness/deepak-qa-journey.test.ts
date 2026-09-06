@@ -24,6 +24,8 @@ import { join } from "path";
 import type { WorkflowStage } from "../../../server/domain/types";
 import { AUDIT_SEQUENCE } from "../../../server/domain/types";
 import { hashPassword } from "../../../server/auth/password";
+import { resetEnvCache } from "../../../server/config/env";
+import { resetDbCache } from "../../../server/database/client";
 
 const FORBIDDEN_PII = [
   Buffer.from("MzEyLTQ1OS05ODY5", "base64").toString("utf8"),
@@ -37,17 +39,53 @@ function assertNoPrivatePii(haystack: string) {
   }
 }
 
+type WorkflowStatusProbe = {
+  status?: string;
+  error?: string | null;
+  message?: string | null;
+};
+
 async function waitFor(
   predicate: () => Promise<boolean> | boolean,
   timeoutMs = 30_000,
   intervalMs = 50,
+  onTimeout?: () => Promise<string | void> | string | void,
 ): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     if (await predicate()) return;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(`Timed out after ${timeoutMs}ms waiting for condition`);
+  const detail = onTimeout ? await onTimeout() : undefined;
+  throw new Error(
+    detail
+      ? `Timed out after ${timeoutMs}ms waiting for condition: ${detail}`
+      : `Timed out after ${timeoutMs}ms waiting for condition`,
+  );
+}
+
+async function waitForWorkflowStatus(
+  fetchStatus: () => Promise<WorkflowStatusProbe>,
+  accept: (status: WorkflowStatusProbe) => boolean,
+  timeoutMs: number,
+): Promise<WorkflowStatusProbe> {
+  let last: WorkflowStatusProbe = {};
+  await waitFor(
+    async () => {
+      last = await fetchStatus();
+      if (last.status === "failed" && !accept(last)) {
+        throw new Error(
+          `Workflow failed early: status=${last.status} error=${last.error ?? ""} message=${last.message ?? ""}`,
+        );
+      }
+      return accept(last);
+    },
+    timeoutMs,
+    50,
+    () =>
+      `workflow status=${last.status ?? "unknown"} error=${last.error ?? ""} message=${last.message ?? ""}`,
+  );
+  return last;
 }
 
 async function seedOwnedEvidenceLedger(
@@ -280,6 +318,8 @@ describe("Deepak QA production readiness journey", () => {
     process.env.CANDIDARC_DATA_MODE = "memory";
     process.env.QUEUE_BACKEND = "inprocess";
     process.env.SESSION_SECRET = "candidarc-dev-session-secret-change-me!!";
+    resetEnvCache();
+    resetDbCache();
     storageDir = mkdtempSync(join(tmpdir(), "candidarc-qa-"));
     process.env.STORAGE_LOCAL_PATH = storageDir;
     storage = new LocalFilesystemStorage(storageDir);
@@ -507,10 +547,15 @@ describe("Deepak QA production readiness journey", () => {
       idempotencyKey: `qa-${createHash("sha256").update(QA.targetJob.description).digest("hex").slice(0, 16)}`,
     });
 
-    await waitFor(async () => {
-      const status = await service.getCustomerWorkflow(ctx, generated.workflowId);
-      return status.status === "completed" || status.status === "failed" || status.status === "needs_input" || status.status === "creating";
-    }, 20_000);
+    await waitForWorkflowStatus(
+      () => service.getCustomerWorkflow(ctx, generated.workflowId),
+      (status) =>
+        status.status === "completed" ||
+        status.status === "failed" ||
+        status.status === "needs_input" ||
+        status.status === "creating",
+      20_000,
+    );
 
     // Tech answers through real service API (not direct workflow mutation)
     const techPayload = [
@@ -562,10 +607,11 @@ describe("Deepak QA production readiness journey", () => {
       expect.arrayContaining(["jax", "google tpu", "nvidia triton", "aws trainium", "vllm", "ray"].map((t) => t)),
     );
 
-    await waitFor(async () => {
-      const status = await service.getCustomerWorkflow(ctx, generated.workflowId);
-      return status.status === "completed" || status.status === "failed";
-    }, 60_000);
+    await waitForWorkflowStatus(
+      () => service.getCustomerWorkflow(ctx, generated.workflowId),
+      (status) => status.status === "completed" || status.status === "failed",
+      60_000,
+    );
 
     const finalStatus = await service.getCustomerWorkflow(ctx, generated.workflowId);
     expect(["completed", "failed"]).toContain(finalStatus.status);
@@ -582,17 +628,19 @@ describe("Deepak QA production readiness journey", () => {
       expect(finalStatus.error || finalStatus.message).toMatch(/couldn.?t|try again|retry/i);
       const retried = await service.retry(ctx, generated.workflowId);
       expect(retried.status).toBe("queued");
-      await waitFor(async () => {
-        const status = await service.getCustomerWorkflow(ctx, generated.workflowId);
-        return status.status === "completed" || status.status === "failed" || status.status === "creating";
-      }, 60_000);
+      await waitForWorkflowStatus(
+        () => service.getCustomerWorkflow(ctx, generated.workflowId),
+        (status) =>
+          status.status === "completed" || status.status === "failed" || status.status === "creating",
+        60_000,
+      );
     }
 
-    const completed = await waitFor(async () => {
-      const status = await service.getCustomerWorkflow(ctx, generated.workflowId);
-      return status.status === "completed";
-    }, 90_000).then(() => true);
-    expect(completed).toBe(true);
+    await waitForWorkflowStatus(
+      () => service.getCustomerWorkflow(ctx, generated.workflowId),
+      (status) => status.status === "completed",
+      90_000,
+    );
     const ready = await service.getCustomerWorkflow(ctx, generated.workflowId);
 
     expect(ready.status).toBe("completed");
@@ -662,10 +710,11 @@ describe("Deepak QA production readiness journey", () => {
     // Enhancement after completion — new cycle must complete without schema violations
     const enhanced = await service.createEnhancedVersion(ctx, generated.workflowId);
     expect(enhanced.workflowId).not.toBe(generated.workflowId);
-    await waitFor(async () => {
-      const status = await service.getCustomerWorkflow(ctx, enhanced.workflowId);
-      return status.status === "completed";
-    }, 90_000);
+    await waitForWorkflowStatus(
+      () => service.getCustomerWorkflow(ctx, enhanced.workflowId),
+      (status) => status.status === "completed",
+      90_000,
+    );
     const enhancedReady = await service.getCustomerWorkflow(ctx, enhanced.workflowId);
     expect(enhancedReady.status).toBe("completed");
     const enhancedResume = await repos.resumes.getByApplication(tenant.id, generated.applicationId);

@@ -8,7 +8,14 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     globals: true,
-    exclude: ["**/node_modules/**", "**/e2e/**", "**/dist/**", "**/.next/**"],
+    exclude: [
+      "**/node_modules/**",
+      "**/e2e/**",
+      "**/dist/**",
+      "**/.next/**",
+      // Requires FastAPI venv — run via `npm run test:python-mode`
+      "**/python-mode-generate.test.ts",
+    ],
   },
   resolve: {
     alias: {

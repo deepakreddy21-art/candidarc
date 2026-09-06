@@ -1,0 +1,64 @@
+{
+  "id": "fabricated-employer",
+  "resume": {
+    "absolute_version": 0,
+    "cycle_step": 0,
+    "version_number": 0,
+    "score": 50,
+    "score_breakdown": {
+      "atsCompatibility": 50,
+      "jobAlignment": 50,
+      "recruiterReadability": 50,
+      "impact": 50,
+      "quantification": 50,
+      "technicalDepth": 50,
+      "competencyCoverage": 50,
+      "evidenceConfidence": 50,
+      "writingQuality": 50,
+      "formatIntegrity": 50
+    },
+    "notes": "adversarial fabricated employer",
+    "sections": [
+      {
+        "type": "experience",
+        "title": "Experience",
+        "order": 0,
+        "items": [
+          {
+            "heading": "Phantom Global Systems",
+            "subheading": "Staff Engineer",
+            "dates": "2020 – Present",
+            "bullets": [
+              {
+                "text": "Led Python platform work at Phantom Global Systems",
+                "evidence_ids": ["ev-emp-1"],
+                "matched_requirements": [],
+                "technologies": ["Python"],
+                "confidence": "high",
+                "claim_risk": "high",
+                "source_version": "career-evidence"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "ev-emp-1",
+      "tenant_id": "ten_adv",
+      "owner_user_id": "user_adv",
+      "title": "Engineer",
+      "organization": "Acme Labs",
+      "claim_text": "Engineer at Acme Labs building Python services, 2020 – Present",
+      "technologies": ["Python"],
+      "source_type": "employment",
+      "verification_status": "user_attested",
+      "candidate_confirmation_status": "confirmed",
+      "confidence": "high"
+    }
+  ],
+  "allowed_technologies": ["Python"],
+  "expected_violations": ["UNSUPPORTED_COMPANY"]
+}
