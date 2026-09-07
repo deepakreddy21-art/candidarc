@@ -224,6 +224,8 @@ describe("resume generation crash recovery", () => {
       applicationPublicId: app.publicId,
       stage: "V0_GENERATING",
       status: "running",
+      attempt: 1,
+      maxAttempts: 3,
       idempotencyKey: `idem_crash_${Date.now()}`,
       payload: { customerFacing: true, autoAdvanceAudits: true, executionBackend: "python" },
       createdAt: nowIso(),
