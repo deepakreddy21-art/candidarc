@@ -248,7 +248,7 @@ describe("ResumePipeline generation crash recovery (postgres)", () => {
       claimText: "Platform Engineer at TechCorp.",
       verificationStatus: "user_attested",
       candidateConfirmationStatus: "confirmed",
-      privacyLevel: "standard",
+      privacyLevel: "share-safe",
       payload: {},
       excludedFromApplicationIds: [],
       matchedApplicationIds: [],

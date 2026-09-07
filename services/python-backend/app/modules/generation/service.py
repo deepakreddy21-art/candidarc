@@ -16,6 +16,7 @@ from app.domain.schemas import (
     ResearchFinding,
     ResumeBullet,
     ResumeDocument,
+    ResumeItem,
     ResumeSection,
     UserConfirmation,
 )
@@ -637,16 +638,43 @@ def _bullet_fingerprint(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()[:100]
 
 
+_FINDING_MARKER_RE = re.compile(r"\[(?:hr|em)-\d+/", re.IGNORECASE)
+
+
+def _has_finding_marker(text: str) -> bool:
+    """True when accepted audit findings appended an [hr-N/...] or [em-N/...] marker."""
+    return _FINDING_MARKER_RE.search(text) is not None
+
+
+def _dedupe_prefers(candidate: tuple[int, int, int | None, int, str], existing: tuple[int, int, int | None, int, str]) -> bool:
+    """Choose which colliding bullet to keep.
+
+    Accepted finding markers beat bare claim text. When both (or neither) are
+    marked, prefer higher-priority sections (experience before summary), then
+    longer text so the latest marker-bearing claim survives cross-section copies.
+    """
+    cand_text = candidate[4]
+    existing_text = existing[4]
+    cand_marked = _has_finding_marker(cand_text)
+    existing_marked = _has_finding_marker(existing_text)
+    if cand_marked != existing_marked:
+        return cand_marked
+    if candidate[0] != existing[0]:
+        return candidate[0] < existing[0]
+    return len(cand_text) > len(existing_text)
+
+
 def _dedupe_resume_sections(sections: list[ResumeSection]) -> list[ResumeSection]:
     """Drop later cross-section bullet collisions while keeping sections valid.
 
-    Experience/education bullets win over summary/skills when fingerprints collide.
+    Experience/education bullets win over summary/skills when fingerprints collide,
+    unless the losing bullet carries an accepted finding marker.
     If a summary/skills section would become empty, rewrite its lead bullet to a
     short unique technology line instead of emitting an empty section.
     """
     priority = {"experience": 0, "education": 1, "skills": 2, "summary": 3}
-    claimed: set[str] = set()
-    keep: set[tuple[int, int | None, int]] = set()
+    keep: dict[str, tuple[int, int, int | None, int, str]] = {}
+    unkeyed: list[tuple[int, int | None, int]] = []
 
     candidates: list[tuple[int, int, int | None, int, str]] = []
     for section_index, section in enumerate(sections):
@@ -655,18 +683,35 @@ def _dedupe_resume_sections(sections: list[ResumeSection]) -> list[ResumeSection
             for bullet_index, bullet in enumerate(section.bullets):
                 candidates.append((section_priority, section_index, None, bullet_index, bullet.text))
         if section.items is not None:
-            for item_index, item in enumerate(section.items):
+            for item_idx, item in enumerate(section.items):
                 for bullet_index, bullet in enumerate(item.bullets):
-                    candidates.append((section_priority, section_index, item_index, bullet_index, bullet.text))
+                    candidates.append((section_priority, section_index, item_idx, bullet_index, bullet.text))
 
-    for _section_priority, section_index, item_index, bullet_index, text in sorted(candidates):
-        fingerprint = _bullet_fingerprint(text)
-        key = (section_index, item_index, bullet_index)
-        if fingerprint and fingerprint in claimed:
+    for entry in sorted(
+        candidates,
+        key=lambda row: (
+            0 if _has_finding_marker(row[4]) else 1,
+            row[0],
+            -len(row[4]),
+            row[1],
+            row[2] is not None,
+            row[3],
+        ),
+    ):
+        fingerprint = _bullet_fingerprint(entry[4])
+        if not fingerprint:
+            unkeyed.append((entry[1], entry[2], entry[3]))
             continue
-        if fingerprint:
-            claimed.add(fingerprint)
-        keep.add(key)
+        existing = keep.get(fingerprint)
+        if existing is None or _dedupe_prefers(entry, existing):
+            keep[fingerprint] = entry
+
+    keep_keys = {
+        (section_index, item_idx, bullet_index)
+        for _, section_index, item_idx, bullet_index, _ in keep.values()
+    }
+    keep_keys.update(unkeyed)
+    claimed = set(keep.keys())
 
     result: list[ResumeSection] = []
     for section_index, section in enumerate(sections):
@@ -675,7 +720,7 @@ def _dedupe_resume_sections(sections: list[ResumeSection]) -> list[ResumeSection
             new_bullets = [
                 bullet
                 for bullet_index, bullet in enumerate(section.bullets)
-                if (section_index, None, bullet_index) in keep
+                if (section_index, None, bullet_index) in keep_keys
             ]
             if not new_bullets:
                 techs = sorted(
@@ -715,10 +760,25 @@ def _dedupe_resume_sections(sections: list[ResumeSection]) -> list[ResumeSection
                 item_bullets = [
                     bullet
                     for bullet_index, bullet in enumerate(item.bullets)
-                    if (section_index, item_index, bullet_index) in keep
+                    if (section_index, item_index, bullet_index) in keep_keys
                 ]
                 if not item_bullets and item.bullets:
-                    item_bullets = [item.bullets[0]]
+                    lead = item.bullets[0]
+                    techs = sorted({technology for bullet in item.bullets for technology in bullet.technologies})
+                    org = (item.heading or item.subheading or section.type).strip()
+                    fallback = (
+                        f"{org}: {', '.join(techs[:4])}" if techs else f"{org} role highlights"
+                    )
+                    rewritten = lead.model_copy(update={"text": fallback[:3900]})
+                    fingerprint = _bullet_fingerprint(rewritten.text)
+                    if fingerprint and fingerprint in claimed:
+                        rewritten = lead.model_copy(
+                            update={"text": f"{fallback} ({section.type}-{item_index + 1})"[:3900]}
+                        )
+                        fingerprint = _bullet_fingerprint(rewritten.text)
+                    if fingerprint:
+                        claimed.add(fingerprint)
+                    item_bullets = [rewritten]
                 new_items.append(item.model_copy(update={"bullets": item_bullets}))
         result.append(section.model_copy(update={"bullets": new_bullets, "items": new_items}))
     return result
@@ -785,6 +845,51 @@ def apply_accepted_findings(
             if any(banned in content.lower() for banned in banned_phrases):
                 content = section.content
         sections.append(section.model_copy(update={"bullets": new_bullets, "items": new_items, "content": content}))
+
+    # Propagate each applied finding text onto every same-fingerprint sibling so
+    # cross-section dedupe cannot drop the accepted finding while keeping an older copy.
+    for finding in actionable:
+        replacement = (finding.edited_text or finding.suggested_text or "").strip()
+        fingerprint = _bullet_fingerprint(replacement)
+        if not fingerprint or not _has_finding_marker(replacement):
+            continue
+        applied_somewhere = any(
+            bullet.text == replacement[:3900]
+            for section in sections
+            for bullet in (
+                *(section.bullets or []),
+                *(b for item in (section.items or []) for b in item.bullets),
+            )
+        )
+        if not applied_somewhere:
+            continue
+        synced: list[ResumeSection] = []
+        for section in sections:
+            synced_bullets: list[ResumeBullet] | None = section.bullets
+            if section.bullets is not None:
+                synced_bullets = [
+                    (
+                        bullet.model_copy(update={"text": replacement[:3900]})
+                        if _bullet_fingerprint(bullet.text) == fingerprint
+                        else bullet
+                    )
+                    for bullet in section.bullets
+                ]
+            synced_items: list[ResumeItem] | None = section.items
+            if section.items is not None:
+                synced_items = []
+                for item in section.items:
+                    item_bullets = [
+                        (
+                            bullet.model_copy(update={"text": replacement[:3900]})
+                            if _bullet_fingerprint(bullet.text) == fingerprint
+                            else bullet
+                        )
+                        for bullet in item.bullets
+                    ]
+                    synced_items.append(item.model_copy(update={"bullets": item_bullets}))
+            synced.append(section.model_copy(update={"bullets": synced_bullets, "items": synced_items}))
+        sections = synced
 
     return previous.model_copy(update={"sections": sections})
 
