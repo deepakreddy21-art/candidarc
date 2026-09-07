@@ -272,6 +272,7 @@ describe("resume generation crash recovery", () => {
     "after_provider",
     "after_append",
     "after_current",
+    "after_usage",
     "before_transition",
   ];
 
