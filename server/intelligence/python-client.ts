@@ -595,7 +595,7 @@ export type FinalQaRepairDirective = {
   sourceVersion: number;
   sourceVersionLabel?: string | null;
   attempt: number;
-  failedChecks: Array<{ label: string; status: string; detail?: string }>;
+  failedChecks: Array<{ code: string; label: string; status: string; blocking: boolean; detail?: string }>;
   approvedEvidenceIds?: string[];
   groundedTargets?: string[];
 };
@@ -679,8 +679,10 @@ function buildGenerateBody(input: GenerateResumeInput) {
           source_version_label: input.finalQaRepair.sourceVersionLabel ?? null,
           attempt: input.finalQaRepair.attempt,
           failed_checks: input.finalQaRepair.failedChecks.map((check) => ({
+            code: check.code,
             label: check.label,
             status: check.status,
+            blocking: check.blocking,
             detail: check.detail ?? "",
           })),
           approved_evidence_ids: input.finalQaRepair.approvedEvidenceIds ?? [],
@@ -989,8 +991,10 @@ export class PythonIntelligenceClient {
         resume: toSnakeResume(input.resume),
         evidence: input.evidence.map((item) => toSnakeEvidence(item)),
         deterministic_checks: (input.deterministicChecks ?? []).map((check) => ({
+          code: String(check.code ?? "UNKNOWN"),
           label: String(check.label ?? ""),
           status: check.status ?? "pass",
+          blocking: check.blocking !== false,
           detail: String(check.detail ?? ""),
         })),
         allowed_technologies: input.allowedTechnologies ?? [],
@@ -1003,8 +1007,10 @@ export class PythonIntelligenceClient {
       data: {
         passed: parsed.passed,
         checks: parsed.checks.map((check) => ({
+          code: check.code,
           label: check.label,
           status: mapQaStatus(check.status),
+          blocking: check.blocking,
           detail: check.detail,
         })),
       },

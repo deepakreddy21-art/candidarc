@@ -162,7 +162,7 @@ function createMockPythonClient() {
     finalQa: vi.fn(async () => {
       pythonClientCalls.push("final-qa");
       return {
-        data: { passed: true, checks: [{ label: "truthfulness", status: "pass", detail: "ok" }] },
+        data: { passed: true, checks: [{ code: "REQUIRED_SECTIONS", label: "Required sections", status: "pass", blocking: true, detail: "ok" }] },
         provider: "python",
         model: "mock",
         latencyMs: 3,

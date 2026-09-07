@@ -10,8 +10,9 @@ import pytest
 
 from app.core.config import Settings
 from app.core.errors import MISSING_CREDENTIALS, PROVIDER_OUTPUT_INVALID, ProviderError
-from app.domain.schemas import ResumeDocument
+from app.domain.schemas import FinalQaFailedCheck, FinalQaRepairDirective, ResumeDocument
 from app.main import create_app
+from app.modules.generation.service import generate_grounded_resume
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.openai_provider import OpenAIProvider
 from tests.conftest import qa_evidence
@@ -125,6 +126,45 @@ async def test_openai_parse_called_and_usage_returned() -> None:
     assert usage.input_tokens == 11
     assert usage.output_tokens == 22
     assert usage.provider_request_id == "resp-1"
+
+
+@pytest.mark.asyncio
+async def test_openai_deterministic_repair_never_calls_sdk_and_reports_actual_attribution() -> None:
+    evidence = qa_evidence()
+    previous = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Python platform engineer",
+    )
+    client = MagicMock()
+    client.beta.chat.completions.parse = AsyncMock(side_effect=AssertionError("OpenAI must not be called"))
+    provider = OpenAIProvider(_settings(), role="generation", client=client)
+    repair = FinalQaRepairDirective(
+        source_version=4,
+        failed_checks=[
+            FinalQaFailedCheck(
+                label="Primary technology emphasis",
+                status="fail",
+                detail="Lead with OpenSearch",
+            )
+        ],
+        approved_evidence_ids=["ev-1"],
+        grounded_targets=["OpenSearch"],
+    )
+    _resume, _latency, usage = await provider.generate_resume(
+        absolute_version=5,
+        cycle_step=0,
+        evidence=evidence,
+        previous_resume=previous,
+        allowed_technologies=["Python", "OpenSearch"],
+        job_description="Python platform engineer",
+        final_qa_repair=repair,
+    )
+    client.beta.chat.completions.parse.assert_not_awaited()
+    assert (usage.provider, usage.model) == ("deterministic", "internal")
+    assert (usage.input_tokens, usage.output_tokens, usage.estimated_cost_cents) == (0, 0, 0)
+    assert usage.provider_request_id is None
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -28,6 +29,83 @@ FindingSeverity = Literal["critical", "major", "minor", "suggestion"]
 FindingStatus = Literal["open", "accepted", "rejected", "edited"]
 SectionType = Literal["summary", "skills", "experience", "projects", "education", "certifications"]
 QaStatus = Literal["pass", "warn", "fail", "warning", "pending"]
+
+
+class FinalQaCheckCode(StrEnum):
+    PRIMARY_TECHNOLOGY_EMPHASIS = "PRIMARY_TECHNOLOGY_EMPHASIS"
+    HAS_SUMMARY = "HAS_SUMMARY"
+    HAS_SKILLS = "HAS_SKILLS"
+    HAS_EXPERIENCE = "HAS_EXPERIENCE"
+    DUPLICATE_BULLETS = "DUPLICATE_BULLETS"
+    REQUIRED_SECTIONS = "REQUIRED_SECTIONS"
+    ATS_FORMAT = "ATS_FORMAT"
+    LENGTH_REDUCE = "LENGTH_REDUCE"
+    UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
+    EVIDENCE_LINKED = "EVIDENCE_LINKED"
+    TECHNOLOGY_CLAIMS = "TECHNOLOGY_CLAIMS"
+    SCORE_RUBRIC_PRESENT = "SCORE_RUBRIC_PRESENT"
+    SECTION_COUNT = "SECTION_COUNT"
+    CRITICAL_FINDINGS = "CRITICAL_FINDINGS"
+    EVIDENCE_REFERENCES = "EVIDENCE_REFERENCES"
+    EDUCATION = "EDUCATION"
+    CONTACT_INFORMATION = "CONTACT_INFORMATION"
+    CHRONOLOGY = "CHRONOLOGY"
+    PAGE_LENGTH = "PAGE_LENGTH"
+    UNKNOWN = "UNKNOWN"
+
+
+FINAL_QA_LABEL_BY_CODE: dict[FinalQaCheckCode, str] = {
+    FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS: "Primary technology emphasis",
+    FinalQaCheckCode.HAS_SUMMARY: "Has summary",
+    FinalQaCheckCode.HAS_SKILLS: "Has skills",
+    FinalQaCheckCode.HAS_EXPERIENCE: "Has experience",
+    FinalQaCheckCode.DUPLICATE_BULLETS: "Duplicate bullets",
+    FinalQaCheckCode.REQUIRED_SECTIONS: "Required sections",
+    FinalQaCheckCode.ATS_FORMAT: "ATS format",
+    FinalQaCheckCode.LENGTH_REDUCE: "Length check",
+    FinalQaCheckCode.UNSUPPORTED_CLAIM: "Unsupported factual claim",
+    FinalQaCheckCode.EVIDENCE_LINKED: "Evidence linked",
+    FinalQaCheckCode.TECHNOLOGY_CLAIMS: "Technology claims",
+    FinalQaCheckCode.SCORE_RUBRIC_PRESENT: "Score rubric present",
+    FinalQaCheckCode.SECTION_COUNT: "Section count",
+    FinalQaCheckCode.CRITICAL_FINDINGS: "Critical findings",
+    FinalQaCheckCode.EVIDENCE_REFERENCES: "Evidence references",
+    FinalQaCheckCode.EDUCATION: "Education",
+    FinalQaCheckCode.CONTACT_INFORMATION: "Contact information",
+    FinalQaCheckCode.CHRONOLOGY: "Chronology",
+    FinalQaCheckCode.PAGE_LENGTH: "Page estimate",
+    FinalQaCheckCode.UNKNOWN: "Unknown check",
+}
+FINAL_QA_CODE_BY_LABEL = {label.casefold(): code for code, label in FINAL_QA_LABEL_BY_CODE.items()}
+
+
+def normalize_final_qa_check(data: Any) -> Any:
+    """Map legacy display labels/statuses only while parsing the API contract."""
+    if not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    code = normalized.get("code")
+    label = str(normalized.get("label") or "").strip()
+    if code is None:
+        normalized["code"] = FINAL_QA_CODE_BY_LABEL.get(label.casefold(), FinalQaCheckCode.UNKNOWN)
+    try:
+        typed_code = FinalQaCheckCode(normalized["code"])
+    except (TypeError, ValueError):
+        typed_code = FinalQaCheckCode.UNKNOWN
+    normalized["code"] = typed_code
+    if not label:
+        normalized["label"] = FINAL_QA_LABEL_BY_CODE[typed_code]
+    if normalized.get("status") == "warning":
+        normalized["status"] = "warn"
+    if "blocking" not in normalized:
+        normalized["blocking"] = typed_code not in {
+            FinalQaCheckCode.EDUCATION,
+            FinalQaCheckCode.CONTACT_INFORMATION,
+            FinalQaCheckCode.CHRONOLOGY,
+            FinalQaCheckCode.PAGE_LENGTH,
+            FinalQaCheckCode.SECTION_COUNT,
+        }
+    return normalized
 
 SCORE_RUBRIC_VERSION = "candidarc-score-rubric@v1"
 
@@ -377,9 +455,16 @@ class ProviderUsage(StrictModel):
 class FinalQaFailedCheck(StrictModel):
     """One failed Final-QA check carried into a structured repair directive."""
 
+    code: FinalQaCheckCode
     label: StrShort
     status: QaStatus
+    blocking: bool = True
     detail: str = Field(default="", max_length=4_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_check(cls, data: Any) -> Any:
+        return normalize_final_qa_check(data)
 
 
 class FinalQaRepairDirective(StrictModel):
@@ -473,9 +558,16 @@ class AuditResponse(StrictModel):
 
 
 class DeterministicQaCheck(StrictModel):
+    code: FinalQaCheckCode
     label: StrShort
     status: QaStatus
+    blocking: bool
     detail: str = Field(max_length=2_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_check(cls, data: Any) -> Any:
+        return normalize_final_qa_check(data)
 
 
 class FinalQaRequest(StrictModel):
@@ -487,9 +579,16 @@ class FinalQaRequest(StrictModel):
 
 
 class FinalQaCheck(StrictModel):
+    code: FinalQaCheckCode
     label: StrShort
     status: QaStatus
+    blocking: bool
     detail: str = Field(max_length=2_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_check(cls, data: Any) -> Any:
+        return normalize_final_qa_check(data)
 
 
 class FinalQaResponse(StrictModel):

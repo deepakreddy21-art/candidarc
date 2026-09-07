@@ -285,15 +285,21 @@ describe("resume generation crash recovery", () => {
       });
       expect(generateCalls).toBe(1);
 
-      // Clear fault and retry the same stage (simulate worker restart clearing stale claim).
+      // Clear fault and retry the same stage after its worker lease expires.
       setResumeGenerationFaultPoint(null);
       const mid = await repos.workflows.getById(run.id);
       expect(mid).toBeTruthy();
-      const cleared = { ...(mid!.payload ?? {}) };
-      for (const key of Object.keys(cleared)) {
-        if (key.startsWith("claimed:")) delete cleared[key];
-      }
-      await repos.workflows.updateRun(run.id, { payload: cleared });
+      const claimKey = "claimed:V0_GENERATING";
+      const currentClaim = mid!.payload[claimKey];
+      await repos.workflows.updateRun(run.id, {
+        payload: {
+          ...mid!.payload,
+          [claimKey]: {
+            ...(typeof currentClaim === "object" && currentClaim ? currentClaim : {}),
+            expiresAt: "1970-01-01T00:00:00.000Z",
+          },
+        },
+      });
       const retryRun = await repos.workflows.getById(run.id);
       await pipeline.handleStage(retryRun!, "V0_GENERATING");
 
@@ -302,6 +308,65 @@ describe("resume generation crash recovery", () => {
       expect(generateCalls).toBe(1);
     });
   }
+
+  it("preserves unknown replay cost as null (never bills as zero)", async () => {
+    clientSpy.mockRestore();
+    generateCalls = 0;
+    const unknownClient = {
+      generateResume: async () => {
+        generateCalls += 1;
+        return {
+          resume: mockResumeDoc("unknown-cost"),
+          provider: "mock",
+          model: "mock-model",
+          promptVersion: "python@v1",
+          usage: { inputTokens: 10, outputTokens: 20, estimatedCostCents: null, costUnknown: true },
+          latencyMs: 5,
+        };
+      },
+      regenerateResume: async () => {
+        throw new Error("regenerate should not run");
+      },
+    };
+    clientSpy = vi.spyOn(pythonClient, "getPythonIntelligenceClient").mockReturnValue(unknownClient as never);
+
+    const { store, repos, app, run, pipeline } = await seedV0Generating();
+    setResumeGenerationFaultPoint("before_transition");
+    await expect(pipeline.handleStage(run, "V0_GENERATING")).rejects.toMatchObject({ code: "FAULT_INJECTED" });
+    expect(generateCalls).toBe(1);
+
+    setResumeGenerationFaultPoint(null);
+    const mid = await repos.workflows.getById(run.id);
+    const claimKey = "claimed:V0_GENERATING";
+    const currentClaim = mid!.payload[claimKey];
+    await repos.workflows.updateRun(run.id, {
+      payload: {
+        ...mid!.payload,
+        [claimKey]: {
+          ...(typeof currentClaim === "object" && currentClaim ? currentClaim : {}),
+          expiresAt: "1970-01-01T00:00:00.000Z",
+        },
+      },
+    });
+    const retryRun = await repos.workflows.getById(run.id);
+    await pipeline.handleStage(retryRun!, "V0_GENERATING");
+
+    expect(generateCalls).toBe(1);
+    const rows = usageRows(store, run.id);
+    const costKnown = rows.filter((r) => String(r.idempotencyKey).endsWith(":cost"));
+    const costUnknown = rows.filter((r) => String(r.idempotencyKey).endsWith(":cost-unknown"));
+    expect(costKnown).toHaveLength(0);
+    expect(costUnknown).toHaveLength(1);
+    expect(costUnknown[0]!.costCents).toBe("0");
+    expect(costUnknown[0]!.metadata?.billable).toBe(false);
+    const providerUsage = rows.find((r) => String(r.idempotencyKey).endsWith(":provider-usage"));
+    expect(providerUsage?.metadata?.estimatedCostCents).toBeNull();
+    expect(providerUsage?.metadata?.costUnknown).toBe(true);
+    expect(providerUsage?.metadata?.billable).toBe(false);
+    const latest = await repos.workflows.getById(run.id);
+    expect(latest?.stage).toBe("HR_AUDIT_1_RUNNING");
+    expect(app.publicId).toBeTruthy();
+  });
 
   it("appendAllocatedVersion is atomic for same operationKey under concurrency", async () => {
     const { repos, app } = await seedV0Generating();

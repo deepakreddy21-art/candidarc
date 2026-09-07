@@ -330,8 +330,15 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     expect(genKeys.some((key) => key.includes("repair:v4-to-v4r1:"))).toBe(true);
     expect(qaKeys.some((key) => key.includes("final-qa:v4:"))).toBe(true);
     expect(qaKeys.some((key) => key.includes(`final-qa:v${repair!.versionNumber}:`))).toBe(true);
-    const costRows = usageRows.filter((row) => String(row.idempotencyKey).endsWith(":cost"));
+    const costRows = usageRows.filter(
+      (row) =>
+        String(row.idempotencyKey).endsWith(":cost") ||
+        String(row.idempotencyKey).endsWith(":cost-unknown"),
+    );
     expect(costRows.length).toBeGreaterThanOrEqual(4);
+    // Repair attribution is known/deterministic (exactly 0), while Final QA may be cost-unknown.
+    expect(costRows.some((row) => String(row.idempotencyKey).endsWith(":cost"))).toBe(true);
+    expect(costRows.some((row) => String(row.idempotencyKey).endsWith(":cost-unknown"))).toBe(true);
 
     const liveApp = await repos.applications.getByPublicId(TENANT, app.publicId);
     expect(liveApp?.workflowStage).toBe("FINAL_READY");
@@ -413,10 +420,10 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     await repos.workflows.updateRun(live!.id, {
       stage: "FINAL_QA_RUNNING",
       status: "running",
-      payload: withoutClaims({ ...(live?.payload ?? {}) }),
+      payload: withExpiredClaims({ ...(live?.payload ?? {}) }),
     });
     await pipeline.handleStage(
-      { ...live!, stage: "FINAL_QA_RUNNING", payload: withoutClaims({ ...(live?.payload ?? {}) }) },
+      { ...live!, stage: "FINAL_QA_RUNNING", payload: withExpiredClaims({ ...(live?.payload ?? {}) }) },
       "FINAL_QA_RUNNING",
     );
     const afterVersions = resume ? await repos.resumes.listVersions(TENANT, resume.publicId) : [];
@@ -435,10 +442,15 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
   }, 200_000);
 });
 
-function withoutClaims(payload: Record<string, unknown>) {
+function withExpiredClaims(payload: Record<string, unknown>) {
   const next = { ...payload };
   for (const key of Object.keys(next)) {
-    if (key.startsWith("claimed:")) delete next[key];
+    if (!key.startsWith("claimed:")) continue;
+    const claim = next[key];
+    next[key] = {
+      ...(typeof claim === "object" && claim ? claim : {}),
+      expiresAt: "1970-01-01T00:00:00.000Z",
+    };
   }
   return next;
 }

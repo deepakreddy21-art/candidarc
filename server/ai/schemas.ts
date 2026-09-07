@@ -145,11 +145,54 @@ export const mistakeMemorySchema = z.object({
 export const finalQaSchema = z.object({
   passed: z.boolean(),
   checks: z.array(
-    z.object({
-      label: z.string(),
-      status: z.enum(["pass", "fail", "warning", "pending"]),
-      detail: z.string(),
-    }),
+    z
+      .object({
+        code: z.string().optional(),
+        label: z.string(),
+        status: z.enum(["pass", "fail", "warn", "warning", "pending"]),
+        blocking: z.boolean().optional(),
+        detail: z.string().default(""),
+      })
+      .transform((check) => {
+        const code =
+          check.code ??
+          ({
+            "required sections": "REQUIRED_SECTIONS",
+            education: "EDUCATION",
+            "duplicate bullets": "DUPLICATE_BULLETS",
+            "contact information": "CONTACT_INFORMATION",
+            "critical findings": "CRITICAL_FINDINGS",
+            "evidence references": "EVIDENCE_REFERENCES",
+            "technology claims": "TECHNOLOGY_CLAIMS",
+            chronology: "CHRONOLOGY",
+            "page estimate": "PAGE_LENGTH",
+            "primary technology emphasis": "PRIMARY_TECHNOLOGY_EMPHASIS",
+            "has summary": "HAS_SUMMARY",
+            "has skills": "HAS_SKILLS",
+            "has experience": "HAS_EXPERIENCE",
+            "ats format": "ATS_FORMAT",
+            "length check": "LENGTH_REDUCE",
+            "unsupported factual claim": "UNSUPPORTED_CLAIM",
+            "evidence linked": "EVIDENCE_LINKED",
+            "score rubric present": "SCORE_RUBRIC_PRESENT",
+            "section count": "SECTION_COUNT",
+            truthfulness: "UNKNOWN",
+          }[check.label.toLowerCase()] ?? "UNKNOWN");
+        const nonBlocking = new Set([
+          "EDUCATION",
+          "CONTACT_INFORMATION",
+          "CHRONOLOGY",
+          "PAGE_LENGTH",
+          "SECTION_COUNT",
+        ]);
+        return {
+          code,
+          label: check.label,
+          status: check.status === "warning" ? ("warn" as const) : check.status,
+          blocking: check.blocking ?? !nonBlocking.has(code),
+          detail: check.detail,
+        };
+      }),
   ),
 });
 

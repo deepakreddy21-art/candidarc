@@ -286,6 +286,13 @@
       "DeterministicQaCheck": {
         "additionalProperties": false,
         "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/FinalQaCheckCode"
+          },
           "detail": {
             "maxLength": 2000,
             "title": "Detail",
@@ -310,8 +317,10 @@
           }
         },
         "required": [
+          "code",
           "label",
           "status",
+          "blocking",
           "detail"
         ],
         "title": "DeterministicQaCheck",
@@ -807,6 +816,13 @@
       "FinalQaCheck": {
         "additionalProperties": false,
         "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/FinalQaCheckCode"
+          },
           "detail": {
             "maxLength": 2000,
             "title": "Detail",
@@ -831,17 +847,53 @@
           }
         },
         "required": [
+          "code",
           "label",
           "status",
+          "blocking",
           "detail"
         ],
         "title": "FinalQaCheck",
         "type": "object"
       },
+      "FinalQaCheckCode": {
+        "enum": [
+          "PRIMARY_TECHNOLOGY_EMPHASIS",
+          "HAS_SUMMARY",
+          "HAS_SKILLS",
+          "HAS_EXPERIENCE",
+          "DUPLICATE_BULLETS",
+          "REQUIRED_SECTIONS",
+          "ATS_FORMAT",
+          "LENGTH_REDUCE",
+          "UNSUPPORTED_CLAIM",
+          "EVIDENCE_LINKED",
+          "TECHNOLOGY_CLAIMS",
+          "SCORE_RUBRIC_PRESENT",
+          "SECTION_COUNT",
+          "CRITICAL_FINDINGS",
+          "EVIDENCE_REFERENCES",
+          "EDUCATION",
+          "CONTACT_INFORMATION",
+          "CHRONOLOGY",
+          "PAGE_LENGTH",
+          "UNKNOWN"
+        ],
+        "title": "FinalQaCheckCode",
+        "type": "string"
+      },
       "FinalQaFailedCheck": {
         "additionalProperties": false,
         "description": "One failed Final-QA check carried into a structured repair directive.",
         "properties": {
+          "blocking": {
+            "default": true,
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/FinalQaCheckCode"
+          },
           "detail": {
             "default": "",
             "maxLength": 4000,
@@ -867,6 +919,7 @@
           }
         },
         "required": [
+          "code",
           "label",
           "status"
         ],
@@ -2626,6 +2679,13 @@
       },
       "ValidationError": {
         "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
           "loc": {
             "items": {
               "anyOf": [
@@ -2728,7 +2788,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
                   "title": "Response Metrics Endpoint Metrics Get",
                   "type": "object"
                 }

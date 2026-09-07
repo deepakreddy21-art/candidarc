@@ -37,7 +37,7 @@ function withoutStageClaims(payload: Record<string, unknown>): Record<string, un
 import type { DurableWorkflowEngine } from "./engine";
 import { runDeterministicFinalQa } from "./final-qa";
 import type { QueueAdapter } from "./queues";
-import { claimableTechnologies, extractTechQuestions, hasUnansweredTechQuestions, type TechQuestion } from "../resumes/tech-questions";
+import { extractTechQuestions, hasUnansweredTechQuestions, type TechQuestion } from "../resumes/tech-questions";
 import { computeCandidArcQualityScore } from "../resumes/quality-score";
 import {
   applyJobExtractionToApplication,
@@ -48,13 +48,32 @@ import {
 } from "../resumes/job-extraction";
 import type { z } from "zod";
 
-function hashFinalQaChecks(checks: Array<{ label?: string; status?: string; detail?: string }>): string {
+function hashFinalQaChecks(checks: Array<{
+  code?: string;
+  label?: string;
+  status?: string;
+  blocking?: boolean;
+  detail?: string;
+}>): string {
   const normalized = checks
-    .map((check) => `${check.label ?? ""}|${check.status ?? ""}|${check.detail ?? ""}`)
+    .map((check) =>
+      `${check.code ?? ""}|${check.label ?? ""}|${check.status ?? ""}|${check.blocking ?? true}|${check.detail ?? ""}`
+    )
     .sort()
     .join("\n");
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
+
+const REPAIRABLE_FINAL_QA_CODES = new Set([
+  "PRIMARY_TECHNOLOGY_EMPHASIS",
+  "HAS_SUMMARY",
+  "HAS_SKILLS",
+  "DUPLICATE_BULLETS",
+  "ATS_FORMAT",
+  "LENGTH_REDUCE",
+  "UNSUPPORTED_CLAIM",
+  "TECHNOLOGY_CLAIMS",
+]);
 
 /** Test-only crash points for persistence-boundary fault injection. */
 export type ResumeGenFaultPoint =
@@ -160,7 +179,7 @@ function withResumeProvenance(
 
 /**
  * Application service orchestrating the vertical slice handlers.
- * Each handler is invoked by workers after queue delivery â€” not from HTTP.
+ * Each handler is invoked by workers after queue delivery — not from HTTP.
  */
 export class ResumePipeline {
   constructor(private readonly deps: ResumePipelineDeps) {}
@@ -204,7 +223,7 @@ export class ResumePipeline {
       return;
     }
 
-    const claimed = await this.deps.workflows.claimStage(run.id, expectedStage);
+    const claimed = await this.deps.workflows.claimStage(run.tenantId, run.id, expectedStage);
     if (!claimed) {
       logger.info({ workflowId: latest.publicId, expected: expectedStage }, "stage already claimed");
       return;
@@ -287,7 +306,7 @@ export class ResumePipeline {
   private async commit(key: string, costCents: string | null, opts?: { tenantId?: string; billable?: boolean }) {
     const tenantId = opts?.tenantId;
     if (!tenantId) {
-      // Legacy callers must pass tenant â€” look up is unsafe without it.
+      // Legacy callers must pass tenant — look up is unsafe without it.
       throw new AppError("USAGE_TENANT_REQUIRED", "tenantId required to commit usage", 500);
     }
 
@@ -342,7 +361,7 @@ export class ResumePipeline {
         "PROVIDER_COST_UNKNOWN",
       );
     }
-    // Token row carries units only â€” monetary amount lives solely on provider_cost.
+    // Token row carries units only — monetary amount lives solely on provider_cost.
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind: "input_tokens",
@@ -440,7 +459,7 @@ export class ResumePipeline {
         }
       }
       if (jobDescription.trim()) {
-        // Python is the only backend â€” always use Python for job parsing
+        // Python is the only backend — always use Python for job parsing
         const { getPythonIntelligenceClient, mapPythonJobParseToExtraction, mapPythonBackendErrorToAppError } =
           await import("../intelligence/python-client");
         let extraction;
@@ -517,7 +536,7 @@ export class ResumePipeline {
     const researchDepth = typeof application.metadata?.researchDepth === "string"
       ? application.metadata.researchDepth
       : "standard";
-    // Public source collection stays in TypeScript â€” Python never fetches arbitrary URLs.
+    // Public source collection stays in TypeScript — Python never fetches arbitrary URLs.
     const collectedSources = await collectResearchSources({
       company: application.company,
       role: application.role,
@@ -535,7 +554,7 @@ export class ResumePipeline {
     };
     let promptVersion = "research-synthesis";
 
-    // Python is the only backend â€” no TypeScript fallback
+    // Python is the only backend — no TypeScript fallback
     const {
       getPythonIntelligenceClient,
       mapPythonResearchToTs,
@@ -750,7 +769,7 @@ export class ResumePipeline {
     };
     let promptVersion = "evidence-matching";
 
-    // Python is the only backend â€” no TypeScript fallback
+    // Python is the only backend — no TypeScript fallback
     const {
       getPythonIntelligenceClient,
       mapPythonEvidenceMatchToTs,
@@ -982,7 +1001,7 @@ export class ResumePipeline {
 
     const usageKey = `${run.tenantId}:usage:${run.idempotencyKey}:${generationOperationId}:resume_generation`;
 
-    // Replay path: version already durable â€” reconcile pointer/usage/workflow without provider call.
+    // Replay path: version already durable — reconcile pointer/usage/workflow without provider call.
     let existingVersion = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
     if (!existingVersion) {
       const resumeForLookup = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
@@ -1003,7 +1022,7 @@ export class ResumePipeline {
         pending?.result.usage.estimatedCostCents ??
         (typeof providerUsage?.metadata?.estimatedCostCents === "number"
           ? providerUsage.metadata.estimatedCostCents
-          : 0);
+          : null);
       await this.finalizeResumeGenerationPersistence({
         run,
         version: existingVersion,
@@ -1082,7 +1101,7 @@ export class ResumePipeline {
           ? run.payload.finalQaRepairVersionNumber
           : Math.max(...previousVersions.map((v) => v.versionNumber), 0) + 1;
     }
-    // Final-QA repair must start from the failed latest V4 â€” never fall back to V3.
+    // Final-QA repair must start from the failed latest V4 — never fall back to V3.
     const previousVersion = isFinalQaRepair
       ? previousVersions.find((version) => version.versionNumber === repairSourceVersion) ??
         previousVersions.at(-1) ??
@@ -1100,13 +1119,7 @@ export class ResumePipeline {
     const auditFindings = previousAudit ? await this.deps.audits.listFindings(run.tenantId, previousAudit.publicId) : [];
     const actionable = filterFindingsForNextGeneration(auditFindings);
     const mistakeMemory = await listActiveMistakeMemory(this.deps.store, run.tenantId, run.applicationId);
-    const attestedTechnologies = claimableTechnologies(
-      (application?.metadata?.techQuestions ?? []) as TechQuestion[],
-    );
-    const evidenceTechnologies = [...new Set([
-      ...evidence.flatMap((item) => item.technologies),
-      ...attestedTechnologies,
-    ])];
+    const evidenceTechnologies = [...new Set(evidence.flatMap((item) => item.technologies))];
 
     await this.ensureExecutionBackendPersisted(run);
     let result: ResumeGenerationResult;
@@ -1125,7 +1138,7 @@ export class ResumePipeline {
         latencyMs: reusePending.result.latencyMs,
       };
     } else {
-      // Python is the only backend â€” no TypeScript fallback
+      // Python is the only backend — no TypeScript fallback
       await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "python");
       const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
       {
@@ -1169,26 +1182,6 @@ export class ResumePipeline {
         const evidenceMatches = Array.isArray(application?.metadata?.evidenceMatches)
           ? (application.metadata.evidenceMatches as Array<Record<string, unknown>>)
           : [];
-        const techQuestions = (application?.metadata?.techQuestions ?? []) as TechQuestion[];
-        const userConfirmations = techQuestions
-          .filter(
-            (question) =>
-              question.answer === "yes_professional" ||
-              question.answer === "yes_project" ||
-              question.answer === "no" ||
-              question.answer === "similar" ||
-              question.answer === "not_sure",
-          )
-          .map((question) => ({
-            id: question.id,
-            topic: question.technology,
-            confirmed: question.answer === "yes_professional" || question.answer === "yes_project",
-            evidenceDescription: question.evidence?.trim() || null,
-            sourceKind: "user_confirmation" as const,
-            relatedEvidenceIds: [] as string[],
-            tenantId: run.tenantId,
-            ownerUserId: application?.ownerUserId ?? null,
-          }));
         const generateInput = {
           context,
           absoluteVersion: storedVersionNumber,
@@ -1218,7 +1211,7 @@ export class ResumePipeline {
                 sourceVersion: number;
                 sourceVersionLabel?: string | null;
                 attempt: number;
-                failedChecks: Array<{ label: string; status: string; detail?: string }>;
+                failedChecks: Array<{ code: string; label: string; status: string; blocking: boolean; detail?: string }>;
                 approvedEvidenceIds?: string[];
                 groundedTargets?: string[];
               } | undefined) ?? {
@@ -1230,7 +1223,13 @@ export class ResumePipeline {
                     : `V${repairSourceVersion}`,
                 attempt: repairAttempt,
                 failedChecks: Array.isArray(run.payload.finalQaFailedChecks)
-                  ? (run.payload.finalQaFailedChecks as Array<{ label: string; status: string; detail?: string }>)
+                  ? (run.payload.finalQaFailedChecks as Array<{
+                      code: string;
+                      label: string;
+                      status: string;
+                      blocking: boolean;
+                      detail?: string;
+                    }>)
                   : [],
                 approvedEvidenceIds: evidence.map((item) => item.publicId),
                 groundedTargets: evidenceTechnologies.slice(0, 8),
@@ -1238,7 +1237,9 @@ export class ResumePipeline {
             : null,
           jobRequirements,
           evidenceMatches,
-          userConfirmations,
+          // Positive confirmations are persisted as ordinary scoped evidence before
+          // pipeline resume; never reconstruct ephemeral confirmation identities here.
+          userConfirmations: [],
           idempotencyKey,
         };
         try {
@@ -1278,7 +1279,7 @@ export class ResumePipeline {
           }
           logger.info(
             { applicationPublicId: run.applicationPublicId, versionNumber },
-            "metadata refinement already satisfied â€” regenerating without refinement",
+            "metadata refinement already satisfied — regenerating without refinement",
           );
           const py = await client.regenerateResume({
             ...generateInput,
@@ -1467,7 +1468,7 @@ export class ResumePipeline {
     const auditIdempotencyKey = `audit:${run.applicationPublicId}:${lens}:v${storedReviewsVersion}:${run.idempotencyKey}`;
     await this.ensureExecutionBackendPersisted(run);
     let result: AuditGenerationResult;
-    // Python is the only backend â€” no TypeScript fallback
+    // Python is the only backend — no TypeScript fallback
     await this.recordStageBackend(run, "audit", "python");
     const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
     const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
@@ -1516,9 +1517,7 @@ export class ResumePipeline {
             payload: item.payload,
           })),
           jobDescription: String(application?.metadata?.jobDescription ?? ""),
-          allowedTechnologies: claimableTechnologies(
-            (application?.metadata?.techQuestions ?? []) as TechQuestion[],
-          ),
+          allowedTechnologies: [...new Set(evidence.flatMap((item) => item.technologies))],
           idempotencyKey: auditIdempotencyKey,
         });
         result = {
@@ -1543,7 +1542,7 @@ export class ResumePipeline {
     if (expectedRule && result.data.lens !== expectedRule.lens) {
       logger.warn(
         { expectedLens: expectedRule.lens, actualLens: result.data.lens, stage: run.stage },
-        "audit lens mismatch â€” skipping invalid audit output",
+        "audit lens mismatch — skipping invalid audit output",
       );
       await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
       const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
@@ -1617,12 +1616,9 @@ export class ResumePipeline {
       );
       if (!latestAudit) throw new AppError("AUDIT_NOT_FOUND", "Audit result was not persisted", 500);
       const findings = await this.deps.audits.listFindings(run.tenantId, latestAudit.publicId);
-      const attestedTechnologies = claimableTechnologies(
-        (application?.metadata?.techQuestions ?? []) as TechQuestion[],
-      );
       const adjudicationCtx = buildAdjudicationContext({
         evidence,
-        attestedTechnologies,
+        attestedTechnologies: [...new Set(evidence.flatMap((item) => item.technologies))],
       });
       const adjudicatedRaw = adjudicateFindings(
         findings.filter((finding) => finding.status === "open"),
@@ -1703,19 +1699,13 @@ export class ResumePipeline {
     const findings = (await Promise.all(auditRuns.map((audit) => this.deps.audits.listFindings(run.tenantId, audit.publicId)))).flat();
     const { evidence } = await this.listScopedEvidence(run);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
-    const attestedTechnologies = claimableTechnologies(
-      (application?.metadata?.techQuestions ?? []) as TechQuestion[],
-    );
-    const knownTechnologies = [...new Set([
-      ...evidence.flatMap((item) => item.technologies),
-      ...attestedTechnologies,
-    ])];
+    const knownTechnologies = [...new Set(evidence.flatMap((item) => item.technologies))];
     const result = runDeterministicFinalQa({
       sections: latest.sections,
       unresolvedCriticalFindings: findings.filter((finding) => finding.severity === "critical" && finding.status === "open").length,
       knownEvidenceIds: evidence.map((item) => item.publicId),
       knownTechnologies,
-      attestedTechnologies,
+      attestedTechnologies: [],
     });
 
     if (!result.passed) {
@@ -1813,11 +1803,16 @@ export class ResumePipeline {
     await this.recordProviderUsage(run, usageKey, supplement);
     await this.commit(usageKey, this.commitCostCents(supplement.usage.estimatedCostCents), { tenantId: run.tenantId });
 
+    const failedBlockingChecks = supplement.data.checks.filter(
+      (check) => check.blocking && check.status !== "pass",
+    );
+    const supplementPassed = failedBlockingChecks.length === 0;
+
     // Final QA authority: if AI final QA fails, attempt ONE bounded repair
-    if (supplement.data.passed === false) {
+    if (!supplementPassed) {
       const repairAttempted = run.payload?.finalQaRepairAttempted === true;
       if (repairAttempted) {
-        // Already attempted repair â€” fail permanently
+        // Already attempted repair — fail permanently
         logger.warn(
           { applicationPublicId: run.applicationPublicId, checks: supplement.data.checks },
           "Final QA failed after repair attempt",
@@ -1843,12 +1838,24 @@ export class ResumePipeline {
         throw new AppError("FINAL_QA_FAILED", "Final QA checks failed after repair attempt", 422, supplement.data.checks);
       }
 
+      const unsupported = failedBlockingChecks.filter(
+        (check) => !REPAIRABLE_FINAL_QA_CODES.has(check.code),
+      );
+      if (unsupported.length) {
+        throw new AppError(
+          "FINAL_QA_REPAIR_UNREPAIRABLE",
+          `Blocking Final-QA checks cannot be repaired safely: ${unsupported.map((check) => check.code).join(", ")}`,
+          422,
+          unsupported,
+        );
+      }
+
       // Attempt bounded repair: create a new immutable V4R1 revision from failed V4
       logger.info(
         { applicationPublicId: run.applicationPublicId, failedChecks: supplement.data.checks.filter((c) => c.status !== "pass") },
-        "Final QA failed â€” attempting bounded repair",
+        "Final QA failed — attempting bounded repair",
       );
-      const failedChecks = supplement.data.checks.filter((check) => check.status !== "pass");
+      const failedChecks = failedBlockingChecks;
       const failedCheckSummary = failedChecks
         .map((check) => `${check.label}: ${check.detail}`)
         .join("; ");
@@ -1859,8 +1866,10 @@ export class ResumePipeline {
         sourceVersionLabel: latest.versionLabel,
         attempt: 1,
         failedChecks: failedChecks.map((check) => ({
+          code: check.code,
           label: check.label,
           status: check.status,
+          blocking: check.blocking,
           detail: check.detail,
         })),
         approvedEvidenceIds: evidence.map((item) => item.publicId),

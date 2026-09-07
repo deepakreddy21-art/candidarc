@@ -13,6 +13,7 @@ from app.domain.schemas import (
     EvidenceMatchResponse,
     EvidenceMatchRow,
     FinalQaCheck,
+    FinalQaCheckCode,
     FinalQaResponse,
     MistakeMemoryRule,
     ProviderUsage,
@@ -90,17 +91,18 @@ class MockProvider:
         if violations:
             raise ValueError(f"GUARDRAIL_VIOLATION:{','.join(violations)}")
         latency = int((time.perf_counter() - started) * 1000)
+        deterministic_operation = final_qa_repair is not None or bool(refinement_instruction)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic" if deterministic_operation else self.name,
+            model="internal" if deterministic_operation else self.model,
             prompt_version=RESUME_GENERATION.prompt_version,
             rubric_version=SCORE_RUBRIC_VERSION,
-            input_tokens=120,
-            output_tokens=80,
+            input_tokens=0 if deterministic_operation else 120,
+            output_tokens=0 if deterministic_operation else 80,
             cached_tokens=0,
             latency_ms=latency,
-            provider_request_id="mock-gen-1",
-            estimated_cost_cents=None,
+            provider_request_id=None if deterministic_operation else "mock-gen-1",
+            estimated_cost_cents=0 if deterministic_operation else None,
             retry_count=0,
         )
         return resume, latency, usage
@@ -175,16 +177,25 @@ class MockProvider:
                 status = data.get("status", "pass")
                 if status == "warning":
                     status = "warn"
+                parsed = FinalQaCheck.model_validate({**data, "status": status})
+                check_status: quality.CheckStatus = "fail"
+                if parsed.status == "pass":
+                    check_status = "pass"
+                elif parsed.status == "warn":
+                    check_status = "warn"
                 checks.append(
-                    {"label": data["label"], "status": status, "detail": data.get("detail", "")}
+                    quality.qa_check(
+                        parsed.code,
+                        check_status,
+                        parsed.detail,
+                        blocking=parsed.blocking,
+                    )
                 )
 
-        # Deterministic test hook: fail until primary tech actually appears in summary/skills lead.
-        # Only active when CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair (demo/test).
-        # This now checks REAL content, not just notes markers.
+        # Test-only hook (mock provider): force V4 to fail Primary technology emphasis once so
+        # repair journeys can run. Later revisions must satisfy the real content postcondition.
         force = os.environ.get("CANDIDARC_MOCK_FINAL_QA_FORCE", "").strip().lower()
         if force == "fail_until_repair":
-            # Derive primary tech from grounded_targets or evidence
             primary_tech: str | None = None
             if grounded_targets:
                 primary_tech = grounded_targets[0].lower()
@@ -193,29 +204,35 @@ class MockProvider:
                 if evidence_techs:
                     primary_tech = evidence_techs[0]
 
-            # Check if primary tech appears in summary or skills lead
+            version = getattr(resume, "version_number", None)
+            if version is None:
+                version = getattr(resume, "absolute_version", None)
+
             condition_fixed = False
             if primary_tech:
                 for section in resume.sections:
-                    if section.type in {"summary", "skills"}:
-                        if section.bullets:
-                            lead_text = section.bullets[0].text.lower()[:80]
-                            lead_techs = [t.lower() for t in section.bullets[0].technologies]
-                            if primary_tech in lead_text or primary_tech in lead_techs:
-                                condition_fixed = True
-                                break
+                    if section.type in {"summary", "skills"} and section.bullets:
+                        lead_text = section.bullets[0].text.lower()[:80]
+                        lead_techs = [t.lower() for t in section.bullets[0].technologies]
+                        if primary_tech in lead_text or primary_tech in lead_techs:
+                            condition_fixed = True
+                            break
 
-            if not condition_fixed:
+            # Original V4 always fails once (even if content already looks fine).
+            # V4R1+ must actually lead with the grounded primary tech to pass.
+            force_fail = version == 4 or (version is not None and version > 4 and not condition_fixed)
+            if force_fail:
                 checks.append(
-                    {
-                        "label": "Primary technology emphasis",
-                        "status": "fail",
-                        "detail": f"Lead with grounded primary technology from evidence ({primary_tech or 'none'})",
-                    }
+                    quality.qa_check(
+                        FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+                        "fail",
+                        f"Lead with grounded primary technology from evidence ({primary_tech or 'none'})",
+                        blocking=True,
+                    )
                 )
 
-        typed = [FinalQaCheck(label=c["label"], status=c["status"], detail=c["detail"]) for c in checks]
-        passed = all(c.status in {"pass", "pending", "warn", "warning"} for c in typed)
+        typed = [FinalQaCheck.model_validate(c) for c in checks]
+        passed = not any(c.blocking and c.status != "pass" for c in typed)
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
             provider=self.name,

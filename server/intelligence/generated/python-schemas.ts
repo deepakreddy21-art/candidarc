@@ -122,6 +122,8 @@ export const AuditResponseSchema = z.object({
 export type AuditResponse = z.infer<typeof AuditResponseSchema>;
 
 export const FinalQaCheckSchema = z.object({
+  "blocking": z.boolean(),
+  "code": z.enum(["PRIMARY_TECHNOLOGY_EMPHASIS", "HAS_SUMMARY", "HAS_SKILLS", "HAS_EXPERIENCE", "DUPLICATE_BULLETS", "REQUIRED_SECTIONS", "ATS_FORMAT", "LENGTH_REDUCE", "UNSUPPORTED_CLAIM", "EVIDENCE_LINKED", "TECHNOLOGY_CLAIMS", "SCORE_RUBRIC_PRESENT", "SECTION_COUNT", "CRITICAL_FINDINGS", "EVIDENCE_REFERENCES", "EDUCATION", "CONTACT_INFORMATION", "CHRONOLOGY", "PAGE_LENGTH", "UNKNOWN"]),
   "detail": z.string().max(2000),
   "label": z.string().min(1).max(512),
   "status": z.enum(["pass", "warn", "fail", "warning", "pending"]),
@@ -243,6 +245,7 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "EvidenceSearchRequest",
   "EvidenceSearchResponse",
   "FinalQaCheck",
+  "FinalQaCheckCode",
   "FinalQaFailedCheck",
   "FinalQaRepairDirective",
   "FinalQaRequest",

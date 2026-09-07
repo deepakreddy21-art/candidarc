@@ -1,4 +1,14 @@
 export type FinalQaCheck = {
+  code:
+    | "REQUIRED_SECTIONS"
+    | "EDUCATION"
+    | "DUPLICATE_BULLETS"
+    | "CONTACT_INFORMATION"
+    | "CRITICAL_FINDINGS"
+    | "EVIDENCE_REFERENCES"
+    | "TECHNOLOGY_CLAIMS"
+    | "CHRONOLOGY"
+    | "PAGE_LENGTH";
   label: string;
   status: "pass" | "fail" | "warning";
   detail: string;
@@ -62,6 +72,7 @@ export function runDeterministicFinalQa(input: {
 
   const checks: FinalQaCheck[] = [
     {
+      code: "REQUIRED_SECTIONS",
       label: "Required sections",
       status: hasExperience ? "pass" : "fail",
       detail: hasExperience
@@ -72,6 +83,7 @@ export function runDeterministicFinalQa(input: {
       blocking: true,
     },
     {
+      code: "EDUCATION",
       label: "Education",
       status: hasEducation ? "pass" : "warning",
       detail: hasEducation
@@ -80,24 +92,28 @@ export function runDeterministicFinalQa(input: {
       blocking: false,
     },
     {
+      code: "DUPLICATE_BULLETS",
       label: "Duplicate bullets",
       status: duplicates.length ? "fail" : "pass",
       detail: duplicates.length ? `${duplicates.length} duplicate entries found.` : "No duplicate bullets found.",
       blocking: true,
     },
     {
+      code: "CONTACT_INFORMATION",
       label: "Contact information",
       status: hasContact ? "pass" : "warning",
       detail: hasContact ? "Contact information detected." : "No contact information detected.",
       blocking: false,
     },
     {
+      code: "CRITICAL_FINDINGS",
       label: "Critical findings",
       status: input.unresolvedCriticalFindings ? "fail" : "pass",
       detail: `${input.unresolvedCriticalFindings ?? 0} unresolved critical findings.`,
       blocking: true,
     },
     {
+      code: "EVIDENCE_REFERENCES",
       label: "Evidence references",
       status: unknownEvidence.length ? "fail" : "pass",
       detail: unknownEvidence.length
@@ -106,6 +122,7 @@ export function runDeterministicFinalQa(input: {
       blocking: true,
     },
     {
+      code: "TECHNOLOGY_CLAIMS",
       label: "Technology claims",
       status: unsupportedTech.length ? "fail" : "pass",
       detail: unsupportedTech.length
@@ -114,12 +131,14 @@ export function runDeterministicFinalQa(input: {
       blocking: true,
     },
     {
+      code: "CHRONOLOGY",
       label: "Chronology",
       status: chronologyValid ? "pass" : "warning",
       detail: chronologyValid ? "Chronology is ordered." : "Dates may not be reverse chronological.",
       blocking: false,
     },
     {
+      code: "PAGE_LENGTH",
       label: "Page estimate",
       status: estimatedPages <= 2 ? "pass" : "warning",
       detail: `${words} words, approximately ${estimatedPages} pages.`,

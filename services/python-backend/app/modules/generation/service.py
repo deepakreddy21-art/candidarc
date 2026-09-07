@@ -4,25 +4,23 @@ from __future__ import annotations
 
 import re
 
+from app.core.errors import FINAL_QA_REPAIR_UNREPAIRABLE, ProviderError
 from app.domain.schemas import (
     AuditFinding,
     EvidenceItem,
     EvidenceMatchRow,
+    FinalQaCheckCode,
     FinalQaRepairDirective,
     MistakeMemoryRule,
     ResearchFinding,
     ResumeBullet,
     ResumeDocument,
+    ResumeSection,
     UserConfirmation,
 )
-from app.core.errors import FINAL_QA_REPAIR_UNREPAIRABLE, ProviderError
 from app.modules.evidence.service import normalize_evidence
-from app.modules.guardrails.service import (
-    build_grounded_resume,
-    technologies_from_confirmations,
-    validate_resume_claims,
-)
-from app.modules.quality.service import verify_repair_fixed_checks
+from app.modules.guardrails.service import build_grounded_resume, validate_resume_claims
+from app.modules.quality.service import unsupported_blocking_repairs, verify_repair_fixed_checks
 from app.modules.scoring.service import score_resume
 
 # Disallowed free-form refinement patterns — fabrication / unsupported claims.
@@ -288,6 +286,14 @@ def apply_final_qa_repair(
 
     Prioritizes approved evidence and grounded technology targets already in evidence.
     """
+    unsupported = unsupported_blocking_repairs(repair.failed_checks)
+    if unsupported:
+        codes = ", ".join(check.code.value for check in unsupported)
+        raise ProviderError(
+            FINAL_QA_REPAIR_UNREPAIRABLE,
+            f"Blocking checks have no evidence-safe repair: {codes}",
+        )
+
     evidence_by_id = {item.id: item for item in evidence}
     approved = [evidence_by_id[eid] for eid in repair.approved_evidence_ids if eid in evidence_by_id]
     evidence_techs = {t.lower() for item in evidence for t in item.technologies}
@@ -318,12 +324,45 @@ def apply_final_qa_repair(
                 score += max(0.0, 3.0 - idx)
         return score
 
+    requested_codes = {
+        check.code for check in repair.failed_checks
+        if check.blocking and check.status != "pass"
+    }
+    if requested_codes.intersection({
+        FinalQaCheckCode.HAS_SUMMARY,
+        FinalQaCheckCode.UNSUPPORTED_CLAIM,
+        FinalQaCheckCode.TECHNOLOGY_CLAIMS,
+    }) and not approved:
+        raise ProviderError(
+            FINAL_QA_REPAIR_UNREPAIRABLE,
+            "Repair requires at least one approved evidence item",
+        )
+
+    def approved_text(item: EvidenceItem) -> str:
+        candidates = [item.claim_text, item.result, *(item.actions or []), item.task, item.situation]
+        return next((_dedupe_whitespace(text) for text in candidates if text and text.strip()), item.title)
+
+    seen_bullets: set[str] = set()
+
+    def dedupe_bullets(bullets: list[ResumeBullet]) -> list[ResumeBullet]:
+        unique: list[ResumeBullet] = []
+        for bullet in bullets:
+            fingerprint = _dedupe_whitespace(bullet.text).casefold()
+            if fingerprint in seen_bullets:
+                continue
+            seen_bullets.add(fingerprint)
+            unique.append(bullet)
+        return unique
+
     sections = []
     for section in resume.sections:
         new_bullets = None
         if section.bullets is not None:
             rewritten = list(section.bullets)
-            if section.type in {"summary", "skills", "experience"}:
+            if (
+                FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS in requested_codes
+                and section.type in {"summary", "skills", "experience"}
+            ):
                 rewritten = sorted(rewritten, key=lambda b: (-score_bullet(b), rewritten.index(b)))
                 if section.type == "skills" and rewritten and primary:
                     skill = rewritten[0]
@@ -347,19 +386,126 @@ def apply_final_qa_repair(
                             update={"text": f"{primary.title()} platform work: {lead.text}"[:3900]}
                         )
                         rewritten[0] = lead
+            if FinalQaCheckCode.DUPLICATE_BULLETS in requested_codes:
+                rewritten = dedupe_bullets(rewritten)
+            if FinalQaCheckCode.ATS_FORMAT in requested_codes:
+                rewritten = [
+                    bullet.model_copy(update={"text": re.sub(r"[\t|]+", " ", bullet.text)})
+                    for bullet in rewritten
+                ]
+            if FinalQaCheckCode.LENGTH_REDUCE in requested_codes:
+                rewritten = [
+                    bullet.model_copy(update={"text": _shorten_verbose(bullet.text)})
+                    for bullet in rewritten
+                ]
+            if requested_codes.intersection({
+                FinalQaCheckCode.UNSUPPORTED_CLAIM,
+                FinalQaCheckCode.TECHNOLOGY_CLAIMS,
+            }):
+                approved_item = approved[0]
+                approved_techs = {tech.casefold() for item in approved for tech in item.technologies}
+                rewritten = [
+                    bullet.model_copy(
+                        update={
+                            "text": approved_text(approved_item),
+                            "evidence_ids": [approved_item.id],
+                            "technologies": [
+                                tech for tech in bullet.technologies if tech.casefold() in approved_techs
+                            ] or list(approved_item.technologies),
+                        }
+                    )
+                    if (
+                        not set(bullet.evidence_ids).issubset(set(evidence_by_id))
+                        or any(tech.casefold() not in approved_techs for tech in bullet.technologies)
+                    )
+                    else bullet
+                    for bullet in rewritten
+                ]
             new_bullets = rewritten
 
         new_items = None
         if section.items is not None:
             new_items = []
             for resume_item in section.items:
-                item_bullets = sorted(
-                    resume_item.bullets,
-                    key=lambda b: (-score_bullet(b), resume_item.bullets.index(b)),
-                )
+                item_bullets = list(resume_item.bullets)
+                if FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS in requested_codes:
+                    item_bullets = sorted(
+                        item_bullets,
+                        key=lambda b: (-score_bullet(b), item_bullets.index(b)),
+                    )
+                if FinalQaCheckCode.DUPLICATE_BULLETS in requested_codes:
+                    item_bullets = dedupe_bullets(item_bullets)
+                if FinalQaCheckCode.ATS_FORMAT in requested_codes:
+                    item_bullets = [
+                        bullet.model_copy(update={"text": re.sub(r"[\t|]+", " ", bullet.text)})
+                        for bullet in item_bullets
+                    ]
+                if FinalQaCheckCode.LENGTH_REDUCE in requested_codes:
+                    item_bullets = [
+                        bullet.model_copy(update={"text": _shorten_verbose(bullet.text)})
+                        for bullet in item_bullets
+                    ]
+                if requested_codes.intersection({
+                    FinalQaCheckCode.UNSUPPORTED_CLAIM,
+                    FinalQaCheckCode.TECHNOLOGY_CLAIMS,
+                }):
+                    approved_item = approved[0]
+                    approved_techs = {tech.casefold() for item in approved for tech in item.technologies}
+                    item_bullets = [
+                        bullet.model_copy(
+                            update={
+                                "text": approved_text(approved_item),
+                                "evidence_ids": [approved_item.id],
+                                "technologies": [
+                                    tech for tech in bullet.technologies if tech.casefold() in approved_techs
+                                ] or list(approved_item.technologies),
+                            }
+                        )
+                        if (
+                            not set(bullet.evidence_ids).issubset(set(evidence_by_id))
+                            or any(tech.casefold() not in approved_techs for tech in bullet.technologies)
+                        )
+                        else bullet
+                        for bullet in item_bullets
+                    ]
                 new_items.append(resume_item.model_copy(update={"bullets": item_bullets}))
 
-        sections.append(section.model_copy(update={"bullets": new_bullets, "items": new_items}))
+        content = section.content
+        if content and FinalQaCheckCode.ATS_FORMAT in requested_codes:
+            content = re.sub(r"[\t|]+", " ", content)
+        sections.append(section.model_copy(update={"bullets": new_bullets, "items": new_items, "content": content}))
+
+    if FinalQaCheckCode.HAS_SUMMARY in requested_codes and not any(s.type == "summary" for s in sections):
+        source = approved[0] if approved else (evidence[0] if evidence else None)
+        if source is None:
+            raise ProviderError(FINAL_QA_REPAIR_UNREPAIRABLE, "No approved evidence is available for summary repair")
+        sections.insert(0, ResumeSection(
+            type="summary",
+            title="Summary",
+            order=0,
+            bullets=[ResumeBullet(
+                text=approved_text(source),
+                evidence_ids=[source.id],
+                technologies=list(source.technologies),
+                confidence=source.confidence,
+            )],
+        ))
+
+    if FinalQaCheckCode.HAS_SKILLS in requested_codes and not any(s.type == "skills" for s in sections):
+        source = approved[0] if approved else (evidence[0] if evidence else None)
+        if source is None or not source.technologies:
+            raise ProviderError(FINAL_QA_REPAIR_UNREPAIRABLE, "No evidence-backed skills are available")
+        sections.insert(1, ResumeSection(
+            type="skills",
+            title="Skills",
+            order=1,
+            bullets=[ResumeBullet(
+                text=" · ".join(source.technologies),
+                evidence_ids=[source.id],
+                technologies=list(source.technologies),
+                confidence=source.confidence,
+            )],
+        ))
 
     notes = resume.notes or ""
     if "final-qa-repair:applied" not in notes:
@@ -472,18 +618,16 @@ def generate_grounded_resume(
         refinement_applied = True
 
     if final_qa_repair is not None:
-        # Collect technologies from evidence AND affirmative scoped confirmations
+        # Persisted, scoped evidence is the only repair provenance.
         evidence_techs = {t.lower() for item in evidence for t in item.technologies}
-        confirmation_techs = technologies_from_confirmations(user_confirmations, evidence)
-        all_allowed_techs = evidence_techs | confirmation_techs
 
         for target in final_qa_repair.grounded_targets:
             target_lower = target.lower()
-            if target_lower not in all_allowed_techs and not any(
-                target_lower in et or et in target_lower for et in all_allowed_techs
+            if target_lower not in evidence_techs and not any(
+                target_lower in et or et in target_lower for et in evidence_techs
             ):
                 raise ValueError(
-                    f"GUARDRAIL_VIOLATION:Repair target '{target}' not found in evidence or confirmations"
+                    f"GUARDRAIL_VIOLATION:Repair target '{target}' not found in persisted evidence"
                 )
         approved = set(final_qa_repair.approved_evidence_ids)
         known_ids = {item.id for item in evidence}

@@ -282,7 +282,15 @@ export function installMockPythonIntelligence(opts?: { evidenceId?: string }) {
       return {
         data: {
           passed: true,
-          checks: [{ label: "truthfulness", status: "pass", detail: "ok" }],
+          checks: [
+            {
+              code: "REQUIRED_SECTIONS",
+              label: "Required sections",
+              status: "pass",
+              blocking: true,
+              detail: "ok",
+            },
+          ],
           notes: "passed",
         },
         provider: "mock",

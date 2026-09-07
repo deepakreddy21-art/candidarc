@@ -123,7 +123,18 @@ describe("tech confirmation", () => {
     await service.submitTechAnswers(ctx, created.workflowId, answers);
 
     const evidence = await repos.evidence.list(tenantId, { ownerUserId: userId });
-    expect(evidence.some((item) => item.technologies.includes(target.technology))).toBe(true);
+    const attestation = evidence.find((item) => item.technologies.includes(target.technology));
+    expect(attestation).toMatchObject({
+      tenantId,
+      ownerUserId: userId,
+      matchedApplicationIds: [created.applicationId],
+      sourceType: "user_confirmation",
+      verificationStatus: "user_attested",
+      candidateConfirmationStatus: "confirmed",
+    });
+    expect(attestation?.publicId).not.toContain("conf-");
+    expect(attestation?.publicId).not.toBe(target.id);
+    expect(attestation?.payload).toMatchObject({ source: "tech_confirmation" });
 
     const refreshedApp = await repos.applications.getByPublicId(tenantId, created.applicationId);
     expect(refreshedApp?.metadata?.excludedTechnologies).toEqual(expect.arrayContaining(["Redis"]));
@@ -172,8 +183,13 @@ describe("tech confirmation", () => {
     const target = questions[0]!;
     const payload = [{ id: target.id, answer: "yes_project" as const, evidence: "Built a cluster for a class project." }];
     const first = await service.submitTechAnswers(ctx, created.workflowId, payload);
+    const afterFirst = (await repos.evidence.list(tenantId, { ownerUserId: userId }))
+      .filter((item) => item.payload?.source === "tech_confirmation");
     const second = await service.submitTechAnswers(ctx, created.workflowId, payload);
+    const afterSecond = (await repos.evidence.list(tenantId, { ownerUserId: userId }))
+      .filter((item) => item.payload?.source === "tech_confirmation");
     expect(first.accepted).toBe(true);
     expect(second).toMatchObject({ accepted: true, duplicate: true });
+    expect(afterSecond.map((item) => item.publicId)).toEqual(afterFirst.map((item) => item.publicId));
   });
 });

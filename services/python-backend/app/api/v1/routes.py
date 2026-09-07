@@ -351,8 +351,8 @@ async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> Re
         )
     return ResumeGenerateResponse(
         resume=resume,
-        provider=provider.name,
-        model=provider.model,
+        provider=usage.provider if usage else provider.name,
+        model=usage.model if usage else provider.model,
         prompt_version=usage.prompt_version if usage else "resume-generation@python-v2",
         latency_ms=latency,
         usage=usage,
@@ -475,6 +475,15 @@ async def resumes_final_qa(
         typed = result if isinstance(result, FinalQaResponse) else FinalQaResponse.model_validate(result)
         if typed.usage is None:
             typed = typed.model_copy(update={"usage": usage})
+        # Provider-level `passed` is advisory. Blocking statuses are authoritative.
+        passed = not any(check.blocking and check.status != "pass" for check in typed.checks)
+        provider_name = usage.provider if usage else typed.provider
+        model_name = usage.model if usage else typed.model
+        typed = typed.model_copy(update={
+            "passed": passed,
+            "provider": provider_name,
+            "model": model_name,
+        })
         return typed
 
     return cast(

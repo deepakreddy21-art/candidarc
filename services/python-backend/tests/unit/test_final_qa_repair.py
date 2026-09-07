@@ -16,12 +16,15 @@ from fastapi.testclient import TestClient
 
 from app.core.errors import FINAL_QA_REPAIR_UNREPAIRABLE
 from app.domain.schemas import (
+    FinalQaCheck,
+    FinalQaCheckCode,
     FinalQaFailedCheck,
     FinalQaRepairDirective,
-    UserConfirmation,
+    FinalQaResponse,
+    ProviderUsage,
 )
 from app.main import app
-from app.modules.generation.service import generate_grounded_resume
+from app.modules.generation.service import apply_final_qa_repair, generate_grounded_resume
 from app.modules.quality.service import _check_primary_tech_emphasis, verify_repair_fixed_checks
 from app.providers.mock_provider import MockProvider
 from tests.conftest import AUTH_HEADERS, qa_context, qa_evidence
@@ -82,8 +85,8 @@ def test_check_primary_tech_emphasis_real_condition() -> None:
 
     # Generate resume - with evidence that has Python, check if 'terraform' (not in evidence) would fail
     resume = generate_grounded_resume(
-        absolute_version=1,
-        cycle_step=1,
+        absolute_version=4,
+        cycle_step=4,
         evidence=evidence,
         allowed_technologies=["Python", "PyTorch", "OpenSearch"],
         job_description="Platform engineer " + ("x" * 20),
@@ -100,47 +103,95 @@ def test_check_primary_tech_emphasis_real_condition() -> None:
 
 
 @pytest.mark.asyncio()
-async def test_mock_final_qa_fails_until_condition_fixed() -> None:
-    """Mock with CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair fails until real condition is met."""
+async def test_mock_final_qa_force_fails_v4_once_then_requires_real_fix() -> None:
+    """fail_until_repair forces V4 fail once; later revisions need real content postcondition."""
     ctx = qa_context()
     evidence = qa_evidence(ctx)
     provider = MockProvider()
 
-    # Generate a resume from evidence (which has Python)
-    resume = generate_grounded_resume(
-        absolute_version=1,
-        cycle_step=1,
+    v4 = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
         evidence=evidence,
         allowed_technologies=["Python", "PyTorch", "OpenSearch"],
         job_description="Platform engineer " + ("x" * 20),
+    )
+    # Ensure V4 already leads with Python so a content-only hook would wrongly pass.
+    assert _check_primary_tech_emphasis(v4, evidence, grounded_targets=["Python"])["status"] == "pass"
+
+    repaired = generate_grounded_resume(
+        absolute_version=5,
+        cycle_step=0,
+        evidence=evidence,
+        allowed_technologies=["Python", "PyTorch", "OpenSearch"],
+        job_description="Platform engineer " + ("x" * 20),
+        previous_resume=v4,
+        final_qa_repair=FinalQaRepairDirective(
+            source_version=4,
+            source_version_label="V4",
+            attempt=1,
+            failed_checks=[
+                FinalQaFailedCheck(
+                    label="Primary technology emphasis",
+                    status="fail",
+                    detail="Lead with grounded primary technology from evidence",
+                )
+            ],
+            approved_evidence_ids=["ev-1"],
+            grounded_targets=["Python"],
+        ),
     )
 
     old_env = os.environ.get("CANDIDARC_MOCK_FINAL_QA_FORCE")
     try:
         os.environ["CANDIDARC_MOCK_FINAL_QA_FORCE"] = "fail_until_repair"
 
-        # With grounded_targets=["Terraform"] (not in evidence), should fail
-        response, _, _ = await provider.final_qa(
-            resume=resume,
+        response_v4, _, _ = await provider.final_qa(
+            resume=v4,
             evidence=evidence,
-            grounded_targets=["Terraform"],  # Not in evidence/resume
+            grounded_targets=["Python"],
         )
-        # Should have the primary tech check fail
-        tech_check = next((c for c in response.checks if c.label == "Primary technology emphasis"), None)
-        assert tech_check is not None
-        assert tech_check.status == "fail"
+        tech_v4 = next(c for c in response_v4.checks if c.label == "Primary technology emphasis")
+        assert tech_v4.status == "fail"
+        assert response_v4.passed is False
 
-        # With grounded_targets=["Python"] (IS in evidence/resume lead), should pass
-        response2, _, _ = await provider.final_qa(
-            resume=resume,
+        response_ok, _, _ = await provider.final_qa(
+            resume=repaired,
             evidence=evidence,
-            grounded_targets=["Python"],  # IS in evidence/resume
+            grounded_targets=["Python"],
         )
-        # Should pass because Python is in the resume lead
-        tech_check2 = next((c for c in response2.checks if c.label == "Primary technology emphasis"), None)
-        # Either no check added (passed), or check status is pass
-        if tech_check2:
-            assert tech_check2.status == "pass"
+        tech_ok = next((c for c in response_ok.checks if c.label == "Primary technology emphasis"), None)
+        if tech_ok:
+            assert tech_ok.status == "pass"
+
+        broken = repaired.model_copy(
+            update={
+                "sections": [
+                    (
+                        section.model_copy(
+                            update={
+                                "bullets": [
+                                    section.bullets[0].model_copy(
+                                        update={"text": "Platform leadership without primary tech lead", "technologies": ["Go"]}
+                                    ),
+                                    *section.bullets[1:],
+                                ]
+                            }
+                        )
+                        if section.type in {"summary", "skills"} and section.bullets
+                        else section
+                    )
+                    for section in repaired.sections
+                ]
+            }
+        )
+        response_bad, _, _ = await provider.final_qa(
+            resume=broken,
+            evidence=evidence,
+            grounded_targets=["Python"],
+        )
+        tech_bad = next(c for c in response_bad.checks if c.label == "Primary technology emphasis")
+        assert tech_bad.status == "fail"
     finally:
         if old_env is None:
             os.environ.pop("CANDIDARC_MOCK_FINAL_QA_FORCE", None)
@@ -170,7 +221,7 @@ def test_verify_repair_fixed_checks_function() -> None:
     # Test with Python (IS in resume) - should pass
     fixed2, results2 = verify_repair_fixed_checks(resume, evidence, failed_checks, grounded_targets=["Python"])
     assert fixed2
-    assert all(r["status"] in {"pass", "warn"} for r in results2)
+    assert all(r["status"] == "pass" for r in results2)
 
 
 def test_api_rejects_repair_smuggled_as_inventing_refinement(
@@ -243,38 +294,26 @@ def test_api_structured_final_qa_repair_succeeds(client: TestClient) -> None:
     )
     assert response.status_code == 200, response.text
     body = response.json()
+    assert body["provider"] == body["usage"]["provider"] == "deterministic"
+    assert body["model"] == body["usage"]["model"] == "internal"
+    assert body["usage"]["input_tokens"] == body["usage"]["output_tokens"] == 0
+    assert body["usage"]["estimated_cost_cents"] == 0
+    assert body["usage"]["provider_request_id"] is None
     # Verify actual content fix
     skills = next(s for s in body["resume"]["sections"] if s["type"] == "skills")
     assert skills["bullets"][0]["technologies"][0].lower() == "python"
 
 
-def test_grounded_targets_from_confirmation_provenance() -> None:
-    """grounded_targets can come from confirmations with evidence_description or related_evidence_ids."""
+def test_repair_target_requires_persisted_evidence_not_confirmation_text() -> None:
+    """Ephemeral confirmation text cannot become repair evidence."""
     ctx = qa_context()
     evidence = qa_evidence(ctx)
-
-    # Confirmation provides provenance for Kubernetes (not in evidence)
-    confirmations = [
-        UserConfirmation(
-            id="conf-1",
-            tenant_id=ctx.tenant_id,
-            owner_user_id=ctx.user_id,
-            topic="Kubernetes experience",
-            confirmed=True,
-            evidence_description="Deployed services to Kubernetes cluster at previous role",
-            related_evidence_ids=["ev-1"],
-        )
-    ]
-
-    # Repair targeting Kubernetes should be allowed via confirmation provenance
     repair = FinalQaRepairDirective(
         source_version=1,
         attempt=1,
         failed_checks=[FinalQaFailedCheck(label="Primary technology emphasis", status="fail", detail="")],
-        grounded_targets=["Kubernetes"],  # From confirmation, not evidence
+        grounded_targets=["Kubernetes"],
     )
-
-    # This should NOT raise because Kubernetes is proven via confirmation
     previous = generate_grounded_resume(
         absolute_version=1,
         cycle_step=1,
@@ -282,9 +321,7 @@ def test_grounded_targets_from_confirmation_provenance() -> None:
         allowed_technologies=["Python"],
         job_description="Platform " + ("x" * 20),
     )
-    # Note: The repair may fail for other reasons (unrepairable check),
-    # but the grounded_targets validation should pass
-    try:
+    with pytest.raises(ValueError, match="not found in persisted evidence"):
         generate_grounded_resume(
             absolute_version=2,
             cycle_step=2,
@@ -293,9 +330,210 @@ def test_grounded_targets_from_confirmation_provenance() -> None:
             job_description="Platform " + ("x" * 20),
             previous_resume=previous,
             final_qa_repair=repair,
-            user_confirmations=confirmations,
         )
-    except Exception as e:
-        # If it fails, should NOT be because of grounded_targets validation
-        assert "Repair target 'Kubernetes'" not in str(e)
-        assert "not found in evidence" not in str(e).lower()
+
+
+def test_unsupported_blocking_check_raises_machine_code(client: TestClient) -> None:
+    ctx = qa_context()
+    evidence = qa_evidence(ctx)
+    previous = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    response = client.post(
+        "/v1/resumes/regenerate",
+        headers=AUTH_HEADERS,
+        json={
+            "context": ctx.model_dump(),
+            "absolute_version": 5,
+            "job_description": "Platform engineer " + ("x" * 20),
+            "evidence": [item.model_dump() for item in evidence],
+            "previous_resume": previous.model_dump(),
+            "final_qa_repair": {
+                "source_version": 4,
+                "failed_checks": [{
+                    "code": "HAS_EXPERIENCE",
+                    "label": "Has experience",
+                    "status": "fail",
+                    "blocking": True,
+                    "detail": "missing",
+                }],
+            },
+        },
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert (body.get("detail") or body)["code"] == FINAL_QA_REPAIR_UNREPAIRABLE, body
+
+
+def test_final_qa_derives_passed_from_blocking_statuses(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InconsistentProvider:
+        name = "stub"
+        model = "stub-model"
+
+        async def final_qa(self, **_kwargs: object):
+            usage = ProviderUsage(
+                provider="stub",
+                model="stub-model",
+                prompt_version="test",
+                input_tokens=1,
+                output_tokens=1,
+                latency_ms=0,
+            )
+            result = FinalQaResponse(
+                passed=True,
+                checks=[FinalQaCheck(
+                    code=FinalQaCheckCode.HAS_EXPERIENCE,
+                    label="Has experience",
+                    status="fail",
+                    blocking=True,
+                    detail="missing",
+                )],
+                provider="stub",
+                model="stub-model",
+                usage=usage,
+            )
+            return result, 0, usage
+
+    monkeypatch.setattr("app.api.v1.routes.get_provider", lambda *_args: InconsistentProvider())
+    ctx = qa_context()
+    evidence = qa_evidence(ctx)
+    resume = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    response = client.post(
+        "/v1/resumes/final-qa",
+        headers=AUTH_HEADERS,
+        json={
+            "context": ctx.model_dump(),
+            "resume": resume.model_dump(),
+            "evidence": [item.model_dump() for item in evidence],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["passed"] is False
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+        FinalQaCheckCode.HAS_SUMMARY,
+        FinalQaCheckCode.HAS_SKILLS,
+        FinalQaCheckCode.DUPLICATE_BULLETS,
+        FinalQaCheckCode.ATS_FORMAT,
+        FinalQaCheckCode.LENGTH_REDUCE,
+        FinalQaCheckCode.UNSUPPORTED_CLAIM,
+        FinalQaCheckCode.TECHNOLOGY_CLAIMS,
+    ],
+)
+def test_supported_repair_code_has_transform_and_exact_postcondition(code: FinalQaCheckCode) -> None:
+    ctx = qa_context()
+    evidence = qa_evidence(ctx)
+    resume = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    sections = list(resume.sections)
+    if code == FinalQaCheckCode.HAS_SUMMARY:
+        sections = [s for s in sections if s.type != "summary"]
+    elif code == FinalQaCheckCode.HAS_SKILLS:
+        sections = [s for s in sections if s.type != "skills"]
+    else:
+        target = next(s for s in sections if s.bullets)
+        bullets = list(target.bullets or [])
+        if code == FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS:
+            bullets[0] = bullets[0].model_copy(
+                update={"text": "Experienced platform engineer", "technologies": []}
+            )
+        elif code == FinalQaCheckCode.DUPLICATE_BULLETS:
+            bullets.append(bullets[0])
+        elif code == FinalQaCheckCode.ATS_FORMAT:
+            bullets[0] = bullets[0].model_copy(update={"text": bullets[0].text + "\t| table"})
+        elif code == FinalQaCheckCode.LENGTH_REDUCE:
+            bullets[0] = bullets[0].model_copy(update={"text": ("supported platform delivery " * 180)[:3900]})
+        else:
+            bullets[0] = bullets[0].model_copy(
+                update={"evidence_ids": ["missing"], "technologies": ["Terraform"]}
+            )
+        sections[sections.index(target)] = target.model_copy(update={"bullets": bullets})
+    broken = resume.model_copy(update={"sections": sections})
+    check = FinalQaFailedCheck(
+        code=code,
+        label=code.value,
+        status="fail",
+        blocking=True,
+        detail="test",
+    )
+    directive = FinalQaRepairDirective(
+        source_version=4,
+        failed_checks=[check],
+        approved_evidence_ids=[evidence[0].id],
+        grounded_targets=["Python"],
+    )
+    repaired = apply_final_qa_repair(broken, directive, evidence)
+    fixed, results = verify_repair_fixed_checks(
+        repaired, evidence, [check], grounded_targets=["Python"]
+    )
+    assert fixed, results
+    assert results[0]["status"] == "pass"
+
+
+def test_repair_noop_is_rejected() -> None:
+    ctx = qa_context()
+    evidence = qa_evidence(ctx)
+    resume = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    repair = FinalQaRepairDirective(
+        source_version=4,
+        failed_checks=[FinalQaFailedCheck(
+            code=FinalQaCheckCode.HAS_SUMMARY,
+            label="Has summary",
+            status="fail",
+            blocking=True,
+        )],
+        approved_evidence_ids=[evidence[0].id],
+    )
+    with pytest.raises(ValueError, match="REFINEMENT_NOT_APPLICABLE"):
+        generate_grounded_resume(
+            absolute_version=5,
+            cycle_step=0,
+            evidence=evidence,
+            previous_resume=resume,
+            job_description="Platform engineer " + ("x" * 20),
+            final_qa_repair=repair,
+        )
+
+
+def test_nonblocking_warning_does_not_require_repair() -> None:
+    ctx = qa_context()
+    evidence = qa_evidence(ctx)
+    resume = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    warning = FinalQaFailedCheck(
+        code=FinalQaCheckCode.PAGE_LENGTH,
+        label="Page estimate",
+        status="warn",
+        blocking=False,
+    )
+    fixed, results = verify_repair_fixed_checks(resume, evidence, [warning])
+    assert fixed
+    assert results == []

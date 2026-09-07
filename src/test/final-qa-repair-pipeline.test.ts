@@ -384,7 +384,7 @@ describeHttp("Final QA repair via real FastAPI (structured directive)", () => {
     const live = await repos.workflows.getByPublicId(TENANT, run.publicId);
     expect(live?.stage).toBe("FINAL_READY");
     // Force re-entry of V4_GENERATING with the same repair payload (idempotent)
-    const repairPayload = withoutClaims({
+    const repairPayload = withExpiredClaims({
       ...(live?.payload ?? {}),
       finalQaRepairAttempted: true,
       finalQaRepairAttempt: 1,
@@ -411,10 +411,15 @@ describeHttp("Final QA repair via real FastAPI (structured directive)", () => {
   }, 90_000);
 });
 
-function withoutClaims(payload: Record<string, unknown>) {
+function withExpiredClaims(payload: Record<string, unknown>) {
   const next = { ...payload };
   for (const key of Object.keys(next)) {
-    if (key.startsWith("claimed:")) delete next[key];
+    if (!key.startsWith("claimed:")) continue;
+    const claim = next[key];
+    next[key] = {
+      ...(typeof claim === "object" && claim ? claim : {}),
+      expiresAt: "1970-01-01T00:00:00.000Z",
+    };
   }
   return next;
 }

@@ -117,7 +117,7 @@ def test_confirmation_without_evidence_not_added_as_experience() -> None:
     assert not any("conf-0" in (b.evidence_ids[0] if b.evidence_ids else "") for s in resume.sections for b in (s.bullets or []))
 
 
-def test_evidence_backed_confirmation_may_create_claim() -> None:
+def test_confirmation_description_is_not_ephemeral_evidence() -> None:
     evidence = _base_evidence()
     conf = UserConfirmation(
         topic="Docker",
@@ -134,14 +134,15 @@ def test_evidence_backed_confirmation_may_create_claim() -> None:
         user_confirmations=[conf],
     )
     blob = " ".join(b.text for s in resume.sections for b in (s.bullets or [])).lower()
-    assert "docker" in blob
+    assert "docker" not in blob
     violations = validate_resume_claims(
         resume,
         evidence,
         ["Python", "FastAPI", "Docker"],
         user_confirmations=[conf],
     )
-    assert "CONFIRMATION_WITHOUT_EVIDENCE" not in violations
+    assert "CONFIRMATION_PROVENANCE_REQUIRED" in violations
+    assert "CONFIRMATION_EVIDENCE_REQUIRED" in violations
 
 
 def test_forced_research_leak_is_blocked() -> None:
@@ -265,9 +266,10 @@ def test_confirmation_same_tenant_owner_allowed() -> None:
         id="conf-same-scope",
         tenant_id="ten_adv",
         owner_user_id="user_adv",
-        topic="Docker",
+        topic="FastAPI",
         confirmed=True,
-        evidence_description="Used Docker to containerize Harbor Soft services",
+        evidence_description="Used FastAPI to build Harbor Soft services",
+        related_evidence_ids=["ev-adv-1"],
     )
     resume = generate_grounded_resume(
         absolute_version=0,
@@ -280,13 +282,14 @@ def test_confirmation_same_tenant_owner_allowed() -> None:
     violations = validate_resume_claims(
         resume,
         evidence,
-        ["Python", "FastAPI", "Docker"],
+        ["Python", "FastAPI"],
         tenant_id="ten_adv",
         owner_user_id="user_adv",
         user_confirmations=[same_scope_conf],
     )
     assert "CONFIRMATION_CROSS_TENANT" not in violations
     assert "CONFIRMATION_CROSS_OWNER" not in violations
+    assert "CONFIRMATION_EVIDENCE_REQUIRED" not in violations
 
 
 def test_negative_confirmation_not_added() -> None:
@@ -329,10 +332,23 @@ def test_confirmation_with_related_evidence_ids_provides_provenance() -> None:
     techs = technologies_from_confirmations([conf_with_related], evidence)
     # Should include technologies from related evidence
     assert "python" in techs or "fastapi" in techs
+    resume = generate_grounded_resume(
+        absolute_version=0,
+        cycle_step=0,
+        evidence=evidence,
+        job_description="Platform " + ("x" * 20),
+    )
+    violations = validate_resume_claims(
+        resume,
+        evidence,
+        tenant_id="ten_adv",
+        owner_user_id="user_adv",
+        user_confirmations=[conf_with_related],
+    )
+    assert "CONFIRMATION_BARE_YES" in violations
 
 
-def test_confirmation_provenance_fields_optional() -> None:
-    """Confirmations without id/tenant_id/owner_user_id should still work (backwards compat)."""
+def test_confirmation_provenance_fields_are_required() -> None:
     evidence = _base_evidence()
     legacy_conf = UserConfirmation(
         # No id, tenant_id, or owner_user_id
@@ -356,6 +372,5 @@ def test_confirmation_provenance_fields_optional() -> None:
         owner_user_id="user_adv",
         user_confirmations=[legacy_conf],
     )
-    # Should not fail tenant/owner checks since fields are not set
-    assert "CONFIRMATION_CROSS_TENANT" not in violations
-    assert "CONFIRMATION_CROSS_OWNER" not in violations
+    assert "CONFIRMATION_PROVENANCE_REQUIRED" in violations
+    assert "CONFIRMATION_EVIDENCE_REQUIRED" in violations
