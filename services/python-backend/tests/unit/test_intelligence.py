@@ -505,7 +505,38 @@ def test_research_unavailable_for_fictional_company(
         },
     )
     assert response.status_code == 200
-    assert response.json()["company_research_status"] == "unavailable"
+    body = response.json()
+    assert body["company_research_status"] == "unavailable"
+    assert body["provider"] == body["usage"]["provider"] == "deterministic"
+    assert body["model"] == body["usage"]["model"] == "internal"
+    assert body["usage"]["input_tokens"] == body["usage"]["output_tokens"] == 0
+    assert body["usage"]["estimated_cost_cents"] == 0
+    assert body["usage"]["provider_request_id"] is None
+
+
+def test_evidence_match_returns_deterministic_usage(
+    client: TestClient,
+    auth_headers: dict[str, str],
+    ctx: RequestContext,
+    evidence: list[EvidenceItem],
+) -> None:
+    response = client.post(
+        "/v1/evidence/match",
+        headers=auth_headers,
+        json={
+            "context": ctx.model_dump(),
+            "requirements": ["Python platform engineering"],
+            "evidence": [item.model_dump(mode="json") for item in evidence],
+            "research_findings": [],
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["provider"] == body["usage"]["provider"] == "deterministic"
+    assert body["model"] == body["usage"]["model"] == "internal"
+    assert body["usage"]["input_tokens"] == body["usage"]["output_tokens"] == 0
+    assert body["usage"]["estimated_cost_cents"] == 0
+    assert body["usage"]["provider_request_id"] is None
 
 
 def test_idempotency_replay_and_conflict(

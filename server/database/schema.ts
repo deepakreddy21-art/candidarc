@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   customType,
@@ -512,6 +513,10 @@ export const evidenceItems = pgTable(
     sourceType: text("source_type"),
     claimText: text("claim_text"),
     evidenceStatus: text("evidence_status").notNull().default("active"),
+    attestationApplicationId: uuid("attestation_application_id").references(() => applications.id, {
+      onDelete: "cascade",
+    }),
+    normalizedTechnology: text("normalized_technology"),
     candidateConfirmationStatus: text("candidate_confirmation_status").notNull().default("pending"),
     employerAssociation: text("employer_association"),
     projectAssociation: text("project_association"),
@@ -522,6 +527,13 @@ export const evidenceItems = pgTable(
   },
   (t) => [
     uniqueIndex("evidence_items_public_id_uidx").on(t.publicId),
+    uniqueIndex("evidence_items_active_tech_attestation_uidx")
+      .on(t.tenantId, t.ownerUserId, t.attestationApplicationId, t.normalizedTechnology)
+      .where(sql`${t.deletedAt} IS NULL
+        AND ${t.evidenceStatus} = 'active'
+        AND ${t.sourceType} = 'user_confirmation'
+        AND ${t.attestationApplicationId} IS NOT NULL
+        AND ${t.normalizedTechnology} IS NOT NULL`),
     index("evidence_items_tenant_idx").on(t.tenantId),
     index("evidence_items_tenant_owner_idx").on(t.tenantId, t.ownerUserId),
   ],
@@ -717,6 +729,7 @@ export const resumeVersions = pgTable(
     triggeredBy: text("triggered_by"),
     promptVersion: text("prompt_version"),
     idempotencyKey: text("idempotency_key"),
+    operationKey: text("operation_key"),
     workflowRunId: uuid("workflow_run_id"),
     /** Soft metadata only — content fields must not be mutated after create. */
     locked: boolean("locked").notNull().default(false),

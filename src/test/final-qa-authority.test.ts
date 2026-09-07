@@ -13,6 +13,10 @@ import { createEmptyMemoryStore, MemoryRepositories, newId, nowIso } from "../..
 import { resetEnvCache } from "../../server/config/env";
 import { resetDbCache } from "../../server/database/client";
 import * as pythonClient from "../../server/intelligence/python-client";
+import {
+  FINAL_QA_CHECK_REGISTRY,
+  validateAuthorizedFinalQaResult,
+} from "../../server/workflows/final-qa";
 
 const TENANT = "ten_finalqa";
 const USER = "user_finalqa";
@@ -126,6 +130,19 @@ describe("final QA authority: bounded repair concepts", () => {
           sources: [{ id: "src-1", url: "https://example.com/careers", title: "Careers", accessed_at: nowIso(), supporting_text: "Hiring engineers", confidence: "medium", classification: "explicit", relevance: 0.7 }],
           overall_confidence: 0.7,
           company_research_status: "available",
+          provider: "deterministic",
+          model: "internal",
+          latency_ms: 1,
+          usage: {
+            provider: "deterministic",
+            model: "internal",
+            prompt_version: "research@python-v1",
+            latency_ms: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            estimated_cost_cents: 0,
+            retry_count: 0,
+          },
         };
       }),
       matchEvidence: vi.fn(async () => {
@@ -133,6 +150,19 @@ describe("final QA authority: bounded repair concepts", () => {
         return {
           evidence_coverage: 0.85,
           rows: [{ requirement: "Python", importance: "required", evidence_ids: ["ev_finalqa_1"], evidence_strength: "strong", resume_usage: "use" }],
+          provider: "deterministic",
+          model: "internal",
+          latency_ms: 1,
+          usage: {
+            provider: "deterministic",
+            model: "internal",
+            prompt_version: "evidence-match@lexical-v1",
+            latency_ms: 1,
+            input_tokens: 0,
+            output_tokens: 0,
+            estimated_cost_cents: 0,
+            retry_count: 0,
+          },
         };
       }),
       generateResume: vi.fn(async () => {
@@ -512,5 +542,246 @@ describe("final QA authority: bounded repair concepts", () => {
     });
     expect(result.passed).toBe(true);
     expect(result.checks.some((c) => c.label === "Education" && c.status === "warning")).toBe(true);
+  });
+});
+
+describe("Final QA response authority", () => {
+  function authorizedPayload() {
+    return {
+      passed: true,
+      checks: Object.entries(FINAL_QA_CHECK_REGISTRY)
+        .filter(([, definition]) => definition.required)
+        .map(([code, definition]) => ({
+          code,
+          status: "pass",
+          blocking: definition.blocking,
+        })),
+    };
+  }
+
+  it.each([
+    ["empty checks", (payload: ReturnType<typeof authorizedPayload>) => { payload.checks = []; }],
+    ["duplicate codes", (payload: ReturnType<typeof authorizedPayload>) => { payload.checks.push({ ...payload.checks[0]! }); }],
+    ["missing required code", (payload: ReturnType<typeof authorizedPayload>) => { payload.checks.shift(); }],
+    ["registry blocking mismatch", (payload: ReturnType<typeof authorizedPayload>) => { payload.checks[0]!.blocking = false; }],
+    ["passed with blocking failure", (payload: ReturnType<typeof authorizedPayload>) => { payload.checks[0]!.status = "fail"; }],
+  ])("rejects %s", async (_name, mutate) => {
+    const payload = authorizedPayload();
+    mutate(payload);
+    expect(validateAuthorizedFinalQaResult(payload).valid).toBe(false);
+  });
+
+  it("accepts complete server-authorized checks", async () => {
+    expect(validateAuthorizedFinalQaResult(authorizedPayload()).valid).toBe(true);
+  });
+
+  it("rejects unknown blocking failure and malformed status", () => {
+    const unknownBlocking = {
+      passed: false,
+      checks: [
+        ...authorizedPayload().checks,
+        { code: "UNKNOWN", status: "fail", blocking: true },
+      ],
+    };
+    expect(validateAuthorizedFinalQaResult(unknownBlocking).valid).toBe(false);
+
+    const malformed = {
+      passed: true,
+      checks: authorizedPayload().checks.map((check, index) =>
+        index === 0 ? { ...check, status: "pending" } : check,
+      ),
+    };
+    expect(validateAuthorizedFinalQaResult(malformed).valid).toBe(false);
+  });
+});
+
+describe("hostile Final QA authority through ResumePipeline", () => {
+  beforeEach(() => {
+    resetEnvCache();
+    resetDbCache();
+    vi.stubEnv("APP_MODE", "demo");
+    vi.stubEnv("AI_MODE", "mock");
+    vi.stubEnv("CANDIDARC_DATA_MODE", "memory");
+    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
+    resetEnvCache();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    resetEnvCache();
+    resetDbCache();
+  });
+
+  it("PROVIDER_OUTPUT_INVALID never reaches FINAL_READY, never enables downloads, and does not commit final-review cost", async () => {
+    const { createEmptyMemoryStore, MemoryRepositories, newId, nowIso } = await import(
+      "../../server/database/repositories"
+    );
+    const { DbWorkflowEngine } = await import("../../server/workflows/engine");
+    const { InProcessQueueAdapter } = await import("../../server/workflows/queues");
+    const { ResumePipeline } = await import("../../server/workflows/resume-pipeline");
+    const store = createEmptyMemoryStore();
+    const repos = new MemoryRepositories(store);
+    store.tenants.set(TENANT, {
+      id: TENANT,
+      publicId: "tenp_hostile_qa",
+      name: "Hostile QA",
+      plan: "free",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    store.memberships.push({
+      id: newId("tm"),
+      tenantId: TENANT,
+      userId: USER,
+      role: "owner",
+      createdAt: nowIso(),
+    });
+    await repos.users.create({
+      id: USER,
+      publicId: "usr_hostile_qa",
+      email: "hostile-qa@example.com",
+      name: "Hostile",
+      passwordHash: "x",
+      emailVerified: true,
+    });
+    const app = await repos.applications.create({
+      id: newId("app"),
+      publicId: "app_hostile_qa",
+      tenantId: TENANT,
+      ownerUserId: USER,
+      company: "Acme",
+      companyMark: "AC",
+      role: "Engineer",
+      location: "Remote",
+      employmentType: "Full-time",
+      stage: "FINAL_QA_RUNNING",
+      workflowStage: "FINAL_QA_RUNNING",
+      status: "final-qa",
+      nextAction: "Final QA",
+      researchConfidence: 0.5,
+      evidenceCoverage: 0.9,
+      resumeScore: 74,
+      atsAlignment: 70,
+      interviewStatus: "not-started",
+      archived: false,
+      roleFamily: "General",
+      metadata: {
+        jobDescription: "Python engineer " + "detail ".repeat(12),
+        autoAdvanceAudits: true,
+        customerFacing: true,
+        customerFiles: {
+          pdfStorageKey: "generated/hostile/resume.pdf",
+          docxStorageKey: "generated/hostile/resume.docx",
+        },
+      },
+    });
+    await repos.evidence.create({
+      id: newId("ev"),
+      publicId: "ev_hostile_1",
+      tenantId: TENANT,
+      ownerUserId: USER,
+      candidateProfileId: null,
+      title: "Platform",
+      organization: "Acme",
+      situation: "s",
+      task: "t",
+      actions: ["a"],
+      result: "Built Python services",
+      technologies: ["Python"],
+      confidence: "high",
+      sourceType: "employment",
+      claimText: "Software Engineer at Acme. Built Python services.",
+      verificationStatus: "user_attested",
+      candidateConfirmationStatus: "confirmed",
+      privacyLevel: "standard",
+      payload: {},
+      excludedFromApplicationIds: [],
+      matchedApplicationIds: [],
+    });
+    const resume = await repos.resumes.createResume({
+      id: newId("res"),
+      publicId: "resp_hostile",
+      tenantId: TENANT,
+      applicationId: app.id,
+      applicationPublicId: app.publicId,
+      title: "Hostile resume",
+      templateId: "alumni-clean",
+      length: "one-page",
+      currentVersionPublicId: null,
+    });
+    const version = await repos.resumes.appendVersion({
+      id: newId("rv"),
+      publicId: "rvv4_hostile",
+      tenantId: TENANT,
+      resumeId: resume.id,
+      versionNumber: 4,
+      versionLabel: "V4",
+      score: 74,
+      scoreBreakdown: resumeDoc(4).scoreBreakdown,
+      notes: "hostile",
+      triggeredBy: "EM Audit 2",
+      sections: resumeDoc(4).sections as never,
+      idempotencyKey: `hostile-v4:${app.publicId}`,
+      promptVersion: "python@v1",
+    });
+    await repos.resumes.setCurrentVersion(TENANT, resume.publicId, version.publicId);
+
+    vi.spyOn(pythonClient, "getPythonIntelligenceClient").mockReturnValue({
+      finalQa: async () => ({
+        data: {
+          passed: true,
+          checks: [],
+        },
+        provider: "mock",
+        model: "hostile",
+        latencyMs: 1,
+        usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 5 },
+      }),
+    } as never);
+
+    const queue = new InProcessQueueAdapter();
+    const engine = new DbWorkflowEngine(repos.workflows, queue);
+    const pipeline = new ResumePipeline({
+      engine,
+      workflows: repos.workflows,
+      applications: repos.applications,
+      research: repos.research,
+      resumes: repos.resumes,
+      audits: repos.audits,
+      usage: repos.usage,
+      evidence: repos.evidence,
+      store,
+      queue,
+    });
+    const run = await engine.start({
+      tenantId: TENANT,
+      applicationId: app.id,
+      applicationPublicId: app.publicId,
+      stage: "FINAL_QA_RUNNING",
+      idempotencyKey: `hostile-qa:${app.publicId}`,
+      payload: { customerFacing: true },
+    });
+
+    await expect(pipeline.handleStage(run, "FINAL_QA_RUNNING")).rejects.toMatchObject({
+      code: "PROVIDER_OUTPUT_INVALID",
+    });
+
+    const latest = await engine.getStatus(TENANT, run.publicId);
+    expect(latest?.stage).not.toBe("FINAL_READY");
+    expect(latest?.stage).toBe("FINAL_QA_RUNNING");
+    const appAfter = await repos.applications.getByPublicId(TENANT, app.publicId);
+    expect(appAfter?.stage).not.toBe("FINAL_READY");
+    expect(appAfter?.status).not.toBe("ready");
+
+    const usageRows = [...store.usageLedger.values()].filter((row) => row.tenantId === TENANT);
+    const committedFinalReview = usageRows.filter(
+      (row) => row.kind === "final_review" && row.status === "committed",
+    );
+    const committedCosts = usageRows.filter(
+      (row) => row.kind === "provider_cost" && String(row.idempotencyKey).includes("final-qa"),
+    );
+    expect(committedFinalReview).toHaveLength(0);
+    expect(committedCosts).toHaveLength(0);
   });
 });

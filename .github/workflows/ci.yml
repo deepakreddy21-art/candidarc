@@ -176,7 +176,8 @@ jobs:
           git diff --exit-code -- \
             services/python-backend/openapi.json \
             server/intelligence/generated/python-paths.ts \
-            server/intelligence/generated/python-schemas.ts
+            server/intelligence/generated/python-schemas.ts \
+            server/intelligence/generated/python-contract.ts
 
   python:
     runs-on: ubuntu-latest

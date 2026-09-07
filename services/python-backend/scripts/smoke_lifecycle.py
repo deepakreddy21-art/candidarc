@@ -160,9 +160,15 @@ def main() -> int:
             idempotency_key=f"smoke-lifecycle-regenerate-v{version}",
         )["resume"]
         blob = " ".join(
-            bullet["text"]
-            for section in resume["sections"]
-            for bullet in section.get("bullets") or []
+            [
+                *(bullet["text"] for section in resume["sections"] for bullet in section.get("bullets") or []),
+                *(
+                    bullet["text"]
+                    for section in resume["sections"]
+                    for item in section.get("items") or []
+                    for bullet in item.get("bullets") or []
+                ),
+            ]
         )
         assert accepted_text in blob, (lens, accepted_text)
         assert "Unsupported rejected Kubernetes claim" not in blob

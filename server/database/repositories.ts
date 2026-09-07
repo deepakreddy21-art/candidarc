@@ -97,6 +97,8 @@ export type EvidenceRecord = {
   sourceType?: string | null;
   claimText?: string | null;
   evidenceStatus?: string;
+  attestationApplicationId?: string | null;
+  normalizedTechnology?: string | null;
   candidateConfirmationStatus?: string;
   employerAssociation?: string | null;
   projectAssociation?: string | null;
@@ -134,6 +136,8 @@ export type ResumeVersionRecord = {
   triggeredBy: string;
   sections: unknown[];
   idempotencyKey: string;
+  /** Durable operation/repair intent (tenant + resume scoped). */
+  operationKey?: string | null;
   promptVersion?: string;
   createdAt: string;
 };
@@ -418,20 +422,56 @@ export interface EvidenceRepository {
   getByPublicId(tenantId: string, publicId: string): Promise<EvidenceRecord | null>;
   getByPublicIdGlobal(publicId: string): Promise<EvidenceRecord | null>;
   create(item: Omit<EvidenceRecord, "createdAt" | "updatedAt" | "deletedAt" | "version"> & { version?: number }): Promise<EvidenceRecord>;
+  upsertTechAttestation(
+    item: Omit<EvidenceRecord, "createdAt" | "updatedAt" | "deletedAt" | "version"> & {
+      version?: number;
+      ownerUserId: string;
+      attestationApplicationId: string;
+      normalizedTechnology: string;
+    },
+  ): Promise<EvidenceRecord>;
+  revokeTechAttestation(
+    tenantId: string,
+    ownerUserId: string,
+    attestationApplicationId: string,
+    normalizedTechnology: string,
+  ): Promise<void>;
   update(tenantId: string, publicId: string, patch: Partial<EvidenceRecord>): Promise<EvidenceRecord>;
   softDelete(tenantId: string, publicId: string): Promise<void>;
 }
+
+export type ResumeVersionAppendInput = Omit<ResumeVersionRecord, "createdAt" | "versionNumber"> & {
+  createdAt?: string;
+  versionNumber?: number;
+};
 
 export interface ResumeRepository {
   getByApplication(tenantId: string, applicationPublicId: string): Promise<ResumeRecord | null>;
   listVersions(tenantId: string, resumePublicId: string): Promise<ResumeVersionRecord[]>;
   getVersion(tenantId: string, versionPublicId: string): Promise<ResumeVersionRecord | null>;
   findVersionByIdempotency(tenantId: string, idempotencyKey: string): Promise<ResumeVersionRecord | null>;
+  /** Lookup by durable repair/operation intent (tenant + resume scoped). */
+  findVersionByOperationKey?(
+    tenantId: string,
+    resumePublicId: string,
+    operationKey: string,
+  ): Promise<ResumeVersionRecord | null>;
   createResume(resume: Omit<ResumeRecord, "createdAt" | "updatedAt" | "deletedAt">): Promise<ResumeRecord>;
   appendVersion(version: Omit<ResumeVersionRecord, "createdAt"> & { createdAt?: string }): Promise<ResumeVersionRecord>;
   setCurrentVersion(tenantId: string, resumePublicId: string, versionPublicId: string): Promise<ResumeRecord>;
   /** Atomically allocate the next numeric version for a resume (concurrency-safe). */
   allocateNextVersionNumber?(tenantId: string, resumePublicId: string): Promise<number>;
+  /**
+   * Atomically allocate (if needed), append, and optionally set current under one DB lock.
+   * Replays with the same operationKey/idempotencyKey return the existing version.
+   */
+  appendAllocatedVersion?(input: {
+    tenantId: string;
+    resumePublicId: string;
+    operationKey: string;
+    setAsCurrent?: boolean;
+    version: ResumeVersionAppendInput;
+  }): Promise<ResumeVersionRecord>;
 }
 
 export interface AuditRepository {
@@ -466,8 +506,8 @@ export interface WorkflowRepository {
   listByApplication(tenantId: string, applicationPublicId: string): Promise<WorkflowRunRecord[]>;
   /** Non-terminal runs that should be re-enqueued after a worker/process restart. */
   listIncomplete(limit?: number): Promise<WorkflowRunRecord[]>;
-  /** Compare-and-swap stage claim; returns null when stage mismatch or already claimed. */
-  claimStage(runId: string, expectedStage: WorkflowStage): Promise<WorkflowRunRecord | null>;
+  /** Tenant-scoped compare-and-swap stage claim; returns null when stage mismatch or lease is active. */
+  claimStage(tenantId: string, runId: string, expectedStage: WorkflowStage): Promise<WorkflowRunRecord | null>;
 }
 
 export interface UsageRepository {
@@ -490,7 +530,7 @@ export interface UsageRepository {
     tenantId: string;
     idempotencyKey: string; // already tenant-scoped key as stored
     costCents: number | string | null; // null = unknown
-    userId: string;
+    userId?: string | null;
     workflowRunId?: string;
     metadata?: Record<string, unknown>;
   }): Promise<{ reservation: UsageLedgerRecord; costRow: UsageLedgerRecord | null }>;
@@ -767,12 +807,20 @@ export class MemoryRepositories implements Repositories {
 
     this.evidence = {
       async list(tenantId, opts) {
-        let items = [...store.evidence.values()].filter((e) => e.tenantId === tenantId && !e.deletedAt);
+        let items = [...store.evidence.values()].filter(
+          (e) => e.tenantId === tenantId && !e.deletedAt && (e.evidenceStatus ?? "active") === "active",
+        );
         if (opts?.ownerUserId) {
           items = items.filter((e) => e.ownerUserId === opts.ownerUserId);
         }
         if (opts?.applicationPublicId) {
-          items = items.filter((e) => !(e.excludedFromApplicationIds ?? []).includes(opts.applicationPublicId!));
+          items = items.filter(
+            (e) =>
+              !(e.excludedFromApplicationIds ?? []).includes(opts.applicationPublicId!) &&
+              (e.sourceType !== "user_confirmation" ||
+                !e.attestationApplicationId ||
+                (e.matchedApplicationIds ?? []).includes(opts.applicationPublicId!)),
+          );
         }
         return items;
       },
@@ -800,6 +848,64 @@ export class MemoryRepositories implements Repositories {
         };
         store.evidence.set(record.id, record);
         return record;
+      },
+      async upsertTechAttestation(item) {
+        const existing = [...store.evidence.values()].find(
+          (e) =>
+            e.tenantId === item.tenantId &&
+            e.ownerUserId === item.ownerUserId &&
+            e.attestationApplicationId === item.attestationApplicationId &&
+            e.normalizedTechnology === item.normalizedTechnology &&
+            e.sourceType === "user_confirmation" &&
+            !e.deletedAt,
+        );
+        if (!existing) {
+          const record: EvidenceRecord = {
+            ...item,
+            evidenceStatus: "active",
+            excludedFromApplicationIds: item.excludedFromApplicationIds ?? [],
+            matchedApplicationIds: item.matchedApplicationIds ?? [],
+            version: item.version ?? 1,
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+            deletedAt: null,
+          };
+          store.evidence.set(record.id, record);
+          return record;
+        }
+        const updated: EvidenceRecord = {
+          ...existing,
+          ...item,
+          id: existing.id,
+          publicId: existing.publicId,
+          evidenceStatus: "active",
+          version: existing.version + 1,
+          createdAt: existing.createdAt,
+          updatedAt: nowIso(),
+          deletedAt: null,
+        };
+        store.evidence.set(existing.id, updated);
+        return updated;
+      },
+      async revokeTechAttestation(tenantId, ownerUserId, attestationApplicationId, normalizedTechnology) {
+        for (const evidence of store.evidence.values()) {
+          if (
+            evidence.tenantId === tenantId &&
+            evidence.ownerUserId === ownerUserId &&
+            evidence.attestationApplicationId === attestationApplicationId &&
+            evidence.normalizedTechnology === normalizedTechnology &&
+            evidence.sourceType === "user_confirmation" &&
+            !evidence.deletedAt &&
+            (evidence.evidenceStatus ?? "active") === "active"
+          ) {
+            store.evidence.set(evidence.id, {
+              ...evidence,
+              evidenceStatus: "revoked",
+              version: evidence.version + 1,
+              updatedAt: nowIso(),
+            });
+          }
+        }
       },
       async update(tenantId, publicId, patch) {
         let existing: EvidenceRecord | null = null;
@@ -858,6 +964,14 @@ export class MemoryRepositories implements Repositories {
         }
         return null;
       },
+      async findVersionByOperationKey(tenantId, resumePublicId, operationKey) {
+        const resume = [...store.resumes.values()].find((r) => r.tenantId === tenantId && r.publicId === resumePublicId);
+        if (!resume) return null;
+        for (const v of store.resumeVersions.values()) {
+          if (v.tenantId === tenantId && v.resumeId === resume.id && v.operationKey === operationKey) return v;
+        }
+        return null;
+      },
       async createResume(resume) {
         const record: ResumeRecord = {
           ...resume,
@@ -874,6 +988,15 @@ export class MemoryRepositories implements Repositories {
             (v) => v.tenantId === version.tenantId && v.idempotencyKey === version.idempotencyKey,
           );
           if (existing) return existing;
+          if (version.operationKey) {
+            const byOp = [...store.resumeVersions.values()].find(
+              (v) =>
+                v.tenantId === version.tenantId &&
+                v.resumeId === version.resumeId &&
+                v.operationKey === version.operationKey,
+            );
+            if (byOp) return byOp;
+          }
           const collision = [...store.resumeVersions.values()].find(
             (v) => v.resumeId === version.resumeId && v.versionNumber === version.versionNumber,
           );
@@ -888,6 +1011,7 @@ export class MemoryRepositories implements Repositories {
           }
           const record: ResumeVersionRecord = {
             ...version,
+            operationKey: version.operationKey ?? null,
             scoreBreakdown: structuredClone(version.scoreBreakdown),
             sections: structuredClone(version.sections),
             createdAt: version.createdAt ?? nowIso(),
@@ -905,6 +1029,85 @@ export class MemoryRepositories implements Repositories {
             .filter((v) => v.resumeId === resume.id)
             .map((v) => v.versionNumber);
           return (nums.length ? Math.max(...nums) : -1) + 1;
+        });
+      },
+      async appendAllocatedVersion(input) {
+        const resume = [...store.resumes.values()].find(
+          (r) => r.tenantId === input.tenantId && r.publicId === input.resumePublicId,
+        );
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+        return withMemoryClaimLock(`resume-version:${resume.id}`, async () => {
+          const byOp = [...store.resumeVersions.values()].find(
+            (v) =>
+              v.tenantId === input.tenantId && v.resumeId === resume.id && v.operationKey === input.operationKey,
+          );
+          if (byOp) {
+            if (input.setAsCurrent) {
+              store.resumes.set(resume.id, {
+                ...resume,
+                currentVersionPublicId: byOp.publicId,
+                updatedAt: nowIso(),
+              });
+            }
+            return byOp;
+          }
+          const byKey = [...store.resumeVersions.values()].find(
+            (v) => v.tenantId === input.tenantId && v.idempotencyKey === input.version.idempotencyKey,
+          );
+          if (byKey) {
+            if (input.setAsCurrent) {
+              store.resumes.set(resume.id, {
+                ...resume,
+                currentVersionPublicId: byKey.publicId,
+                updatedAt: nowIso(),
+              });
+            }
+            return byKey;
+          }
+          const nums = [...store.resumeVersions.values()]
+            .filter((v) => v.resumeId === resume.id)
+            .map((v) => v.versionNumber);
+          const versionNumber =
+            typeof input.version.versionNumber === "number"
+              ? input.version.versionNumber
+              : (nums.length ? Math.max(...nums) : -1) + 1;
+          if (typeof input.version.versionNumber === "number") {
+            const collision = [...store.resumeVersions.values()].find(
+              (v) => v.resumeId === resume.id && v.versionNumber === versionNumber,
+            );
+            if (collision) {
+              if (collision.idempotencyKey === input.version.idempotencyKey || collision.operationKey === input.operationKey) {
+                if (input.setAsCurrent) {
+                  store.resumes.set(resume.id, {
+                    ...resume,
+                    currentVersionPublicId: collision.publicId,
+                    updatedAt: nowIso(),
+                  });
+                }
+                return collision;
+              }
+              throw new AppError("RESUME_VERSION_CONFLICT", `Resume version ${versionNumber} already exists`, 409);
+            }
+          }
+          const record: ResumeVersionRecord = {
+            ...input.version,
+            resumeId: resume.id,
+            tenantId: input.tenantId,
+            versionNumber,
+            operationKey: input.operationKey,
+            scoreBreakdown: structuredClone(input.version.scoreBreakdown),
+            sections: structuredClone(input.version.sections),
+            createdAt: input.version.createdAt ?? nowIso(),
+          };
+          store.resumeVersions.set(record.id, record);
+          if (input.setAsCurrent) {
+            store.resumes.set(resume.id, {
+              ...resume,
+              currentVersionPublicId: record.publicId,
+              updatedAt: nowIso(),
+            });
+          }
+          return record;
         });
       },
       async setCurrentVersion(tenantId, resumePublicId, versionPublicId) {
@@ -1066,14 +1269,14 @@ export class MemoryRepositories implements Repositories {
           .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
           .slice(0, limit);
       },
-      async claimStage(runId, expectedStage) {
-        return withMemoryClaimLock(`${runId}:${expectedStage}`, () => {
+      async claimStage(tenantId, runId, expectedStage) {
+        return withMemoryClaimLock(`${tenantId}:${runId}:${expectedStage}`, () => {
           const claimKey = `claimed:${expectedStage}`;
           const running = expectedStage.endsWith("_QUEUED")
             ? (expectedStage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage)
             : null;
           const existing = store.workflowRuns.get(runId);
-          if (!existing) return null;
+          if (!existing || existing.tenantId !== tenantId) return null;
           const stageOk = existing.stage === expectedStage || (running !== null && existing.stage === running);
           if (!stageOk || isStageClaimActive(existing.payload[claimKey])) return null;
 
@@ -1192,7 +1395,7 @@ export class MemoryRepositories implements Repositories {
               id: newId("ul"),
               publicId: newPublicId("ulp"),
               tenantId: input.tenantId,
-              userId: input.userId,
+              userId: input.userId || undefined,
               kind: "provider_cost",
               units: "0",
               costCents: input.costCents == null ? "0" : String(input.costCents),

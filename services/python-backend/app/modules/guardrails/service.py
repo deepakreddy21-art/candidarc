@@ -495,6 +495,52 @@ def evidence_backed_confirmations(confirmations: list[UserConfirmation] | None) 
     return [c for c in (confirmations or []) if c.can_create_first_person_claim()]
 
 
+def confirmations_with_provenance(confirmations: list[UserConfirmation] | None) -> list[UserConfirmation]:
+    """Confirmations that provide provenance (yes + evidence_description OR related_evidence_ids)."""
+    return [c for c in (confirmations or []) if c.has_provenance()]
+
+
+def validate_confirmation_scope(
+    confirmations: list[UserConfirmation] | None,
+    *,
+    tenant_id: str | None = None,
+    owner_user_id: str | None = None,
+) -> list[str]:
+    """Validate confirmation tenant/owner isolation. Returns violation codes."""
+    violations: list[str] = []
+    if tenant_id is None:
+        return violations
+    for conf in confirmations or []:
+        # Only check confirmations that have provenance fields set
+        if conf.tenant_id is not None and conf.tenant_id != tenant_id:
+            violations.append("CONFIRMATION_CROSS_TENANT")
+        if owner_user_id is not None and conf.owner_user_id is not None:
+            if conf.owner_user_id != owner_user_id:
+                violations.append("CONFIRMATION_CROSS_OWNER")
+    return violations
+
+
+def technologies_from_confirmations(
+    confirmations: list[UserConfirmation] | None,
+    evidence: list[EvidenceItem] | None = None,
+) -> set[str]:
+    """Extract technologies proven by affirmative scoped confirmations.
+
+    Confirmations may only point at already-persisted evidence. Description text
+    is never promoted into an ephemeral synthetic evidence record.
+    """
+    techs: set[str] = set()
+    evidence_by_id = {item.id: item for item in (evidence or [])}
+
+    for conf in confirmations_with_provenance(confirmations):
+        for eid in conf.related_evidence_ids:
+            if eid in evidence_by_id:
+                item = evidence_by_id[eid]
+                techs.update(_norm_tech(t) for t in item.technologies)
+
+    return {_norm_tech(t) for t in techs if t}
+
+
 def confirmation_without_evidence(confirmations: list[UserConfirmation] | None) -> list[UserConfirmation]:
     """Yes confirmations lacking evidence_description — must NOT become experience."""
     out: list[UserConfirmation] = []
@@ -555,33 +601,42 @@ def validate_resume_claims(
 
     JD, resume text from untrusted inputs, and company research are untrusted —
     they must not introduce unsupported hard facts or ATS manipulation.
+
+    Confirmation provenance: affirmative confirmations with evidence_description OR
+    related_evidence_ids provide provenance for technologies. Confirmations from
+    foreign tenant/owner are rejected.
     """
     violations: list[str] = []
     evidence_ids = {item.id for item in evidence}
     evidence_by_id = {item.id: item for item in evidence}
-    # Every affirmative, described confirmation gets a dedicated synthetic item.
-    # It is never appended to any other bullet's corpus.
-    for idx, conf in enumerate(evidence_backed_confirmations(user_confirmations)):
-        synth_id = _confirmation_evidence_id(idx, conf)
-        evidence_ids.add(synth_id)
-        if synth_id not in evidence_by_id:
-            related = [evidence_by_id[eid] for eid in conf.related_evidence_ids if eid in evidence_by_id]
-            tenant = related[0].tenant_id if related else evidence[0].tenant_id if evidence else tenant_id or "unknown"
-            owner = related[0].owner_user_id if related else evidence[0].owner_user_id if evidence else owner_user_id or "unknown"
-            evidence_by_id[synth_id] = EvidenceItem(
-                id=synth_id,
-                tenant_id=tenant,
-                owner_user_id=owner,
-                title=conf.topic,
-                claim_text=(conf.evidence_description or "").strip()[:3900],
-                technologies=sorted(extract_claim_atoms(conf.evidence_description or "").technologies),
-                source_type="user_confirmation",
-                verification_status="user_attested",
-                candidate_confirmation_status="confirmed",
-                confidence="medium",
-            )
-    synthetic_evidence = [item for eid, item in evidence_by_id.items() if eid not in {e.id for e in evidence}]
-    allowed = collect_allowed_technologies(evidence + synthetic_evidence, allowed_technologies)
+
+    # Confirmations are references to persisted evidence, never evidence themselves.
+    violations.extend(validate_confirmation_scope(
+        user_confirmations,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    ))
+    for conf in user_confirmations or []:
+        if not conf.confirmed:
+            continue
+        if not conf.id or not conf.tenant_id or not conf.owner_user_id:
+            violations.append("CONFIRMATION_PROVENANCE_REQUIRED")
+        if not (conf.evidence_description or "").strip():
+            violations.append("CONFIRMATION_BARE_YES")
+        if not conf.related_evidence_ids:
+            violations.append("CONFIRMATION_EVIDENCE_REQUIRED")
+        for evidence_id in conf.related_evidence_ids:
+            related = evidence_by_id.get(evidence_id)
+            if related is None:
+                violations.append("CONFIRMATION_EVIDENCE_NOT_FOUND")
+                continue
+            if conf.tenant_id != related.tenant_id:
+                violations.append("CONFIRMATION_CROSS_TENANT")
+            if conf.owner_user_id != related.owner_user_id:
+                violations.append("CONFIRMATION_CROSS_OWNER")
+    allowed = collect_allowed_technologies(evidence, allowed_technologies)
+    # Add technologies proven by affirmative scoped confirmations
+    allowed.update(technologies_from_confirmations(user_confirmations, evidence))
     research_techs = {_norm_tech(t) for t in (research_technologies or [])}
     for finding in research_findings or []:
         research_techs.update(extract_claim_atoms(finding.summary).technologies)
@@ -929,7 +984,7 @@ def build_grounded_resume(
     if questions:
         notes_bits.append("Evidence questions: " + " | ".join(questions[:5]))
 
-    if not evidence and not evidence_backed_confirmations(user_confirmations):
+    if not evidence:
         sections = [
             ResumeSection(
                 type="summary",
@@ -958,28 +1013,6 @@ def build_grounded_resume(
         )
 
     augmented = list(evidence)
-    for idx, conf in enumerate(evidence_backed_confirmations(user_confirmations)):
-        synth_id = _confirmation_evidence_id(idx, conf)
-        if any(e.id == synth_id for e in augmented):
-            continue
-        related = [item for item in evidence if item.id in conf.related_evidence_ids]
-        tenant = related[0].tenant_id if related else evidence[0].tenant_id if evidence else "unknown"
-        owner = related[0].owner_user_id if related else evidence[0].owner_user_id if evidence else "unknown"
-        techs = sorted({t.title() for t in extract_claim_atoms(conf.evidence_description or "").technologies})
-        augmented.append(
-            EvidenceItem(
-                id=synth_id,
-                tenant_id=tenant,
-                owner_user_id=owner,
-                title=conf.topic,
-                claim_text=(conf.evidence_description or "").strip()[:3900],
-                technologies=techs[:12],
-                source_type="user_confirmation",
-                verification_status="user_attested",
-                candidate_confirmation_status="confirmed",
-                confidence="medium",
-            )
-        )
 
     tech_list = sorted({tech for item in augmented for tech in item.technologies if _norm_tech(tech) in allowed})[:12]
     employment = [

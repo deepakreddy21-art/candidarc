@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import ValidationError
 
 from app.core.errors import (
     CROSS_OWNER_EVIDENCE,
@@ -43,6 +44,7 @@ from app.modules.evidence.store.factory import get_embedding_provider, get_evide
 from app.modules.evidence.store.protocol import EvidenceStoreError
 from app.modules.guardrails.service import validate_resume_claims
 from app.modules.parsing.service import parse_job_text, parse_resume_bytes
+from app.modules.quality.service import authorize_final_qa_response
 from app.modules.research import service as research_svc
 from app.modules.retrieval import service as retrieval
 from app.providers.factory import get_provider
@@ -56,6 +58,11 @@ def _raise_provider(exc: Exception) -> None:
     if isinstance(exc, RuntimeError):
         code = str(exc).split(":", 1)[0]
         raise HTTPException(status_code=http_status_for(code), detail={"code": code, "message": str(exc)}) from exc
+    if isinstance(exc, ValidationError):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "PROVIDER_OUTPUT_INVALID", "message": str(exc)},
+        ) from exc
     if isinstance(exc, ValueError) and str(exc).startswith("GUARDRAIL_VIOLATION"):
         raise HTTPException(
             status_code=422,
@@ -188,7 +195,11 @@ async def jobs_parse(body: JobParseRequest) -> JobParseResponse:
 async def research_synthesize(request: Request, body: ResearchSynthesizeRequest) -> ResearchSynthesizeResponse:
     try:
         provider = get_provider("generation", request)
-        result, _, _ = await provider.synthesize_research(company=body.company, role=body.role, sources=body.sources)
+        result, latency, usage = await provider.synthesize_research(
+            company=body.company,
+            role=body.role,
+            sources=body.sources,
+        )
     except Exception as exc:
         _raise_provider(exc)
         raise
@@ -199,7 +210,14 @@ async def research_synthesize(request: Request, body: ResearchSynthesizeRequest)
             status_code=422,
             detail={"code": "RESEARCH_AS_CANDIDATE_CLAIM", "message": "Research must not become candidate claims"},
         )
-    return typed
+    return typed.model_copy(
+        update={
+            "provider": usage.provider,
+            "model": usage.model,
+            "latency_ms": latency,
+            "usage": usage,
+        }
+    )
 
 
 def _store_backend(request: Request) -> Literal["memory", "postgres"]:
@@ -295,11 +313,22 @@ async def evidence_match(request: Request, body: EvidenceMatchRequest) -> Eviden
     _ = body.research_findings  # intentionally ignored for claim formation
     try:
         provider = get_provider("generation", request)
-        result, _, _ = await provider.match_evidence(requirements=body.requirements, evidence=body.evidence)
+        result, latency, usage = await provider.match_evidence(
+            requirements=body.requirements,
+            evidence=body.evidence,
+        )
     except Exception as exc:
         _raise_provider(exc)
         raise
-    return result if isinstance(result, EvidenceMatchResponse) else EvidenceMatchResponse.model_validate(result)
+    typed = result if isinstance(result, EvidenceMatchResponse) else EvidenceMatchResponse.model_validate(result)
+    return typed.model_copy(
+        update={
+            "provider": usage.provider,
+            "model": usage.model,
+            "latency_ms": latency,
+            "usage": usage,
+        }
+    )
 
 
 async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> ResumeGenerateResponse:
@@ -351,8 +380,8 @@ async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> Re
         )
     return ResumeGenerateResponse(
         resume=resume,
-        provider=provider.name,
-        model=provider.model,
+        provider=usage.provider if usage else provider.name,
+        model=usage.model if usage else provider.model,
         prompt_version=usage.prompt_version if usage else "resume-generation@python-v2",
         latency_ms=latency,
         usage=usage,
@@ -469,12 +498,24 @@ async def resumes_final_qa(
                 deterministic_checks=body.deterministic_checks,
                 allowed_technologies=body.allowed_technologies,
             )
+            typed = authorize_final_qa_response(
+                result,
+                resume=body.resume,
+                evidence=body.evidence,
+                allowed_technologies=body.allowed_technologies,
+                deterministic_checks=body.deterministic_checks,
+            )
         except Exception as exc:
             _raise_provider(exc)
             raise
-        typed = result if isinstance(result, FinalQaResponse) else FinalQaResponse.model_validate(result)
         if typed.usage is None:
             typed = typed.model_copy(update={"usage": usage})
+        provider_name = usage.provider if usage else typed.provider
+        model_name = usage.model if usage else typed.model
+        typed = typed.model_copy(update={
+            "provider": provider_name,
+            "model": model_name,
+        })
         return typed
 
     return cast(

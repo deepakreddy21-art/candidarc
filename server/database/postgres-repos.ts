@@ -11,7 +11,7 @@ import {
   type WorkflowRunRecord,
 } from "./repositories";
 import { AppError, type WorkflowStage } from "../domain/types";
-import { buildStageClaimLease, isStageClaimActive } from "../workflows/stages";
+import { STAGE_CLAIM_LEASE_MS } from "../workflows/stages";
 import { withTenant } from "./with-tenant";
 import {
   buildEvidenceMatchMap,
@@ -317,7 +317,11 @@ function createEvidenceRepository(): Repositories["evidence"] {
   return {
     list: async (tenantId, opts) =>
       withTenant(tenantId, async (db) => {
-        const conditions = [eq(s.evidenceItems.tenantId, tenantId), isNull(s.evidenceItems.deletedAt)];
+        const conditions = [
+          eq(s.evidenceItems.tenantId, tenantId),
+          isNull(s.evidenceItems.deletedAt),
+          eq(s.evidenceItems.evidenceStatus, "active"),
+        ];
         if (opts?.ownerUserId) {
           conditions.push(eq(s.evidenceItems.ownerUserId, opts.ownerUserId));
         }
@@ -332,7 +336,13 @@ function createEvidenceRepository(): Repositories["evidence"] {
         );
         let items = rows.map((row) => mapEvidence(row, matchMap.get(row.id)));
         if (opts?.applicationPublicId) {
-          items = items.filter((item) => !item.excludedFromApplicationIds.includes(opts.applicationPublicId!));
+          items = items.filter(
+            (item) =>
+              !item.excludedFromApplicationIds.includes(opts.applicationPublicId!) &&
+              (item.sourceType !== "user_confirmation" ||
+                !item.attestationApplicationId ||
+                item.matchedApplicationIds.includes(opts.applicationPublicId!)),
+          );
         }
         return items;
       }),
@@ -396,6 +406,8 @@ function createEvidenceRepository(): Repositories["evidence"] {
               sourceType: item.sourceType ?? null,
               claimText: item.claimText ?? null,
               evidenceStatus: item.evidenceStatus ?? "active",
+              attestationApplicationId: item.attestationApplicationId ?? null,
+              normalizedTechnology: item.normalizedTechnology ?? null,
               candidateConfirmationStatus: item.candidateConfirmationStatus ?? "pending",
               employerAssociation: item.employerAssociation ?? null,
               projectAssociation: item.projectAssociation ?? null,
@@ -408,6 +420,134 @@ function createEvidenceRepository(): Repositories["evidence"] {
         }
         const matchMap = await loadMatchMap(db, item.tenantId, [row.id]);
         return mapEvidence(row, matchMap.get(row.id));
+      }),
+    upsertTechAttestation: async (item) =>
+      withTenant(item.tenantId, async (db) =>
+        db.transaction(async (tx) => {
+          const values: typeof s.evidenceItems.$inferInsert = {
+            id: item.id,
+            publicId: item.publicId,
+            tenantId: item.tenantId,
+            ownerUserId: item.ownerUserId,
+            candidateProfileId: item.candidateProfileId,
+            title: item.title,
+            organization: item.organization,
+            situation: item.situation,
+            task: item.task,
+            actions: item.actions,
+            result: item.result,
+            technologies: item.technologies,
+            confidence: item.confidence as typeof s.evidenceItems.$inferInsert.confidence,
+            verificationStatus: item.verificationStatus as typeof s.evidenceItems.$inferInsert.verificationStatus,
+            privacyLevel: item.privacyLevel as typeof s.evidenceItems.$inferInsert.privacyLevel,
+            payload: item.payload ?? {},
+            sourceType: "user_confirmation",
+            claimText: item.claimText ?? null,
+            evidenceStatus: "active",
+            attestationApplicationId: item.attestationApplicationId,
+            normalizedTechnology: item.normalizedTechnology,
+            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+            employerAssociation: item.employerAssociation ?? null,
+            projectAssociation: item.projectAssociation ?? null,
+            version: item.version ?? 1,
+          };
+          const updateValues = {
+            title: values.title,
+            organization: values.organization,
+            situation: values.situation,
+            task: values.task,
+            actions: values.actions,
+            result: values.result,
+            technologies: values.technologies,
+            confidence: values.confidence,
+            verificationStatus: values.verificationStatus,
+            privacyLevel: values.privacyLevel,
+            payload: values.payload,
+            claimText: values.claimText,
+            candidateProfileId: values.candidateProfileId,
+            candidateConfirmationStatus: values.candidateConfirmationStatus,
+            employerAssociation: values.employerAssociation,
+            projectAssociation: values.projectAssociation,
+            evidenceStatus: "active",
+            updatedAt: new Date(),
+          } as const;
+
+          let row = (
+            await tx
+              .update(s.evidenceItems)
+              .set({ ...updateValues, version: sql`${s.evidenceItems.version} + 1` })
+              .where(
+                and(
+                  eq(s.evidenceItems.tenantId, item.tenantId),
+                  eq(s.evidenceItems.ownerUserId, item.ownerUserId),
+                  eq(s.evidenceItems.attestationApplicationId, item.attestationApplicationId),
+                  eq(s.evidenceItems.normalizedTechnology, item.normalizedTechnology),
+                  eq(s.evidenceItems.sourceType, "user_confirmation"),
+                  isNull(s.evidenceItems.deletedAt),
+                ),
+              )
+              .returning()
+          )[0];
+
+          if (!row) {
+            row = (
+              await tx
+                .insert(s.evidenceItems)
+                .values(values)
+                .onConflictDoUpdate({
+                  target: [
+                    s.evidenceItems.tenantId,
+                    s.evidenceItems.ownerUserId,
+                    s.evidenceItems.attestationApplicationId,
+                    s.evidenceItems.normalizedTechnology,
+                  ],
+                  targetWhere: sql`${s.evidenceItems.deletedAt} IS NULL
+                    AND ${s.evidenceItems.evidenceStatus} = 'active'
+                    AND ${s.evidenceItems.sourceType} = 'user_confirmation'
+                    AND ${s.evidenceItems.attestationApplicationId} IS NOT NULL
+                    AND ${s.evidenceItems.normalizedTechnology} IS NOT NULL`,
+                  set: { ...updateValues, version: sql`${s.evidenceItems.version} + 1` },
+                })
+                .returning()
+            )[0]!;
+          }
+
+          await syncMatches(
+            tx as Db,
+            item.tenantId,
+            row.id,
+            item.matchedApplicationIds,
+            item.excludedFromApplicationIds,
+          );
+          const matchMap = await loadMatchMap(tx as Db, item.tenantId, [row.id]);
+          return mapEvidence(row, matchMap.get(row.id));
+        }),
+      ),
+    revokeTechAttestation: async (
+      tenantId,
+      ownerUserId,
+      attestationApplicationId,
+      normalizedTechnology,
+    ) =>
+      withTenant(tenantId, async (db) => {
+        await db
+          .update(s.evidenceItems)
+          .set({
+            evidenceStatus: "revoked",
+            version: sql`${s.evidenceItems.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(s.evidenceItems.tenantId, tenantId),
+              eq(s.evidenceItems.ownerUserId, ownerUserId),
+              eq(s.evidenceItems.attestationApplicationId, attestationApplicationId),
+              eq(s.evidenceItems.normalizedTechnology, normalizedTechnology),
+              eq(s.evidenceItems.sourceType, "user_confirmation"),
+              eq(s.evidenceItems.evidenceStatus, "active"),
+              isNull(s.evidenceItems.deletedAt),
+            ),
+          );
       }),
     update: async (tenantId, publicId, patch) =>
       withTenant(tenantId, async (db) => {
@@ -442,6 +582,14 @@ function createEvidenceRepository(): Repositories["evidence"] {
           "payload",
           "ownerUserId",
           "candidateProfileId",
+          "sourceType",
+          "claimText",
+          "evidenceStatus",
+          "attestationApplicationId",
+          "normalizedTechnology",
+          "candidateConfirmationStatus",
+          "employerAssociation",
+          "projectAssociation",
         ] as const) {
           if (rest[key] !== undefined) itemPatch[key] = rest[key];
         }
@@ -599,6 +747,33 @@ function createResumeRepository(): Repositories["resumes"] {
         if (!version) return null;
         return mapResumeVersion(version, await loadSections(db, version.id));
       }),
+    findVersionByOperationKey: async (tenantId, resumePublicId, operationKey) =>
+      withTenant(tenantId, async (db) => {
+        const resume = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.publicId, resumePublicId), isNull(s.resumes.deletedAt)))
+            .limit(1)
+        )[0];
+        if (!resume) return null;
+        const version = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(
+              and(
+                eq(s.resumeVersions.tenantId, tenantId),
+                eq(s.resumeVersions.resumeId, resume.id),
+                eq(s.resumeVersions.operationKey, operationKey),
+                isNull(s.resumeVersions.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!version) return null;
+        return mapResumeVersion(version, await loadSections(db, version.id));
+      }),
     createResume: async (resume) =>
       withTenant(resume.tenantId, async (db) => {
         const row = (
@@ -630,6 +805,24 @@ function createResumeRepository(): Repositories["resumes"] {
         )[0];
         if (existing) return mapResumeVersion(existing, await loadSections(db, existing.id));
 
+        if (version.operationKey) {
+          const byOp = (
+            await db
+              .select()
+              .from(s.resumeVersions)
+              .where(
+                and(
+                  eq(s.resumeVersions.tenantId, version.tenantId),
+                  eq(s.resumeVersions.resumeId, version.resumeId),
+                  eq(s.resumeVersions.operationKey, version.operationKey),
+                  isNull(s.resumeVersions.deletedAt),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (byOp) return mapResumeVersion(byOp, await loadSections(db, byOp.id));
+        }
+
         try {
           const row = (
             await db
@@ -646,6 +839,7 @@ function createResumeRepository(): Repositories["resumes"] {
                 notes: version.notes,
                 triggeredBy: version.triggeredBy,
                 idempotencyKey: version.idempotencyKey,
+                operationKey: version.operationKey ?? null,
                 promptVersion: version.promptVersion,
               })
               .returning()
@@ -673,6 +867,22 @@ function createResumeRepository(): Repositories["resumes"] {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (/unique|duplicate/i.test(message)) {
+            if (version.operationKey) {
+              const byOp = (
+                await db
+                  .select()
+                  .from(s.resumeVersions)
+                  .where(
+                    and(
+                      eq(s.resumeVersions.tenantId, version.tenantId),
+                      eq(s.resumeVersions.resumeId, version.resumeId),
+                      eq(s.resumeVersions.operationKey, version.operationKey),
+                    ),
+                  )
+                  .limit(1)
+              )[0];
+              if (byOp) return mapResumeVersion(byOp, await loadSections(db, byOp.id));
+            }
             const byKey = (
               await db
                 .select()
@@ -709,6 +919,160 @@ function createResumeRepository(): Repositories["resumes"] {
           .from(s.resumeVersions)
           .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.resumeId, resume.id)));
         return Number(max) + 1;
+      }),
+    appendAllocatedVersion: async (input) =>
+      withTenant(input.tenantId, async (db) => {
+        const resume = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(
+              and(
+                eq(s.resumes.tenantId, input.tenantId),
+                eq(s.resumes.publicId, input.resumePublicId),
+                isNull(s.resumes.deletedAt),
+              ),
+            )
+            .limit(1)
+            .for("update")
+        )[0];
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+
+        // Hold advisory lock for the entire allocate+append+current update.
+        await db.execute(sql`select pg_advisory_xact_lock(hashtext(${resume.id}::text))`);
+
+        const byOp = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(
+              and(
+                eq(s.resumeVersions.tenantId, input.tenantId),
+                eq(s.resumeVersions.resumeId, resume.id),
+                eq(s.resumeVersions.operationKey, input.operationKey),
+                isNull(s.resumeVersions.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (byOp) {
+          if (input.setAsCurrent) {
+            await db
+              .update(s.resumes)
+              .set({ currentVersionId: byOp.id, updatedAt: new Date() })
+              .where(eq(s.resumes.id, resume.id));
+          }
+          return mapResumeVersion(byOp, await loadSections(db, byOp.id));
+        }
+
+        const byKey = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(
+              and(
+                eq(s.resumeVersions.tenantId, input.tenantId),
+                eq(s.resumeVersions.idempotencyKey, input.version.idempotencyKey),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (byKey) {
+          if (input.setAsCurrent) {
+            await db
+              .update(s.resumes)
+              .set({ currentVersionId: byKey.id, updatedAt: new Date() })
+              .where(eq(s.resumes.id, resume.id));
+          }
+          return mapResumeVersion(byKey, await loadSections(db, byKey.id));
+        }
+
+        const [{ max }] = await db
+          .select({ max: sql<number>`coalesce(max(${s.resumeVersions.versionNumber}), -1)` })
+          .from(s.resumeVersions)
+          .where(and(eq(s.resumeVersions.tenantId, input.tenantId), eq(s.resumeVersions.resumeId, resume.id)));
+        const versionNumber =
+          typeof input.version.versionNumber === "number" ? input.version.versionNumber : Number(max) + 1;
+        const versionId = input.version.id;
+        const versionPublicId = input.version.publicId;
+
+        try {
+          const row = (
+            await db
+              .insert(s.resumeVersions)
+              .values({
+                id: versionId,
+                publicId: versionPublicId,
+                tenantId: input.tenantId,
+                resumeId: resume.id,
+                versionNumber,
+                versionLabel: input.version.versionLabel,
+                score: input.version.score,
+                scoreBreakdown: input.version.scoreBreakdown,
+                notes: input.version.notes,
+                triggeredBy: input.version.triggeredBy,
+                idempotencyKey: input.version.idempotencyKey,
+                operationKey: input.operationKey,
+                promptVersion: input.version.promptVersion,
+              })
+              .returning()
+          )[0]!;
+
+          const sections = Array.isArray(input.version.sections) ? input.version.sections : [];
+          if (sections.length) {
+            await db.insert(s.resumeSections).values(
+              sections.map((section, index) => {
+                const payload = section as Record<string, unknown>;
+                return {
+                  publicId: String(payload.id ?? newId("rs")),
+                  tenantId: input.tenantId,
+                  resumeVersionId: row.id,
+                  type: String(payload.type ?? "summary"),
+                  title: String(payload.title ?? "Section"),
+                  order: typeof payload.order === "number" ? payload.order : index,
+                  payload,
+                };
+              }),
+            );
+          }
+
+          if (input.setAsCurrent) {
+            await db
+              .update(s.resumes)
+              .set({ currentVersionId: row.id, updatedAt: new Date() })
+              .where(eq(s.resumes.id, resume.id));
+          }
+
+          return mapResumeVersion(row, sections);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/unique|duplicate/i.test(message)) {
+            const racedOp = (
+              await db
+                .select()
+                .from(s.resumeVersions)
+                .where(
+                  and(
+                    eq(s.resumeVersions.tenantId, input.tenantId),
+                    eq(s.resumeVersions.resumeId, resume.id),
+                    eq(s.resumeVersions.operationKey, input.operationKey),
+                  ),
+                )
+                .limit(1)
+            )[0];
+            if (racedOp) {
+              if (input.setAsCurrent) {
+                await db
+                  .update(s.resumes)
+                  .set({ currentVersionId: racedOp.id, updatedAt: new Date() })
+                  .where(eq(s.resumes.id, resume.id));
+              }
+              return mapResumeVersion(racedOp, await loadSections(db, racedOp.id));
+            }
+            throw new AppError("RESUME_VERSION_CONFLICT", "Resume version conflict under concurrency", 409);
+          }
+          throw error;
+        }
       }),
     setCurrentVersion: async (tenantId, resumePublicId, versionPublicId) =>
       withTenant(tenantId, async (db) => {
@@ -1274,49 +1638,76 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
         })
         .filter((row): row is WorkflowRunRecord => Boolean(row));
     },
-    claimStage: async (runId, expectedStage) => {
+    claimStage: async (tenantId, runId, expectedStage) => {
       const claimKey = `claimed:${expectedStage}`;
       const running = expectedStage.endsWith("_QUEUED")
         ? (expectedStage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage)
         : null;
-      const rowData = (
-        await db
-          .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
-          .from(s.workflowRuns)
-          .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
-          .where(eq(s.workflowRuns.id, runId))
-          .limit(1)
-      )[0];
-      if (!rowData) return null;
-      const { run: row, applicationPublicId } = rowData;
-      const payload = (row.payload ?? {}) as Record<string, unknown>;
-      const stageOk = row.stage === expectedStage || (running !== null && row.stage === running);
-      if (!stageOk || isStageClaimActive(payload[claimKey])) return null;
-
-      let nextStage = row.stage as WorkflowStage;
-      if (row.stage === expectedStage && running) {
-        nextStage = running;
-      }
-
       const updated = (
         await db
           .update(s.workflowRuns)
           .set({
-            stage: nextStage,
+            stage: running
+              ? sql`CASE WHEN ${s.workflowRuns.stage} = ${expectedStage} THEN ${running} ELSE ${s.workflowRuns.stage} END`
+              : expectedStage,
             status: "running",
-            payload: { ...payload, [claimKey]: buildStageClaimLease(row.attempt ?? 1) },
-            updatedAt: new Date(),
+            payload: sql`jsonb_set(
+              COALESCE(${s.workflowRuns.payload}, '{}'::jsonb),
+              ARRAY[${claimKey}]::text[],
+              jsonb_build_object(
+                'at', now(),
+                'expiresAt', now() + (${STAGE_CLAIM_LEASE_MS} * interval '1 millisecond'),
+                'attempt', ${s.workflowRuns.attempt}
+              ),
+              true
+            )`,
+            updatedAt: sql`now()`,
           })
           .where(
             and(
+              eq(s.workflowRuns.tenantId, tenantId),
               eq(s.workflowRuns.id, runId),
               or(eq(s.workflowRuns.stage, expectedStage), running ? eq(s.workflowRuns.stage, running) : sql`false`),
-              sql`NOT (COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ? ${claimKey})`,
+              sql`(
+                NOT (COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ? ${claimKey})
+                OR CASE jsonb_typeof(COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey})
+                  WHEN 'object' THEN CASE
+                    WHEN jsonb_typeof(COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey} -> 'expiresAt') = 'string'
+                      AND pg_input_is_valid(
+                        COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey} ->> 'expiresAt',
+                        'timestamp with time zone'
+                      )
+                    THEN (
+                      COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey} ->> 'expiresAt'
+                    )::timestamptz <= now()
+                    ELSE true
+                  END
+                  WHEN 'string' THEN CASE
+                    WHEN pg_input_is_valid(
+                      COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ->> ${claimKey},
+                      'timestamp with time zone'
+                    )
+                    THEN (
+                      COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ->> ${claimKey}
+                    )::timestamptz + (${STAGE_CLAIM_LEASE_MS} * interval '1 millisecond') <= now()
+                    ELSE true
+                  END
+                  ELSE true
+                END
+              )`,
             ),
           )
           .returning()
       )[0];
-      return updated ? mapWorkflow(updated, applicationPublicId) : null;
+      if (!updated) return null;
+      const application = (
+        await db
+          .select({ publicId: s.applications.publicId })
+          .from(s.applications)
+          .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.id, updated.applicationId)))
+          .limit(1)
+      )[0];
+      return mapWorkflow(updated, application?.publicId ?? "");
     },
   };
 }
@@ -1472,7 +1863,7 @@ function createUsageRepository(db: Db): Repositories["usage"] {
           .values({
             publicId: newId("ulp"),
             tenantId: input.tenantId,
-            userId: input.userId,
+            userId: input.userId || null,
             kind: "provider_cost",
             units: "0",
             costCents: input.costCents == null ? "0" : String(input.costCents),

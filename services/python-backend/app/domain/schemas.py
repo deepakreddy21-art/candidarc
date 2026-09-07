@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -28,6 +29,80 @@ FindingSeverity = Literal["critical", "major", "minor", "suggestion"]
 FindingStatus = Literal["open", "accepted", "rejected", "edited"]
 SectionType = Literal["summary", "skills", "experience", "projects", "education", "certifications"]
 QaStatus = Literal["pass", "warn", "fail", "warning", "pending"]
+
+
+class FinalQaCheckCode(StrEnum):
+    PRIMARY_TECHNOLOGY_EMPHASIS = "PRIMARY_TECHNOLOGY_EMPHASIS"
+    HAS_SUMMARY = "HAS_SUMMARY"
+    HAS_SKILLS = "HAS_SKILLS"
+    HAS_EXPERIENCE = "HAS_EXPERIENCE"
+    DUPLICATE_BULLETS = "DUPLICATE_BULLETS"
+    REQUIRED_SECTIONS = "REQUIRED_SECTIONS"
+    ATS_FORMAT = "ATS_FORMAT"
+    LENGTH_REDUCE = "LENGTH_REDUCE"
+    UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
+    EVIDENCE_LINKED = "EVIDENCE_LINKED"
+    TECHNOLOGY_CLAIMS = "TECHNOLOGY_CLAIMS"
+    SCORE_RUBRIC_PRESENT = "SCORE_RUBRIC_PRESENT"
+    SECTION_COUNT = "SECTION_COUNT"
+    CRITICAL_FINDINGS = "CRITICAL_FINDINGS"
+    EVIDENCE_REFERENCES = "EVIDENCE_REFERENCES"
+    EDUCATION = "EDUCATION"
+    CONTACT_INFORMATION = "CONTACT_INFORMATION"
+    CHRONOLOGY = "CHRONOLOGY"
+    PAGE_LENGTH = "PAGE_LENGTH"
+    UNKNOWN = "UNKNOWN"
+
+
+FINAL_QA_LABEL_BY_CODE: dict[FinalQaCheckCode, str] = {
+    FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS: "Primary technology emphasis",
+    FinalQaCheckCode.HAS_SUMMARY: "Has summary",
+    FinalQaCheckCode.HAS_SKILLS: "Has skills",
+    FinalQaCheckCode.HAS_EXPERIENCE: "Has experience",
+    FinalQaCheckCode.DUPLICATE_BULLETS: "Duplicate bullets",
+    FinalQaCheckCode.REQUIRED_SECTIONS: "Required sections",
+    FinalQaCheckCode.ATS_FORMAT: "ATS format",
+    FinalQaCheckCode.LENGTH_REDUCE: "Length check",
+    FinalQaCheckCode.UNSUPPORTED_CLAIM: "Unsupported factual claim",
+    FinalQaCheckCode.EVIDENCE_LINKED: "Evidence linked",
+    FinalQaCheckCode.TECHNOLOGY_CLAIMS: "Technology claims",
+    FinalQaCheckCode.SCORE_RUBRIC_PRESENT: "Score rubric present",
+    FinalQaCheckCode.SECTION_COUNT: "Section count",
+    FinalQaCheckCode.CRITICAL_FINDINGS: "Critical findings",
+    FinalQaCheckCode.EVIDENCE_REFERENCES: "Evidence references",
+    FinalQaCheckCode.EDUCATION: "Education",
+    FinalQaCheckCode.CONTACT_INFORMATION: "Contact information",
+    FinalQaCheckCode.CHRONOLOGY: "Chronology",
+    FinalQaCheckCode.PAGE_LENGTH: "Page estimate",
+    FinalQaCheckCode.UNKNOWN: "Unknown check",
+}
+FINAL_QA_CODE_BY_LABEL = {label.casefold(): code for code, label in FINAL_QA_LABEL_BY_CODE.items()}
+
+
+def normalize_final_qa_check(data: Any) -> Any:
+    """Map legacy display labels/statuses only while parsing the API contract."""
+    if not isinstance(data, dict):
+        return data
+    from app.modules.quality.registry import FINAL_QA_CHECK_REGISTRY
+
+    normalized = dict(data)
+    code = normalized.get("code")
+    label = str(normalized.get("label") or "").strip()
+    if code is None:
+        normalized["code"] = FINAL_QA_CODE_BY_LABEL.get(label.casefold(), FinalQaCheckCode.UNKNOWN)
+    try:
+        typed_code = FinalQaCheckCode(normalized["code"])
+    except (TypeError, ValueError):
+        typed_code = FinalQaCheckCode.UNKNOWN
+    normalized["code"] = typed_code
+    definition = FINAL_QA_CHECK_REGISTRY[typed_code]
+    normalized["label"] = definition.label
+    if normalized.get("status") == "warning":
+        normalized["status"] = "warn"
+    if "blocking" in normalized and normalized["blocking"] is not definition.blocking:
+        raise ValueError(f"blocking must match the Final-QA registry for {typed_code.value}")
+    normalized["blocking"] = definition.blocking
+    return normalized
 
 SCORE_RUBRIC_VERSION = "candidarc-score-rubric@v1"
 
@@ -224,6 +299,10 @@ class ResearchSynthesizeResponse(StrictModel):
     sources: list[ResearchSource] = Field(max_length=50)
     overall_confidence: float = Field(ge=0, le=1)
     company_research_status: str | None = Field(default=None, max_length=64)
+    provider: StrShort
+    model: StrShort
+    latency_ms: int = Field(ge=0)
+    usage: ProviderUsage | None = None
 
 
 class EvidenceIndexRequest(StrictModel):
@@ -282,6 +361,10 @@ class EvidenceMatchResponse(StrictModel):
         description="Request-scoped lexical hybrid (keyword overlap + deterministic hash vectors). Not RAG index.",
         max_length=128,
     )
+    provider: StrShort
+    model: StrShort
+    latency_ms: int = Field(ge=0)
+    usage: ProviderUsage | None = None
 
 
 class MistakeMemoryRule(StrictModel):
@@ -297,8 +380,16 @@ class UserConfirmation(StrictModel):
 
     Only confirmations with a non-empty evidence_description may create first-person
     experience claims. Bare yes without evidence is ignored (never added as experience).
+
+    Provenance fields (id, tenant_id, owner_user_id) enable scoped validation:
+    - Confirmations from foreign tenants/owners are rejected during claim validation.
+    - Affirmative confirmations with evidence_description OR related_evidence_ids
+      may provide provenance for technologies in grounded_targets during repair.
     """
 
+    id: StrId | None = Field(default=None, description="Unique confirmation identifier for provenance")
+    tenant_id: StrId | None = Field(default=None, description="Tenant scope for isolation checks")
+    owner_user_id: StrId | None = Field(default=None, description="Owner user scope for isolation checks")
     topic: StrShort
     confirmed: bool
     evidence_description: str | None = Field(default=None, max_length=4_000)
@@ -312,6 +403,13 @@ class UserConfirmation(StrictModel):
             return False
         desc = (self.evidence_description or "").strip()
         return bool(desc)
+
+    def has_provenance(self) -> bool:
+        """True if this confirmation provides provenance via evidence or related IDs."""
+        if not self.confirmed:
+            return False
+        desc = (self.evidence_description or "").strip()
+        return bool(desc) or bool(self.related_evidence_ids)
 
 
 class ClaimSourcePolicy(StrictModel):
@@ -362,9 +460,36 @@ class ProviderUsage(StrictModel):
 class FinalQaFailedCheck(StrictModel):
     """One failed Final-QA check carried into a structured repair directive."""
 
+    code: FinalQaCheckCode
     label: StrShort
     status: QaStatus
+    blocking: bool = True
     detail: str = Field(default="", max_length=4_000)
+    target_kind: Literal[
+        "technology",
+        "metric",
+        "employer",
+        "title",
+        "date",
+        "education",
+        "certification",
+        "ownership",
+        "bullet",
+        "section",
+        "claim",
+    ] | None = None
+    target_value: str | None = Field(default=None, max_length=512)
+    section_id: str | None = Field(default=None, max_length=128)
+    bullet_id: str | None = Field(default=None, max_length=128)
+    claim_id: str | None = Field(default=None, max_length=128)
+    violation_type: str | None = Field(default=None, max_length=128)
+    approved_evidence_ids: list[StrId] = Field(default_factory=list, max_length=100)
+    expected_postcondition: str | None = Field(default=None, max_length=1_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_check(cls, data: Any) -> Any:
+        return normalize_final_qa_check(data)
 
 
 class FinalQaRepairDirective(StrictModel):
@@ -458,9 +583,16 @@ class AuditResponse(StrictModel):
 
 
 class DeterministicQaCheck(StrictModel):
+    code: FinalQaCheckCode
     label: StrShort
     status: QaStatus
+    blocking: bool
     detail: str = Field(max_length=2_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_check(cls, data: Any) -> Any:
+        return normalize_final_qa_check(data)
 
 
 class FinalQaRequest(StrictModel):
@@ -472,9 +604,16 @@ class FinalQaRequest(StrictModel):
 
 
 class FinalQaCheck(StrictModel):
+    code: FinalQaCheckCode
     label: StrShort
     status: QaStatus
+    blocking: bool
     detail: str = Field(max_length=2_000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_check(cls, data: Any) -> Any:
+        return normalize_final_qa_check(data)
 
 
 class FinalQaResponse(StrictModel):

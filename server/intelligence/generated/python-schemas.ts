@@ -122,11 +122,41 @@ export const AuditResponseSchema = z.object({
 export type AuditResponse = z.infer<typeof AuditResponseSchema>;
 
 export const FinalQaCheckSchema = z.object({
+  "blocking": z.boolean(),
+  "code": z.enum(["PRIMARY_TECHNOLOGY_EMPHASIS", "HAS_SUMMARY", "HAS_SKILLS", "HAS_EXPERIENCE", "DUPLICATE_BULLETS", "REQUIRED_SECTIONS", "ATS_FORMAT", "LENGTH_REDUCE", "UNSUPPORTED_CLAIM", "EVIDENCE_LINKED", "TECHNOLOGY_CLAIMS", "SCORE_RUBRIC_PRESENT", "SECTION_COUNT", "CRITICAL_FINDINGS", "EVIDENCE_REFERENCES", "EDUCATION", "CONTACT_INFORMATION", "CHRONOLOGY", "PAGE_LENGTH", "UNKNOWN"]),
   "detail": z.string().max(2000),
   "label": z.string().min(1).max(512),
   "status": z.enum(["pass", "warn", "fail", "warning", "pending"]),
 }).strict();
 export type FinalQaCheck = z.infer<typeof FinalQaCheckSchema>;
+
+export const FinalQaFailedCheckSchema = z.object({
+  "approved_evidence_ids": z.array(z.string().min(1).max(128)).max(100).optional(),
+  "blocking": z.boolean().optional(),
+  "bullet_id": z.string().max(128).nullable().optional(),
+  "claim_id": z.string().max(128).nullable().optional(),
+  "code": z.enum(["PRIMARY_TECHNOLOGY_EMPHASIS", "HAS_SUMMARY", "HAS_SKILLS", "HAS_EXPERIENCE", "DUPLICATE_BULLETS", "REQUIRED_SECTIONS", "ATS_FORMAT", "LENGTH_REDUCE", "UNSUPPORTED_CLAIM", "EVIDENCE_LINKED", "TECHNOLOGY_CLAIMS", "SCORE_RUBRIC_PRESENT", "SECTION_COUNT", "CRITICAL_FINDINGS", "EVIDENCE_REFERENCES", "EDUCATION", "CONTACT_INFORMATION", "CHRONOLOGY", "PAGE_LENGTH", "UNKNOWN"]),
+  "detail": z.string().max(4000).optional(),
+  "expected_postcondition": z.string().max(1000).nullable().optional(),
+  "label": z.string().min(1).max(512),
+  "section_id": z.string().max(128).nullable().optional(),
+  "status": z.enum(["pass", "warn", "fail", "warning", "pending"]),
+  "target_kind": z.enum(["technology", "metric", "employer", "title", "date", "education", "certification", "ownership", "bullet", "section", "claim"]).nullable().optional(),
+  "target_value": z.string().max(512).nullable().optional(),
+  "violation_type": z.string().max(128).nullable().optional(),
+}).strict();
+export type FinalQaFailedCheck = z.infer<typeof FinalQaFailedCheckSchema>;
+
+export const FinalQaRepairDirectiveSchema = z.object({
+  "approved_evidence_ids": z.array(z.string().min(1).max(128)).max(100).optional(),
+  "attempt": z.number().int().min(1.0).max(1.0).optional(),
+  "failed_checks": z.array(FinalQaFailedCheckSchema).min(1).max(100),
+  "grounded_targets": z.array(z.string().max(128)).max(50).optional(),
+  "repair_type": z.string().optional(),
+  "source_version": z.number().int().min(0.0),
+  "source_version_label": z.string().max(64).nullable().optional(),
+}).strict();
+export type FinalQaRepairDirective = z.infer<typeof FinalQaRepairDirectiveSchema>;
 
 export const FinalQaResponseSchema = z.object({
   "checks": z.array(FinalQaCheckSchema).max(100),
@@ -165,7 +195,10 @@ export type ResearchFinding = z.infer<typeof ResearchFindingSchema>;
 export const ResearchSynthesizeResponseSchema = z.object({
   "company_research_status": z.string().max(64).nullable().optional(),
   "findings": z.array(ResearchFindingSchema).max(100),
+  "latency_ms": z.number().int().min(0.0),
+  "model": z.string().min(1).max(512),
   "overall_confidence": z.number().min(0.0).max(1.0),
+  "provider": z.string().min(1).max(512),
   "sources": z.array(z.object({
   "accessed_at": z.string().min(1).max(512),
   "classification": z.enum(["explicit", "inferred", "uncertain"]).optional(),
@@ -176,6 +209,7 @@ export const ResearchSynthesizeResponseSchema = z.object({
   "title": z.string().min(1).max(512),
   "url": z.string().min(1).max(2083),
 }).strict()).max(50),
+  "usage": ProviderUsageSchema.nullable().optional(),
 }).strict();
 export type ResearchSynthesizeResponse = z.infer<typeof ResearchSynthesizeResponseSchema>;
 
@@ -191,8 +225,12 @@ export type EvidenceMatchRow = z.infer<typeof EvidenceMatchRowSchema>;
 
 export const EvidenceMatchResponseSchema = z.object({
   "evidence_coverage": z.number().min(0.0).max(1.0),
+  "latency_ms": z.number().int().min(0.0),
+  "model": z.string().min(1).max(512),
+  "provider": z.string().min(1).max(512),
   "ranking_method": z.string().max(128).optional(),
   "rows": z.array(EvidenceMatchRowSchema).max(200),
+  "usage": ProviderUsageSchema.nullable().optional(),
 }).strict();
 export type EvidenceMatchResponse = z.infer<typeof EvidenceMatchResponseSchema>;
 
@@ -243,6 +281,7 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "EvidenceSearchRequest",
   "EvidenceSearchResponse",
   "FinalQaCheck",
+  "FinalQaCheckCode",
   "FinalQaFailedCheck",
   "FinalQaRepairDirective",
   "FinalQaRequest",

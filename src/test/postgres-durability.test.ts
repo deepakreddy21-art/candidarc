@@ -108,6 +108,8 @@ describe("Postgres mapper helpers", () => {
         sourceType: null,
         claimText: null,
         evidenceStatus: "active",
+        attestationApplicationId: null,
+        normalizedTechnology: null,
         candidateConfirmationStatus: "pending",
         employerAssociation: null,
         projectAssociation: null,

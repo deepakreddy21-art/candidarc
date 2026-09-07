@@ -37,6 +37,8 @@ export const REQUIRED_PYTHON_COMPONENT_SCHEMAS = [
   "AuditFinding",
   "AuditResponse",
   "FinalQaCheck",
+  "FinalQaFailedCheck",
+  "FinalQaRepairDirective",
   "FinalQaResponse",
   "JobParseResponse",
   "ResearchFinding",

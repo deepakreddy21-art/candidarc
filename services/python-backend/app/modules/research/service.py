@@ -31,6 +31,9 @@ def synthesize_from_sources(*, company: str, sources: list[ResearchSource]) -> R
             sources=sources,
             overall_confidence=0.1,
             company_research_status="unavailable",
+            provider="deterministic",
+            model="internal",
+            latency_ms=0,
         )
 
     findings = [
@@ -60,6 +63,9 @@ def synthesize_from_sources(*, company: str, sources: list[ResearchSource]) -> R
             sources=sources,
             overall_confidence=0.1,
             company_research_status="unavailable",
+            provider="deterministic",
+            model="internal",
+            latency_ms=0,
         )
 
     return ResearchSynthesizeResponse(
@@ -67,6 +73,9 @@ def synthesize_from_sources(*, company: str, sources: list[ResearchSource]) -> R
         sources=sources,
         overall_confidence=min(0.9, 0.4 + 0.1 * len(findings)),
         company_research_status="available",
+        provider="deterministic",
+        model="internal",
+        latency_ms=0,
     )
 
 

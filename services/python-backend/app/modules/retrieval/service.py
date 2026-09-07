@@ -79,4 +79,7 @@ def match_evidence_request_scoped(
         rows=rows,
         evidence_coverage=coverage,
         ranking_method="lexical_hybrid_request_scoped",
+        provider="deterministic",
+        model="internal",
+        latency_ms=0,
     )

@@ -93,6 +93,8 @@ export function mapEvidence(
     sourceType: row.sourceType ?? null,
     claimText: row.claimText ?? null,
     evidenceStatus: row.evidenceStatus ?? "active",
+    attestationApplicationId: row.attestationApplicationId ?? null,
+    normalizedTechnology: row.normalizedTechnology ?? null,
     candidateConfirmationStatus: row.candidateConfirmationStatus ?? "pending",
     employerAssociation: row.employerAssociation ?? null,
     projectAssociation: row.projectAssociation ?? null,
@@ -141,6 +143,7 @@ export function mapResumeVersion(
     triggeredBy: row.triggeredBy ?? "",
     sections,
     idempotencyKey: row.idempotencyKey ?? "",
+    operationKey: row.operationKey ?? null,
     promptVersion: row.promptVersion ?? undefined,
     createdAt: row.createdAt.toISOString(),
   };

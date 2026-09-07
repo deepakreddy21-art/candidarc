@@ -286,6 +286,13 @@
       "DeterministicQaCheck": {
         "additionalProperties": false,
         "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/FinalQaCheckCode"
+          },
           "detail": {
             "maxLength": 2000,
             "title": "Detail",
@@ -310,8 +317,10 @@
           }
         },
         "required": [
+          "code",
           "label",
           "status",
+          "blocking",
           "detail"
         ],
         "title": "DeterministicQaCheck",
@@ -621,6 +630,23 @@
             "title": "Evidence Coverage",
             "type": "number"
           },
+          "latency_ms": {
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "model": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
           "ranking_method": {
             "default": "lexical_hybrid_request_scoped",
             "description": "Request-scoped lexical hybrid (keyword overlap + deterministic hash vectors). Not RAG index.",
@@ -635,11 +661,24 @@
             "maxItems": 200,
             "title": "Rows",
             "type": "array"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "rows",
-          "evidence_coverage"
+          "evidence_coverage",
+          "provider",
+          "model",
+          "latency_ms"
         ],
         "title": "EvidenceMatchResponse",
         "type": "object"
@@ -807,6 +846,13 @@
       "FinalQaCheck": {
         "additionalProperties": false,
         "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "code": {
+            "$ref": "#/components/schemas/FinalQaCheckCode"
+          },
           "detail": {
             "maxLength": 2000,
             "title": "Detail",
@@ -831,28 +877,122 @@
           }
         },
         "required": [
+          "code",
           "label",
           "status",
+          "blocking",
           "detail"
         ],
         "title": "FinalQaCheck",
         "type": "object"
       },
+      "FinalQaCheckCode": {
+        "enum": [
+          "PRIMARY_TECHNOLOGY_EMPHASIS",
+          "HAS_SUMMARY",
+          "HAS_SKILLS",
+          "HAS_EXPERIENCE",
+          "DUPLICATE_BULLETS",
+          "REQUIRED_SECTIONS",
+          "ATS_FORMAT",
+          "LENGTH_REDUCE",
+          "UNSUPPORTED_CLAIM",
+          "EVIDENCE_LINKED",
+          "TECHNOLOGY_CLAIMS",
+          "SCORE_RUBRIC_PRESENT",
+          "SECTION_COUNT",
+          "CRITICAL_FINDINGS",
+          "EVIDENCE_REFERENCES",
+          "EDUCATION",
+          "CONTACT_INFORMATION",
+          "CHRONOLOGY",
+          "PAGE_LENGTH",
+          "UNKNOWN"
+        ],
+        "title": "FinalQaCheckCode",
+        "type": "string"
+      },
       "FinalQaFailedCheck": {
         "additionalProperties": false,
         "description": "One failed Final-QA check carried into a structured repair directive.",
         "properties": {
+          "approved_evidence_ids": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Approved Evidence Ids",
+            "type": "array"
+          },
+          "blocking": {
+            "default": true,
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "bullet_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bullet Id"
+          },
+          "claim_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Id"
+          },
+          "code": {
+            "$ref": "#/components/schemas/FinalQaCheckCode"
+          },
           "detail": {
             "default": "",
             "maxLength": 4000,
             "title": "Detail",
             "type": "string"
           },
+          "expected_postcondition": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Postcondition"
+          },
           "label": {
             "maxLength": 512,
             "minLength": 1,
             "title": "Label",
             "type": "string"
+          },
+          "section_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section Id"
           },
           "status": {
             "enum": [
@@ -864,9 +1004,58 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "target_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "technology",
+                  "metric",
+                  "employer",
+                  "title",
+                  "date",
+                  "education",
+                  "certification",
+                  "ownership",
+                  "bullet",
+                  "section",
+                  "claim"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Kind"
+          },
+          "target_value": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Value"
+          },
+          "violation_type": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Violation Type"
           }
         },
         "required": [
+          "code",
           "label",
           "status"
         ],
@@ -1694,11 +1883,28 @@
             "title": "Findings",
             "type": "array"
           },
+          "latency_ms": {
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "model": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
           "overall_confidence": {
             "maximum": 1.0,
             "minimum": 0.0,
             "title": "Overall Confidence",
             "type": "number"
+          },
+          "provider": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
           },
           "sources": {
             "items": {
@@ -1707,12 +1913,25 @@
             "maxItems": 50,
             "title": "Sources",
             "type": "array"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "findings",
           "sources",
-          "overall_confidence"
+          "overall_confidence",
+          "provider",
+          "model",
+          "latency_ms"
         ],
         "title": "ResearchSynthesizeResponse",
         "type": "object"
@@ -2529,7 +2748,7 @@
       },
       "UserConfirmation": {
         "additionalProperties": false,
-        "description": "Typed user confirmation for generate/regenerate.\n\nOnly confirmations with a non-empty evidence_description may create first-person\nexperience claims. Bare yes without evidence is ignored (never added as experience).",
+        "description": "Typed user confirmation for generate/regenerate.\n\nOnly confirmations with a non-empty evidence_description may create first-person\nexperience claims. Bare yes without evidence is ignored (never added as experience).\n\nProvenance fields (id, tenant_id, owner_user_id) enable scoped validation:\n- Confirmations from foreign tenants/owners are rejected during claim validation.\n- Affirmative confirmations with evidence_description OR related_evidence_ids\n  may provide provenance for technologies in grounded_targets during repair.",
         "properties": {
           "confirmed": {
             "title": "Confirmed",
@@ -2546,6 +2765,34 @@
               }
             ],
             "title": "Evidence Description"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Unique confirmation identifier for provenance",
+            "title": "Id"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Owner user scope for isolation checks",
+            "title": "Owner User Id"
           },
           "related_evidence_ids": {
             "items": {
@@ -2567,6 +2814,20 @@
             ],
             "title": "Source Kind",
             "type": "string"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tenant scope for isolation checks",
+            "title": "Tenant Id"
           },
           "topic": {
             "maxLength": 512,

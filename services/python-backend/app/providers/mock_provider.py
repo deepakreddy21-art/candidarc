@@ -13,6 +13,7 @@ from app.domain.schemas import (
     EvidenceMatchResponse,
     EvidenceMatchRow,
     FinalQaCheck,
+    FinalQaCheckCode,
     FinalQaResponse,
     MistakeMemoryRule,
     ProviderUsage,
@@ -90,17 +91,18 @@ class MockProvider:
         if violations:
             raise ValueError(f"GUARDRAIL_VIOLATION:{','.join(violations)}")
         latency = int((time.perf_counter() - started) * 1000)
+        deterministic_operation = final_qa_repair is not None or bool(refinement_instruction)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic" if deterministic_operation else self.name,
+            model="internal" if deterministic_operation else self.model,
             prompt_version=RESUME_GENERATION.prompt_version,
             rubric_version=SCORE_RUBRIC_VERSION,
-            input_tokens=120,
-            output_tokens=80,
+            input_tokens=0 if deterministic_operation else 120,
+            output_tokens=0 if deterministic_operation else 80,
             cached_tokens=0,
             latency_ms=latency,
-            provider_request_id="mock-gen-1",
-            estimated_cost_cents=None,
+            provider_request_id=None if deterministic_operation else "mock-gen-1",
+            estimated_cost_cents=0 if deterministic_operation else None,
             retry_count=0,
         )
         return resume, latency, usage
@@ -157,12 +159,20 @@ class MockProvider:
         resume: ResumeDocument,
         evidence: list[EvidenceItem],
         deterministic_checks: list[Any] | None = None,
+        grounded_targets: list[str] | None = None,
+        allowed_technologies: list[str] | None = None,
         **_: Any,
     ) -> tuple[FinalQaResponse, int, ProviderUsage]:
         import os
 
         started = time.perf_counter()
-        checks = quality.run_deterministic_checks(resume, evidence)
+        checks = quality.run_deterministic_checks(
+            resume,
+            evidence,
+            allowed_technologies,
+            grounded_targets=grounded_targets,
+        )
+        checks_by_code = {check["code"]: check for check in checks}
         if deterministic_checks:
             for item in deterministic_checks:
                 if hasattr(item, "model_dump"):
@@ -174,26 +184,61 @@ class MockProvider:
                 status = data.get("status", "pass")
                 if status == "warning":
                     status = "warn"
-                checks.append(
-                    {"label": data["label"], "status": status, "detail": data.get("detail", "")}
+                parsed = FinalQaCheck.model_validate({**data, "status": status})
+                check_status: quality.CheckStatus = "fail"
+                if parsed.status == "pass":
+                    check_status = "pass"
+                elif parsed.status == "warn":
+                    check_status = "warn"
+                definition = quality.FINAL_QA_CHECK_REGISTRY[parsed.code]
+                checks_by_code[parsed.code] = quality.qa_check(
+                    parsed.code,
+                    check_status,
+                    parsed.detail,
+                    blocking=definition.blocking,
                 )
 
-        # Deterministic test hook: fail once until a structured repair has been applied.
-        # Only active when CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair (demo/test).
+        # Test-only hook (mock provider): force V4 to fail Primary technology emphasis once so
+        # repair journeys can run. Later revisions must satisfy the real content postcondition.
         force = os.environ.get("CANDIDARC_MOCK_FINAL_QA_FORCE", "").strip().lower()
         if force == "fail_until_repair":
-            repaired = "final-qa-repair:applied" in (resume.notes or "").lower()
-            if not repaired:
-                checks.append(
-                    {
-                        "label": "Primary technology emphasis",
-                        "status": "fail",
-                        "detail": "Lead with grounded primary technology from evidence",
-                    }
+            primary_tech: str | None = None
+            if grounded_targets:
+                primary_tech = grounded_targets[0].lower()
+            else:
+                evidence_techs = [t.lower() for item in evidence for t in item.technologies]
+                if evidence_techs:
+                    primary_tech = evidence_techs[0]
+
+            version = getattr(resume, "version_number", None)
+            if version is None:
+                version = getattr(resume, "absolute_version", None)
+
+            condition_fixed = False
+            if primary_tech:
+                for section in resume.sections:
+                    if section.type in {"summary", "skills"} and section.bullets:
+                        lead_text = section.bullets[0].text.lower()[:80]
+                        lead_techs = [t.lower() for t in section.bullets[0].technologies]
+                        if primary_tech in lead_text or primary_tech in lead_techs:
+                            condition_fixed = True
+                            break
+
+            # Original V4 always fails once (even if content already looks fine).
+            # V4R1+ must actually lead with the grounded primary tech to pass.
+            force_fail = version == 4 or (version is not None and version > 4 and not condition_fixed)
+            if force_fail:
+                checks_by_code[FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS] = quality.qa_check(
+                    FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+                    "fail",
+                    f"Lead with grounded primary technology from evidence ({primary_tech or 'none'})",
+                    blocking=True,
                 )
 
-        typed = [FinalQaCheck(label=c["label"], status=c["status"], detail=c["detail"]) for c in checks]
-        passed = all(c.status in {"pass", "pending", "warn", "warning"} for c in typed)
+        typed = [FinalQaCheck.model_validate(c) for c in checks_by_code.values()]
+        # Server authorize_final_qa_response owns passed; keep mock advisory false-safe
+        # so a local/auth mismatch cannot trip PROVIDER_OUTPUT_INVALID on happy paths.
+        passed = False
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
             provider=self.name,
@@ -227,15 +272,29 @@ class MockProvider:
         result = research.synthesize_from_sources(company=company, sources=sources)
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic",
+            model="internal",
             prompt_version="research@python-v1",
             latency_ms=latency,
-            input_tokens=30,
-            output_tokens=20,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            provider_request_id=None,
+            estimated_cost_cents=0,
             retry_count=0,
         )
-        return result, latency, usage
+        return (
+            result.model_copy(
+                update={
+                    "provider": usage.provider,
+                    "model": usage.model,
+                    "latency_ms": latency,
+                    "usage": usage,
+                }
+            ),
+            latency,
+            usage,
+        )
 
     async def match_evidence(
         self,
@@ -248,12 +307,26 @@ class MockProvider:
         result = match_evidence_request_scoped(requirements, evidence)
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic",
+            model="internal",
             prompt_version="evidence-match@lexical-v1",
             latency_ms=latency,
             input_tokens=0,
             output_tokens=0,
+            cached_tokens=0,
+            provider_request_id=None,
+            estimated_cost_cents=0,
             retry_count=0,
         )
-        return result, latency, usage
+        return (
+            result.model_copy(
+                update={
+                    "provider": usage.provider,
+                    "model": usage.model,
+                    "latency_ms": latency,
+                    "usage": usage,
+                }
+            ),
+            latency,
+            usage,
+        )
