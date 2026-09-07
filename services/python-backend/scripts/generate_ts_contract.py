@@ -46,6 +46,8 @@ EMIT_SCHEMAS = [
     "AuditFinding",
     "AuditResponse",
     "FinalQaCheck",
+    "FinalQaFailedCheck",
+    "FinalQaRepairDirective",
     "FinalQaResponse",
     "JobParseResponse",
     "ResearchFinding",
