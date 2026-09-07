@@ -194,6 +194,20 @@ export function installMockPythonIntelligence(opts?: { evidenceId?: string }) {
         sources: [] as unknown[],
         overall_confidence: 0.1,
         company_research_status: "unavailable",
+        provider: "deterministic",
+        model: "internal",
+        latency_ms: 1,
+        usage: {
+          provider: "deterministic",
+          model: "internal",
+          prompt_version: "research@python-v1",
+          input_tokens: 0,
+          output_tokens: 0,
+          latency_ms: 1,
+          estimated_cost_cents: 0,
+          provider_request_id: null,
+          retry_count: 0,
+        },
       };
     }),
     matchEvidence: vi.fn(async (input: { evidence?: Array<{ id?: string }> }) => {
@@ -211,6 +225,20 @@ export function installMockPythonIntelligence(opts?: { evidenceId?: string }) {
             coverage_gap: null,
           },
         ],
+        provider: "deterministic",
+        model: "internal",
+        latency_ms: 1,
+        usage: {
+          provider: "deterministic",
+          model: "internal",
+          prompt_version: "evidence-match@python-v1",
+          input_tokens: 0,
+          output_tokens: 0,
+          latency_ms: 1,
+          estimated_cost_cents: 0,
+          provider_request_id: null,
+          retry_count: 0,
+        },
       };
     }),
     generateResume: vi.fn(async (input: {
@@ -279,17 +307,27 @@ export function installMockPythonIntelligence(opts?: { evidenceId?: string }) {
     }),
     finalQa: vi.fn(async () => {
       calls.push("final-qa");
+      const requiredPass = (code: string, label: string) => ({
+        code,
+        label,
+        status: "pass" as const,
+        blocking: true,
+        detail: "ok",
+      });
       return {
         data: {
           passed: true,
           checks: [
-            {
-              code: "REQUIRED_SECTIONS",
-              label: "Required sections",
-              status: "pass",
-              blocking: true,
-              detail: "ok",
-            },
+            requiredPass("PRIMARY_TECHNOLOGY_EMPHASIS", "Primary technology emphasis"),
+            requiredPass("HAS_SUMMARY", "Has summary"),
+            requiredPass("HAS_EXPERIENCE", "Has experience"),
+            requiredPass("DUPLICATE_BULLETS", "Duplicate bullets"),
+            requiredPass("REQUIRED_SECTIONS", "Required sections"),
+            requiredPass("EVIDENCE_LINKED", "Evidence linked"),
+            requiredPass("TECHNOLOGY_CLAIMS", "Technology claims"),
+            requiredPass("SCORE_RUBRIC_PRESENT", "Score rubric present"),
+            requiredPass("CRITICAL_FINDINGS", "Critical findings"),
+            requiredPass("EVIDENCE_REFERENCES", "Evidence references"),
           ],
           notes: "passed",
         },

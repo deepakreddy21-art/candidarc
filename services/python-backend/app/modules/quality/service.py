@@ -2,18 +2,36 @@
 
 from __future__ import annotations
 
+import os
 import re
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
+from app.core.errors import PROVIDER_OUTPUT_INVALID, ProviderError
 from app.domain.schemas import (
-    FINAL_QA_LABEL_BY_CODE,
+    DeterministicQaCheck,
     EvidenceItem,
     FinalQaCheck,
     FinalQaCheckCode,
     FinalQaFailedCheck,
+    FinalQaResponse,
     ResumeDocument,
 )
 from app.modules.guardrails.service import validate_resume_claims
+from app.modules.quality.registry import (
+    FINAL_QA_CHECK_REGISTRY,
+    REQUIRED_FINAL_QA_CODES,
+)
+
+__all__ = [
+    "FINAL_QA_CHECK_REGISTRY",
+    "REQUIRED_FINAL_QA_CODES",
+    "REPAIRABLE_CHECK_CODES",
+    "authorize_final_qa_response",
+    "qa_check",
+    "run_deterministic_checks",
+    "verify_repair_fixed_checks",
+    "unsupported_blocking_repairs",
+]
 
 CheckStatus = Literal["pass", "warn", "fail"]
 
@@ -26,16 +44,9 @@ class QaCheckDict(TypedDict):
     detail: str
 
 
-REPAIRABLE_CHECK_CODES = frozenset({
-    FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
-    FinalQaCheckCode.HAS_SUMMARY,
-    FinalQaCheckCode.HAS_SKILLS,
-    FinalQaCheckCode.DUPLICATE_BULLETS,
-    FinalQaCheckCode.ATS_FORMAT,
-    FinalQaCheckCode.LENGTH_REDUCE,
-    FinalQaCheckCode.UNSUPPORTED_CLAIM,
-    FinalQaCheckCode.TECHNOLOGY_CLAIMS,
-})
+REPAIRABLE_CHECK_CODES = frozenset(
+    code for code, definition in FINAL_QA_CHECK_REGISTRY.items() if definition.repairable
+)
 
 
 def qa_check(
@@ -43,13 +54,14 @@ def qa_check(
     status: CheckStatus,
     detail: str,
     *,
-    blocking: bool = True,
+    blocking: bool | None = None,
 ) -> QaCheckDict:
+    definition = FINAL_QA_CHECK_REGISTRY[code]
     return {
         "code": code,
-        "label": FINAL_QA_LABEL_BY_CODE[code],
+        "label": definition.label,
         "status": status,
-        "blocking": blocking,
+        "blocking": definition.blocking,
         "detail": detail,
     }
 
@@ -118,7 +130,11 @@ def _check_duplicate_bullets(resume: ResumeDocument) -> QaCheckDict:
                     duplicates.append(normalized[:40])
                 seen.add(normalized)
     if duplicates:
-        return qa_check(FinalQaCheckCode.DUPLICATE_BULLETS, "fail", f"Found {len(duplicates)} duplicates")
+        return qa_check(
+            FinalQaCheckCode.DUPLICATE_BULLETS,
+            "fail",
+            f"Found {len(duplicates)} duplicates: {duplicates[0]}",
+        )
     return qa_check(FinalQaCheckCode.DUPLICATE_BULLETS, "pass", "no duplicates")
 
 
@@ -134,13 +150,40 @@ def run_deterministic_checks(
     has_experience = any(s.type == "experience" for s in resume.sections)
     has_skills = any(s.type == "skills" for s in resume.sections)
     section_count = len(resume.sections)
+    known_evidence_ids = {item.id for item in evidence}
+    referenced_evidence_ids = {
+        evidence_id
+        for section in resume.sections
+        for bullet in [
+            *(section.bullets or []),
+            *(bullet for item in (section.items or []) for bullet in item.bullets),
+        ]
+        for evidence_id in bullet.evidence_ids
+    }
+    unknown_evidence_ids = sorted(referenced_evidence_ids - known_evidence_ids)
 
     checks: list[QaCheckDict] = [
         qa_check(FinalQaCheckCode.HAS_SUMMARY, "pass" if has_summary else "fail", "summary"),
         qa_check(FinalQaCheckCode.HAS_EXPERIENCE, "pass" if has_experience else "fail", "experience"),
         qa_check(FinalQaCheckCode.HAS_SKILLS, "pass" if has_skills else "warn", "skills"),
         qa_check(
+            FinalQaCheckCode.REQUIRED_SECTIONS,
+            "pass" if has_experience else "fail",
+            "experience section present" if has_experience else "experience section required",
+        ),
+        _check_duplicate_bullets(resume),
+        qa_check(
             FinalQaCheckCode.EVIDENCE_LINKED,
+            "pass" if not violations else "fail",
+            ",".join(violations) or "ok",
+        ),
+        qa_check(
+            FinalQaCheckCode.EVIDENCE_REFERENCES,
+            "pass" if not unknown_evidence_ids else "fail",
+            "valid" if not unknown_evidence_ids else f"Unknown evidence: {', '.join(unknown_evidence_ids)}",
+        ),
+        qa_check(
+            FinalQaCheckCode.TECHNOLOGY_CLAIMS,
             "pass" if not violations else "fail",
             ",".join(violations) or "ok",
         ),
@@ -155,8 +198,147 @@ def run_deterministic_checks(
             "pass" if resume.score_rubric_version else "fail",
             resume.score_rubric_version,
         ),
+        _check_primary_tech_emphasis(resume, evidence, grounded_targets),
+        qa_check(
+            FinalQaCheckCode.CRITICAL_FINDINGS,
+            "pass",
+            "no unresolved critical findings supplied",
+        ),
     ]
     return checks
+
+
+def _invalid_provider_output(message: str) -> None:
+    raise ProviderError(PROVIDER_OUTPUT_INVALID, message)
+
+
+def authorize_final_qa_response(
+    provider_response: FinalQaResponse | dict[str, Any],
+    *,
+    resume: ResumeDocument,
+    evidence: list[EvidenceItem],
+    allowed_technologies: list[str] | None = None,
+    deterministic_checks: list[DeterministicQaCheck] | None = None,
+) -> FinalQaResponse:
+    """Validate provider QA and return a server-authoritative merged response."""
+    try:
+        typed = (
+            provider_response
+            if isinstance(provider_response, FinalQaResponse)
+            else FinalQaResponse.model_validate(provider_response)
+        )
+    except Exception as exc:
+        raise ProviderError(PROVIDER_OUTPUT_INVALID, f"Malformed Final-QA response: {exc}") from exc
+
+    if not typed.checks:
+        _invalid_provider_output("Final-QA provider returned no checks")
+
+    provider_codes = [check.code for check in typed.checks]
+    if len(provider_codes) != len(set(provider_codes)):
+        _invalid_provider_output("Final-QA provider returned duplicate check codes")
+
+    for check in typed.checks:
+        definition = FINAL_QA_CHECK_REGISTRY.get(check.code)
+        if definition is None:
+            if check.blocking and check.status == "fail":
+                _invalid_provider_output(f"Unknown blocking Final-QA failure: {check.code}")
+            continue
+        if check.blocking != definition.blocking:
+            _invalid_provider_output(
+                f"Provider changed blocking status for {check.code.value}"
+            )
+
+    missing = REQUIRED_FINAL_QA_CODES - set(provider_codes)
+    if missing:
+        _invalid_provider_output(
+            f"Final-QA provider omitted required checks: {', '.join(sorted(code.value for code in missing))}"
+        )
+
+    authoritative = {
+        check["code"]: check
+        for check in run_deterministic_checks(
+            resume,
+            evidence,
+            allowed_technologies,
+        )
+    }
+    for item in deterministic_checks or []:
+        status: CheckStatus = "fail"
+        if item.status == "pass":
+            status = "pass"
+        elif item.status in {"warn", "warning"}:
+            status = "warn"
+        definition = FINAL_QA_CHECK_REGISTRY[item.code]
+        authoritative[item.code] = qa_check(
+            item.code,
+            status,
+            item.detail or definition.label,
+            blocking=definition.blocking,
+        )
+
+    # Test-only mock hook: keep V4 failing Primary technology emphasis until repair
+    # rewrites the lead. Applied here so authority cannot wipe the forced failure.
+    force = os.environ.get("CANDIDARC_MOCK_FINAL_QA_FORCE", "").strip().lower()
+    if force == "fail_until_repair":
+        primary_tech: str | None = None
+        evidence_techs = [t.lower() for item in evidence for t in item.technologies]
+        if evidence_techs:
+            primary_tech = evidence_techs[0]
+        version = getattr(resume, "version_number", None)
+        if version is None:
+            version = getattr(resume, "absolute_version", None)
+        condition_fixed = False
+        if primary_tech:
+            for section in resume.sections:
+                if section.type in {"summary", "skills"} and section.bullets:
+                    lead_text = section.bullets[0].text.lower()[:80]
+                    lead_techs = [t.lower() for t in section.bullets[0].technologies]
+                    if primary_tech in lead_text or primary_tech in lead_techs:
+                        condition_fixed = True
+                        break
+        force_fail = version == 4 or (version is not None and version > 4 and not condition_fixed)
+        if force_fail:
+            authoritative[FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS] = qa_check(
+                FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+                "fail",
+                f"Lead with grounded primary technology from evidence ({primary_tech or 'none'})",
+            )
+
+    provider_by_code = {item.code: item for item in typed.checks}
+    merged: list[FinalQaCheck] = []
+    for _code, auth_check in authoritative.items():
+        provider_check = provider_by_code.get(_code)
+        detail = auth_check["detail"]
+        if provider_check is not None and provider_check.detail and provider_check.detail != detail:
+            detail = f"{detail} | provider: {provider_check.detail}"[:2_000]
+        merged.append(
+            FinalQaCheck(
+                code=auth_check["code"],
+                label=auth_check["label"],
+                status=auth_check["status"],
+                blocking=auth_check["blocking"],
+                detail=detail,
+            )
+        )
+
+    for provider_item in typed.checks:
+        if provider_item.code in authoritative:
+            continue
+        definition = FINAL_QA_CHECK_REGISTRY[provider_item.code]
+        merged.append(
+            provider_item.model_copy(
+                update={
+                    "label": definition.label,
+                    "blocking": definition.blocking,
+                }
+            )
+        )
+
+    passed = not any(check.blocking and check.status == "fail" for check in merged)
+    if typed.passed and not passed:
+        _invalid_provider_output("Provider reported passed=true while an authoritative blocking check failed")
+
+    return typed.model_copy(update={"passed": passed, "checks": merged})
 
 
 def run_specific_checks(

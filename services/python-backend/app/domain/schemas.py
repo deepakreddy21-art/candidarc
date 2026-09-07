@@ -83,6 +83,8 @@ def normalize_final_qa_check(data: Any) -> Any:
     """Map legacy display labels/statuses only while parsing the API contract."""
     if not isinstance(data, dict):
         return data
+    from app.modules.quality.registry import FINAL_QA_CHECK_REGISTRY
+
     normalized = dict(data)
     code = normalized.get("code")
     label = str(normalized.get("label") or "").strip()
@@ -93,18 +95,13 @@ def normalize_final_qa_check(data: Any) -> Any:
     except (TypeError, ValueError):
         typed_code = FinalQaCheckCode.UNKNOWN
     normalized["code"] = typed_code
-    if not label:
-        normalized["label"] = FINAL_QA_LABEL_BY_CODE[typed_code]
+    definition = FINAL_QA_CHECK_REGISTRY[typed_code]
+    normalized["label"] = definition.label
     if normalized.get("status") == "warning":
         normalized["status"] = "warn"
-    if "blocking" not in normalized:
-        normalized["blocking"] = typed_code not in {
-            FinalQaCheckCode.EDUCATION,
-            FinalQaCheckCode.CONTACT_INFORMATION,
-            FinalQaCheckCode.CHRONOLOGY,
-            FinalQaCheckCode.PAGE_LENGTH,
-            FinalQaCheckCode.SECTION_COUNT,
-        }
+    if "blocking" in normalized and normalized["blocking"] is not definition.blocking:
+        raise ValueError(f"blocking must match the Final-QA registry for {typed_code.value}")
+    normalized["blocking"] = definition.blocking
     return normalized
 
 SCORE_RUBRIC_VERSION = "candidarc-score-rubric@v1"
@@ -302,6 +299,10 @@ class ResearchSynthesizeResponse(StrictModel):
     sources: list[ResearchSource] = Field(max_length=50)
     overall_confidence: float = Field(ge=0, le=1)
     company_research_status: str | None = Field(default=None, max_length=64)
+    provider: StrShort
+    model: StrShort
+    latency_ms: int = Field(ge=0)
+    usage: ProviderUsage | None = None
 
 
 class EvidenceIndexRequest(StrictModel):
@@ -360,6 +361,10 @@ class EvidenceMatchResponse(StrictModel):
         description="Request-scoped lexical hybrid (keyword overlap + deterministic hash vectors). Not RAG index.",
         max_length=128,
     )
+    provider: StrShort
+    model: StrShort
+    latency_ms: int = Field(ge=0)
+    usage: ProviderUsage | None = None
 
 
 class MistakeMemoryRule(StrictModel):
@@ -460,6 +465,26 @@ class FinalQaFailedCheck(StrictModel):
     status: QaStatus
     blocking: bool = True
     detail: str = Field(default="", max_length=4_000)
+    target_kind: Literal[
+        "technology",
+        "metric",
+        "employer",
+        "title",
+        "date",
+        "education",
+        "certification",
+        "ownership",
+        "bullet",
+        "section",
+        "claim",
+    ] | None = None
+    target_value: str | None = Field(default=None, max_length=512)
+    section_id: str | None = Field(default=None, max_length=128)
+    bullet_id: str | None = Field(default=None, max_length=128)
+    claim_id: str | None = Field(default=None, max_length=128)
+    violation_type: str | None = Field(default=None, max_length=128)
+    approved_evidence_ids: list[StrId] = Field(default_factory=list, max_length=100)
+    expected_postcondition: str | None = Field(default=None, max_length=1_000)
 
     @model_validator(mode="before")
     @classmethod

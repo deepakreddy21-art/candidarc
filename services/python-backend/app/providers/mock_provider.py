@@ -160,12 +160,19 @@ class MockProvider:
         evidence: list[EvidenceItem],
         deterministic_checks: list[Any] | None = None,
         grounded_targets: list[str] | None = None,
+        allowed_technologies: list[str] | None = None,
         **_: Any,
     ) -> tuple[FinalQaResponse, int, ProviderUsage]:
         import os
 
         started = time.perf_counter()
-        checks = quality.run_deterministic_checks(resume, evidence, grounded_targets=grounded_targets)
+        checks = quality.run_deterministic_checks(
+            resume,
+            evidence,
+            allowed_technologies,
+            grounded_targets=grounded_targets,
+        )
+        checks_by_code = {check["code"]: check for check in checks}
         if deterministic_checks:
             for item in deterministic_checks:
                 if hasattr(item, "model_dump"):
@@ -183,13 +190,12 @@ class MockProvider:
                     check_status = "pass"
                 elif parsed.status == "warn":
                     check_status = "warn"
-                checks.append(
-                    quality.qa_check(
-                        parsed.code,
-                        check_status,
-                        parsed.detail,
-                        blocking=parsed.blocking,
-                    )
+                definition = quality.FINAL_QA_CHECK_REGISTRY[parsed.code]
+                checks_by_code[parsed.code] = quality.qa_check(
+                    parsed.code,
+                    check_status,
+                    parsed.detail,
+                    blocking=definition.blocking,
                 )
 
         # Test-only hook (mock provider): force V4 to fail Primary technology emphasis once so
@@ -222,17 +228,17 @@ class MockProvider:
             # V4R1+ must actually lead with the grounded primary tech to pass.
             force_fail = version == 4 or (version is not None and version > 4 and not condition_fixed)
             if force_fail:
-                checks.append(
-                    quality.qa_check(
-                        FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
-                        "fail",
-                        f"Lead with grounded primary technology from evidence ({primary_tech or 'none'})",
-                        blocking=True,
-                    )
+                checks_by_code[FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS] = quality.qa_check(
+                    FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+                    "fail",
+                    f"Lead with grounded primary technology from evidence ({primary_tech or 'none'})",
+                    blocking=True,
                 )
 
-        typed = [FinalQaCheck.model_validate(c) for c in checks]
-        passed = not any(c.blocking and c.status != "pass" for c in typed)
+        typed = [FinalQaCheck.model_validate(c) for c in checks_by_code.values()]
+        # Server authorize_final_qa_response owns passed; keep mock advisory false-safe
+        # so a local/auth mismatch cannot trip PROVIDER_OUTPUT_INVALID on happy paths.
+        passed = False
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
             provider=self.name,
@@ -266,15 +272,29 @@ class MockProvider:
         result = research.synthesize_from_sources(company=company, sources=sources)
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic",
+            model="internal",
             prompt_version="research@python-v1",
             latency_ms=latency,
-            input_tokens=30,
-            output_tokens=20,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            provider_request_id=None,
+            estimated_cost_cents=0,
             retry_count=0,
         )
-        return result, latency, usage
+        return (
+            result.model_copy(
+                update={
+                    "provider": usage.provider,
+                    "model": usage.model,
+                    "latency_ms": latency,
+                    "usage": usage,
+                }
+            ),
+            latency,
+            usage,
+        )
 
     async def match_evidence(
         self,
@@ -287,12 +307,26 @@ class MockProvider:
         result = match_evidence_request_scoped(requirements, evidence)
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic",
+            model="internal",
             prompt_version="evidence-match@lexical-v1",
             latency_ms=latency,
             input_tokens=0,
             output_tokens=0,
+            cached_tokens=0,
+            provider_request_id=None,
+            estimated_cost_cents=0,
             retry_count=0,
         )
-        return result, latency, usage
+        return (
+            result.model_copy(
+                update={
+                    "provider": usage.provider,
+                    "model": usage.model,
+                    "latency_ms": latency,
+                    "usage": usage,
+                }
+            ),
+            latency,
+            usage,
+        )

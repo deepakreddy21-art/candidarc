@@ -1,19 +1,88 @@
 export type FinalQaCheck = {
-  code:
-    | "REQUIRED_SECTIONS"
-    | "EDUCATION"
-    | "DUPLICATE_BULLETS"
-    | "CONTACT_INFORMATION"
-    | "CRITICAL_FINDINGS"
-    | "EVIDENCE_REFERENCES"
-    | "TECHNOLOGY_CLAIMS"
-    | "CHRONOLOGY"
-    | "PAGE_LENGTH";
+  code: FinalQaCheckCode;
   label: string;
   status: "pass" | "fail" | "warning";
   detail: string;
   blocking: boolean;
 };
+
+export type FinalQaCheckCode =
+  | "PRIMARY_TECHNOLOGY_EMPHASIS"
+  | "HAS_SUMMARY"
+  | "HAS_SKILLS"
+  | "HAS_EXPERIENCE"
+  | "DUPLICATE_BULLETS"
+  | "REQUIRED_SECTIONS"
+  | "ATS_FORMAT"
+  | "LENGTH_REDUCE"
+  | "UNSUPPORTED_CLAIM"
+  | "EVIDENCE_LINKED"
+  | "TECHNOLOGY_CLAIMS"
+  | "SCORE_RUBRIC_PRESENT"
+  | "SECTION_COUNT"
+  | "CRITICAL_FINDINGS"
+  | "EVIDENCE_REFERENCES"
+  | "EDUCATION"
+  | "CONTACT_INFORMATION"
+  | "CHRONOLOGY"
+  | "PAGE_LENGTH"
+  | "UNKNOWN";
+
+export const FINAL_QA_CHECK_REGISTRY: Readonly<
+  Record<FinalQaCheckCode, { blocking: boolean; repairable: boolean; required: boolean }>
+> = Object.freeze({
+  PRIMARY_TECHNOLOGY_EMPHASIS: { blocking: true, repairable: true, required: true },
+  HAS_SUMMARY: { blocking: true, repairable: true, required: true },
+  HAS_SKILLS: { blocking: false, repairable: true, required: false },
+  HAS_EXPERIENCE: { blocking: true, repairable: false, required: true },
+  DUPLICATE_BULLETS: { blocking: true, repairable: true, required: true },
+  REQUIRED_SECTIONS: { blocking: true, repairable: false, required: true },
+  ATS_FORMAT: { blocking: true, repairable: true, required: false },
+  LENGTH_REDUCE: { blocking: true, repairable: true, required: false },
+  UNSUPPORTED_CLAIM: { blocking: true, repairable: true, required: false },
+  EVIDENCE_LINKED: { blocking: true, repairable: false, required: true },
+  TECHNOLOGY_CLAIMS: { blocking: true, repairable: true, required: true },
+  SCORE_RUBRIC_PRESENT: { blocking: true, repairable: false, required: true },
+  SECTION_COUNT: { blocking: false, repairable: false, required: false },
+  CRITICAL_FINDINGS: { blocking: true, repairable: false, required: true },
+  EVIDENCE_REFERENCES: { blocking: true, repairable: false, required: true },
+  EDUCATION: { blocking: false, repairable: false, required: false },
+  CONTACT_INFORMATION: { blocking: false, repairable: false, required: false },
+  CHRONOLOGY: { blocking: false, repairable: false, required: false },
+  PAGE_LENGTH: { blocking: false, repairable: false, required: false },
+  UNKNOWN: { blocking: false, repairable: false, required: false },
+});
+
+export function validateAuthorizedFinalQaResult<T extends { code: string; status: string; blocking: boolean }>(input: {
+  passed: boolean;
+  checks: T[];
+}): { valid: boolean; blockingFailures: T[] } {
+  const codes = input.checks.map((check) => check.code);
+  const requiredCodes = Object.entries(FINAL_QA_CHECK_REGISTRY)
+    .filter(([, definition]) => definition.required)
+    .map(([code]) => code);
+  const allowedStatuses = new Set(["pass", "warn", "warning", "fail"]);
+  const valid =
+    input.checks.length > 0 &&
+    new Set(codes).size === codes.length &&
+    requiredCodes.every((code) => codes.includes(code)) &&
+    input.checks.every((check) => {
+      const definition = FINAL_QA_CHECK_REGISTRY[check.code as FinalQaCheckCode];
+      if (!definition) {
+        return !(check.blocking && check.status === "fail");
+      }
+      if (!allowedStatuses.has(check.status)) return false;
+      return check.blocking === definition.blocking;
+    });
+  const blockingFailures = input.checks.filter((check) => {
+    const definition = FINAL_QA_CHECK_REGISTRY[check.code as FinalQaCheckCode];
+    return Boolean(definition?.blocking) && check.status === "fail";
+  });
+  return {
+    valid: valid && (!input.passed || blockingFailures.length === 0),
+    blockingFailures,
+  };
+}
 
 const TECH_LIKE =
   /\b(kubernetes|k8s|terraform|aws|gcp|azure|react|python|java|golang|typescript|kafka|spark|docker|helm|graphql)\b/gi;
