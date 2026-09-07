@@ -11,7 +11,6 @@ import { mapInternalStageToCustomer, needsInputForTechQuestions } from "../../re
 import { computeCandidArcQualityScore } from "../../resumes/quality-score";
 import {
   applyTechAnswers,
-  attestedEvidenceEntries,
   claimableTechnologies,
   excludedTechnologies,
   hasUnansweredTechQuestions,
@@ -105,6 +104,10 @@ type CustomerFilesMeta = {
 
 function hasUnansweredTechQuestionsLocal(questions: TechQuestion[]): boolean {
   return hasUnansweredTechQuestions(questions);
+}
+
+function normalizeTechnology(value: string): string {
+  return value.trim().toLocaleLowerCase("en-US");
 }
 
 async function documentsReady(
@@ -477,26 +480,32 @@ export class CustomerGenerateService {
       : applyTechAnswers(existingQuestions, answers);
 
     const excluded = excludedTechnologies(questions);
-    const attested = attestedEvidenceEntries(questions);
-    for (const entry of attested) {
-      const evidenceKey = `tech-attest:${app.publicId}:${entry.technology.toLowerCase()}`;
-      const existingEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
-      if (!existingEvidence.some((item) => item.payload?.techConfirmationKey === evidenceKey)) {
-        await this.repos.evidence.create({
+    const submittedIds = new Set(answers.map((answer) => answer.id));
+    for (const question of questions.filter((item) => submittedIds.has(item.id))) {
+      const normalizedTechnology = normalizeTechnology(question.technology);
+      const affirmative =
+        (question.answer === "yes_professional" || question.answer === "yes_project") &&
+        Boolean(question.evidence?.trim());
+      if (affirmative) {
+        const evidenceKey = `tech-attest:${app.publicId}:${normalizedTechnology}`;
+        await this.repos.evidence.upsertTechAttestation({
           id: newId("ev"),
           publicId: newId("evp"),
           tenantId,
           ownerUserId: user.id,
-          candidateProfileId: typeof app.metadata?.candidateProfileId === "string" ? app.metadata.candidateProfileId : null,
-          title: `${entry.technology} experience (self-attested)`,
+          candidateProfileId: app.candidateProfileId ?? null,
+          attestationApplicationId: app.id,
+          normalizedTechnology,
+          title: `${question.technology} experience (self-attested)`,
           organization: "Self-attested",
-          situation: entry.evidence,
-          task: `Confirm ${entry.technology} experience for ${app.role}`,
-          actions: [entry.evidence],
+          situation: question.evidence!.trim(),
+          task: `Confirm ${question.technology} experience for ${app.role}`,
+          actions: [question.evidence!.trim()],
           result: "Candidate attested during technology confirmation",
-          technologies: [entry.technology],
+          technologies: [question.technology],
           confidence: "medium",
           sourceType: "user_confirmation",
+          evidenceStatus: "active",
           verificationStatus: "user_attested",
           candidateConfirmationStatus: "confirmed",
           privacyLevel: "share-safe",
@@ -504,6 +513,13 @@ export class CustomerGenerateService {
           matchedApplicationIds: [app.publicId],
           payload: { techConfirmationKey: evidenceKey, source: "tech_confirmation" },
         });
+      } else {
+        await this.repos.evidence.revokeTechAttestation(
+          tenantId,
+          user.id,
+          app.id,
+          normalizedTechnology,
+        );
       }
     }
 

@@ -97,6 +97,8 @@ export type EvidenceRecord = {
   sourceType?: string | null;
   claimText?: string | null;
   evidenceStatus?: string;
+  attestationApplicationId?: string | null;
+  normalizedTechnology?: string | null;
   candidateConfirmationStatus?: string;
   employerAssociation?: string | null;
   projectAssociation?: string | null;
@@ -420,6 +422,20 @@ export interface EvidenceRepository {
   getByPublicId(tenantId: string, publicId: string): Promise<EvidenceRecord | null>;
   getByPublicIdGlobal(publicId: string): Promise<EvidenceRecord | null>;
   create(item: Omit<EvidenceRecord, "createdAt" | "updatedAt" | "deletedAt" | "version"> & { version?: number }): Promise<EvidenceRecord>;
+  upsertTechAttestation(
+    item: Omit<EvidenceRecord, "createdAt" | "updatedAt" | "deletedAt" | "version"> & {
+      version?: number;
+      ownerUserId: string;
+      attestationApplicationId: string;
+      normalizedTechnology: string;
+    },
+  ): Promise<EvidenceRecord>;
+  revokeTechAttestation(
+    tenantId: string,
+    ownerUserId: string,
+    attestationApplicationId: string,
+    normalizedTechnology: string,
+  ): Promise<void>;
   update(tenantId: string, publicId: string, patch: Partial<EvidenceRecord>): Promise<EvidenceRecord>;
   softDelete(tenantId: string, publicId: string): Promise<void>;
 }
@@ -791,12 +807,20 @@ export class MemoryRepositories implements Repositories {
 
     this.evidence = {
       async list(tenantId, opts) {
-        let items = [...store.evidence.values()].filter((e) => e.tenantId === tenantId && !e.deletedAt);
+        let items = [...store.evidence.values()].filter(
+          (e) => e.tenantId === tenantId && !e.deletedAt && (e.evidenceStatus ?? "active") === "active",
+        );
         if (opts?.ownerUserId) {
           items = items.filter((e) => e.ownerUserId === opts.ownerUserId);
         }
         if (opts?.applicationPublicId) {
-          items = items.filter((e) => !(e.excludedFromApplicationIds ?? []).includes(opts.applicationPublicId!));
+          items = items.filter(
+            (e) =>
+              !(e.excludedFromApplicationIds ?? []).includes(opts.applicationPublicId!) &&
+              (e.sourceType !== "user_confirmation" ||
+                !e.attestationApplicationId ||
+                (e.matchedApplicationIds ?? []).includes(opts.applicationPublicId!)),
+          );
         }
         return items;
       },
@@ -824,6 +848,64 @@ export class MemoryRepositories implements Repositories {
         };
         store.evidence.set(record.id, record);
         return record;
+      },
+      async upsertTechAttestation(item) {
+        const existing = [...store.evidence.values()].find(
+          (e) =>
+            e.tenantId === item.tenantId &&
+            e.ownerUserId === item.ownerUserId &&
+            e.attestationApplicationId === item.attestationApplicationId &&
+            e.normalizedTechnology === item.normalizedTechnology &&
+            e.sourceType === "user_confirmation" &&
+            !e.deletedAt,
+        );
+        if (!existing) {
+          const record: EvidenceRecord = {
+            ...item,
+            evidenceStatus: "active",
+            excludedFromApplicationIds: item.excludedFromApplicationIds ?? [],
+            matchedApplicationIds: item.matchedApplicationIds ?? [],
+            version: item.version ?? 1,
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+            deletedAt: null,
+          };
+          store.evidence.set(record.id, record);
+          return record;
+        }
+        const updated: EvidenceRecord = {
+          ...existing,
+          ...item,
+          id: existing.id,
+          publicId: existing.publicId,
+          evidenceStatus: "active",
+          version: existing.version + 1,
+          createdAt: existing.createdAt,
+          updatedAt: nowIso(),
+          deletedAt: null,
+        };
+        store.evidence.set(existing.id, updated);
+        return updated;
+      },
+      async revokeTechAttestation(tenantId, ownerUserId, attestationApplicationId, normalizedTechnology) {
+        for (const evidence of store.evidence.values()) {
+          if (
+            evidence.tenantId === tenantId &&
+            evidence.ownerUserId === ownerUserId &&
+            evidence.attestationApplicationId === attestationApplicationId &&
+            evidence.normalizedTechnology === normalizedTechnology &&
+            evidence.sourceType === "user_confirmation" &&
+            !evidence.deletedAt &&
+            (evidence.evidenceStatus ?? "active") === "active"
+          ) {
+            store.evidence.set(evidence.id, {
+              ...evidence,
+              evidenceStatus: "revoked",
+              version: evidence.version + 1,
+              updatedAt: nowIso(),
+            });
+          }
+        }
       },
       async update(tenantId, publicId, patch) {
         let existing: EvidenceRecord | null = null;

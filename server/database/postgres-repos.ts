@@ -317,7 +317,11 @@ function createEvidenceRepository(): Repositories["evidence"] {
   return {
     list: async (tenantId, opts) =>
       withTenant(tenantId, async (db) => {
-        const conditions = [eq(s.evidenceItems.tenantId, tenantId), isNull(s.evidenceItems.deletedAt)];
+        const conditions = [
+          eq(s.evidenceItems.tenantId, tenantId),
+          isNull(s.evidenceItems.deletedAt),
+          eq(s.evidenceItems.evidenceStatus, "active"),
+        ];
         if (opts?.ownerUserId) {
           conditions.push(eq(s.evidenceItems.ownerUserId, opts.ownerUserId));
         }
@@ -332,7 +336,13 @@ function createEvidenceRepository(): Repositories["evidence"] {
         );
         let items = rows.map((row) => mapEvidence(row, matchMap.get(row.id)));
         if (opts?.applicationPublicId) {
-          items = items.filter((item) => !item.excludedFromApplicationIds.includes(opts.applicationPublicId!));
+          items = items.filter(
+            (item) =>
+              !item.excludedFromApplicationIds.includes(opts.applicationPublicId!) &&
+              (item.sourceType !== "user_confirmation" ||
+                !item.attestationApplicationId ||
+                item.matchedApplicationIds.includes(opts.applicationPublicId!)),
+          );
         }
         return items;
       }),
@@ -396,6 +406,8 @@ function createEvidenceRepository(): Repositories["evidence"] {
               sourceType: item.sourceType ?? null,
               claimText: item.claimText ?? null,
               evidenceStatus: item.evidenceStatus ?? "active",
+              attestationApplicationId: item.attestationApplicationId ?? null,
+              normalizedTechnology: item.normalizedTechnology ?? null,
               candidateConfirmationStatus: item.candidateConfirmationStatus ?? "pending",
               employerAssociation: item.employerAssociation ?? null,
               projectAssociation: item.projectAssociation ?? null,
@@ -408,6 +420,134 @@ function createEvidenceRepository(): Repositories["evidence"] {
         }
         const matchMap = await loadMatchMap(db, item.tenantId, [row.id]);
         return mapEvidence(row, matchMap.get(row.id));
+      }),
+    upsertTechAttestation: async (item) =>
+      withTenant(item.tenantId, async (db) =>
+        db.transaction(async (tx) => {
+          const values: typeof s.evidenceItems.$inferInsert = {
+            id: item.id,
+            publicId: item.publicId,
+            tenantId: item.tenantId,
+            ownerUserId: item.ownerUserId,
+            candidateProfileId: item.candidateProfileId,
+            title: item.title,
+            organization: item.organization,
+            situation: item.situation,
+            task: item.task,
+            actions: item.actions,
+            result: item.result,
+            technologies: item.technologies,
+            confidence: item.confidence as typeof s.evidenceItems.$inferInsert.confidence,
+            verificationStatus: item.verificationStatus as typeof s.evidenceItems.$inferInsert.verificationStatus,
+            privacyLevel: item.privacyLevel as typeof s.evidenceItems.$inferInsert.privacyLevel,
+            payload: item.payload ?? {},
+            sourceType: "user_confirmation",
+            claimText: item.claimText ?? null,
+            evidenceStatus: "active",
+            attestationApplicationId: item.attestationApplicationId,
+            normalizedTechnology: item.normalizedTechnology,
+            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+            employerAssociation: item.employerAssociation ?? null,
+            projectAssociation: item.projectAssociation ?? null,
+            version: item.version ?? 1,
+          };
+          const updateValues = {
+            title: values.title,
+            organization: values.organization,
+            situation: values.situation,
+            task: values.task,
+            actions: values.actions,
+            result: values.result,
+            technologies: values.technologies,
+            confidence: values.confidence,
+            verificationStatus: values.verificationStatus,
+            privacyLevel: values.privacyLevel,
+            payload: values.payload,
+            claimText: values.claimText,
+            candidateProfileId: values.candidateProfileId,
+            candidateConfirmationStatus: values.candidateConfirmationStatus,
+            employerAssociation: values.employerAssociation,
+            projectAssociation: values.projectAssociation,
+            evidenceStatus: "active",
+            updatedAt: new Date(),
+          } as const;
+
+          let row = (
+            await tx
+              .update(s.evidenceItems)
+              .set({ ...updateValues, version: sql`${s.evidenceItems.version} + 1` })
+              .where(
+                and(
+                  eq(s.evidenceItems.tenantId, item.tenantId),
+                  eq(s.evidenceItems.ownerUserId, item.ownerUserId),
+                  eq(s.evidenceItems.attestationApplicationId, item.attestationApplicationId),
+                  eq(s.evidenceItems.normalizedTechnology, item.normalizedTechnology),
+                  eq(s.evidenceItems.sourceType, "user_confirmation"),
+                  isNull(s.evidenceItems.deletedAt),
+                ),
+              )
+              .returning()
+          )[0];
+
+          if (!row) {
+            row = (
+              await tx
+                .insert(s.evidenceItems)
+                .values(values)
+                .onConflictDoUpdate({
+                  target: [
+                    s.evidenceItems.tenantId,
+                    s.evidenceItems.ownerUserId,
+                    s.evidenceItems.attestationApplicationId,
+                    s.evidenceItems.normalizedTechnology,
+                  ],
+                  targetWhere: sql`${s.evidenceItems.deletedAt} IS NULL
+                    AND ${s.evidenceItems.evidenceStatus} = 'active'
+                    AND ${s.evidenceItems.sourceType} = 'user_confirmation'
+                    AND ${s.evidenceItems.attestationApplicationId} IS NOT NULL
+                    AND ${s.evidenceItems.normalizedTechnology} IS NOT NULL`,
+                  set: { ...updateValues, version: sql`${s.evidenceItems.version} + 1` },
+                })
+                .returning()
+            )[0]!;
+          }
+
+          await syncMatches(
+            tx as Db,
+            item.tenantId,
+            row.id,
+            item.matchedApplicationIds,
+            item.excludedFromApplicationIds,
+          );
+          const matchMap = await loadMatchMap(tx as Db, item.tenantId, [row.id]);
+          return mapEvidence(row, matchMap.get(row.id));
+        }),
+      ),
+    revokeTechAttestation: async (
+      tenantId,
+      ownerUserId,
+      attestationApplicationId,
+      normalizedTechnology,
+    ) =>
+      withTenant(tenantId, async (db) => {
+        await db
+          .update(s.evidenceItems)
+          .set({
+            evidenceStatus: "revoked",
+            version: sql`${s.evidenceItems.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(s.evidenceItems.tenantId, tenantId),
+              eq(s.evidenceItems.ownerUserId, ownerUserId),
+              eq(s.evidenceItems.attestationApplicationId, attestationApplicationId),
+              eq(s.evidenceItems.normalizedTechnology, normalizedTechnology),
+              eq(s.evidenceItems.sourceType, "user_confirmation"),
+              eq(s.evidenceItems.evidenceStatus, "active"),
+              isNull(s.evidenceItems.deletedAt),
+            ),
+          );
       }),
     update: async (tenantId, publicId, patch) =>
       withTenant(tenantId, async (db) => {
@@ -442,6 +582,14 @@ function createEvidenceRepository(): Repositories["evidence"] {
           "payload",
           "ownerUserId",
           "candidateProfileId",
+          "sourceType",
+          "claimText",
+          "evidenceStatus",
+          "attestationApplicationId",
+          "normalizedTechnology",
+          "candidateConfirmationStatus",
+          "employerAssociation",
+          "projectAssociation",
         ] as const) {
           if (rest[key] !== undefined) itemPatch[key] = rest[key];
         }

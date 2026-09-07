@@ -93,6 +93,8 @@ export function mapEvidence(
     sourceType: row.sourceType ?? null,
     claimText: row.claimText ?? null,
     evidenceStatus: row.evidenceStatus ?? "active",
+    attestationApplicationId: row.attestationApplicationId ?? null,
+    normalizedTechnology: row.normalizedTechnology ?? null,
     candidateConfirmationStatus: row.candidateConfirmationStatus ?? "pending",
     employerAssociation: row.employerAssociation ?? null,
     projectAssociation: row.projectAssociation ?? null,

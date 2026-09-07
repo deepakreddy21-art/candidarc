@@ -180,6 +180,9 @@ describe("tech confirmation", () => {
       jobDescription: String(app?.metadata?.jobDescription ?? ""),
       candidateTechnologies: ["TypeScript"],
     });
+    await repos.applications.update(tenantId, app!.publicId, {
+      metadata: { ...app!.metadata, techQuestions: questions },
+    });
     const target = questions[0]!;
     const payload = [{ id: target.id, answer: "yes_project" as const, evidence: "Built a cluster for a class project." }];
     const first = await service.submitTechAnswers(ctx, created.workflowId, payload);
@@ -191,5 +194,94 @@ describe("tech confirmation", () => {
     expect(first.accepted).toBe(true);
     expect(second).toMatchObject({ accepted: true, duplicate: true });
     expect(afterSecond.map((item) => item.publicId)).toEqual(afterFirst.map((item) => item.publicId));
+  });
+
+  it("makes the latest answer authoritative for an application technology", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    await repos.evidence.create({
+      id: newId("ev"),
+      publicId: newId("evp"),
+      tenantId,
+      ownerUserId: userId,
+      candidateProfileId: null,
+      title: "Existing evidence",
+      organization: "Acme",
+      situation: "Delivered a platform",
+      task: "Delivery",
+      actions: ["Built it"],
+      result: "Shipped",
+      technologies: ["TypeScript"],
+      confidence: "high",
+      verificationStatus: "user_attested",
+      privacyLevel: "share-safe",
+      excludedFromApplicationIds: [],
+      matchedApplicationIds: [],
+      payload: {},
+    });
+
+    const engine = new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter());
+    const service = new CustomerGenerateService(repos, engine, getStorage());
+    const ctx = context(userId, tenantId, repos);
+    const created = await service.generate(ctx, {
+      jobDescription: "Platform role requiring Kubernetes in production.",
+      idempotencyKey: "tech-lifecycle",
+    });
+    const app = await repos.applications.getByPublicId(tenantId, created.applicationId);
+    const [target] = extractTechQuestions({
+      jobDescription: String(app?.metadata?.jobDescription ?? ""),
+      candidateTechnologies: ["TypeScript"],
+    });
+    expect(target).toBeDefined();
+    await repos.applications.update(tenantId, app!.publicId, {
+      metadata: { ...app!.metadata, techQuestions: [target!] },
+    });
+
+    const yes = (evidence: string) => [
+      { id: target!.id, answer: "yes_professional" as const, evidence },
+    ];
+    const negative = (answer: "no" | "not_sure") => [{ id: target!.id, answer }];
+
+    await service.submitTechAnswers(ctx, created.workflowId, yes("Operated Kubernetes clusters."));
+    const first = (await repos.evidence.list(tenantId, { ownerUserId: userId }))
+      .find((item) => item.sourceType === "user_confirmation");
+    expect(first).toMatchObject({
+      evidenceStatus: "active",
+      attestationApplicationId: app!.id,
+      normalizedTechnology: "kubernetes",
+      situation: "Operated Kubernetes clusters.",
+    });
+
+    await service.submitTechAnswers(ctx, created.workflowId, negative("no"));
+    expect((await repos.evidence.list(tenantId, { ownerUserId: userId }))
+      .filter((item) => item.sourceType === "user_confirmation")).toHaveLength(0);
+    expect(store.evidence.get(first!.id)?.evidenceStatus).toBe("revoked");
+
+    await service.submitTechAnswers(ctx, created.workflowId, yes("Built Kubernetes operators."));
+    const reactivated = (await repos.evidence.list(tenantId, { ownerUserId: userId }))
+      .find((item) => item.sourceType === "user_confirmation");
+    expect(reactivated).toMatchObject({
+      id: first!.id,
+      situation: "Built Kubernetes operators.",
+      evidenceStatus: "active",
+    });
+
+    await service.submitTechAnswers(ctx, created.workflowId, negative("not_sure"));
+    expect(store.evidence.get(first!.id)?.evidenceStatus).toBe("revoked");
+
+    await service.submitTechAnswers(ctx, created.workflowId, yes("Supported Kubernetes upgrades."));
+    const changed = (await repos.evidence.list(tenantId, { ownerUserId: userId }))
+      .filter((item) => item.sourceType === "user_confirmation");
+    expect(changed).toHaveLength(1);
+    expect(changed[0]).toMatchObject({ id: first!.id, situation: "Supported Kubernetes upgrades." });
+
+    const retry = await service.submitTechAnswers(
+      ctx,
+      created.workflowId,
+      yes("Supported Kubernetes upgrades."),
+    );
+    expect(retry).toMatchObject({ accepted: true, duplicate: true });
+    expect((await repos.evidence.list(tenantId, { ownerUserId: userId }))
+      .filter((item) => item.sourceType === "user_confirmation")).toHaveLength(1);
   });
 });
