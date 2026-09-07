@@ -1863,7 +1863,7 @@ function createUsageRepository(db: Db): Repositories["usage"] {
           .values({
             publicId: newId("ulp"),
             tenantId: input.tenantId,
-            userId: input.userId,
+            userId: input.userId || null,
             kind: "provider_cost",
             units: "0",
             costCents: input.costCents == null ? "0" : String(input.costCents),

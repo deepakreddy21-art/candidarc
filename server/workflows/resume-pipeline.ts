@@ -268,10 +268,20 @@ export class ResumePipeline {
     }
   }
 
-  private async reserve(run: WorkflowRunRecord, kind: string, units: number, operationId: string) {
+  private async reserve(
+    run: WorkflowRunRecord,
+    kind: string,
+    units: number,
+    operationId: string,
+    userId?: string | null,
+  ) {
     // Distinct paid operations must not collide: include a stable operation identity.
     // Retries of the same operationId remain idempotent via the usage ledger unique key.
     const key = `${run.tenantId}:usage:${run.idempotencyKey}:${operationId}:${kind}`;
+    const normalizedUserId =
+      typeof userId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)
+        ? userId
+        : undefined;
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind,
@@ -280,6 +290,7 @@ export class ResumePipeline {
       workflowRunId: run.id,
       idempotencyKey: key,
       status: "reserved",
+      userId: normalizedUserId,
       metadata: { stage: run.stage, operationId },
     });
     return key;
@@ -313,13 +324,18 @@ export class ResumePipeline {
     }
 
     const billable = opts?.billable !== false;
+    const rawUserId = entry.userId?.trim();
+    const userId =
+      rawUserId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawUserId)
+        ? rawUserId
+        : null;
 
     // Use transactional commit to ensure reservation and cost row are written atomically
     await this.deps.usage.commitReservedWithCost({
       tenantId,
       idempotencyKey: key,
       costCents: costCents == null ? null : costCents,
-      userId: entry.userId ?? "",
+      userId,
       workflowRunId: entry.workflowRunId,
       metadata: costCents == null ? { billable: false } : { billable },
     });
@@ -1052,8 +1068,8 @@ export class ResumePipeline {
         : null;
 
     // Ensure reservation exists (idempotent on replay after provider).
-    await this.reserve(run, "resume_generation", 1, generationOperationId);
     const { application, evidence } = await this.listScopedEvidence(run);
+    await this.reserve(run, "resume_generation", 1, generationOperationId, application?.ownerUserId);
     const payloadRefinement =
       typeof run.payload.refinementInstruction === "string" && run.payload.refinementInstruction.trim().length > 0
         ? run.payload.refinementInstruction

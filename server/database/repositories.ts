@@ -530,7 +530,7 @@ export interface UsageRepository {
     tenantId: string;
     idempotencyKey: string; // already tenant-scoped key as stored
     costCents: number | string | null; // null = unknown
-    userId: string;
+    userId?: string | null;
     workflowRunId?: string;
     metadata?: Record<string, unknown>;
   }): Promise<{ reservation: UsageLedgerRecord; costRow: UsageLedgerRecord | null }>;
@@ -1395,7 +1395,7 @@ export class MemoryRepositories implements Repositories {
               id: newId("ul"),
               publicId: newPublicId("ulp"),
               tenantId: input.tenantId,
-              userId: input.userId,
+              userId: input.userId || undefined,
               kind: "provider_cost",
               units: "0",
               costCents: input.costCents == null ? "0" : String(input.costCents),
