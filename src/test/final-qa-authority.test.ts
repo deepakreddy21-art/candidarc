@@ -468,18 +468,17 @@ describe("final QA authority: bounded repair concepts", () => {
     expect(result.checks.some((c) => c.label === "Evidence references" && c.status === "pass")).toBe(true);
   });
 
-  it("deterministic final QA fails without required sections", async () => {
+  it("deterministic final QA fails without experience section", async () => {
     const { runDeterministicFinalQa } = await import("../../server/workflows/final-qa");
     const { repos } = await setupRepos();
     const evidence = await repos.evidence.list(TENANT, { ownerUserId: USER });
 
-    // Resume missing education section
     const incompleteSections = [
       {
-        type: "experience" as const,
-        title: "Experience",
+        type: "summary" as const,
+        title: "Summary",
         order: 0,
-        items: [{ heading: "Test", bullets: [{ text: "test", evidenceIds: ["ev_finalqa_1"] }] }],
+        bullets: [{ text: "Engineer", evidenceIds: ["ev_finalqa_1"] }],
       },
     ];
 
@@ -491,8 +490,27 @@ describe("final QA authority: bounded repair concepts", () => {
       attestedTechnologies: [],
     });
 
-    // Should fail due to missing education section
     expect(result.passed).toBe(false);
     expect(result.checks.some((c) => c.label === "Required sections" && c.status === "fail")).toBe(true);
+  });
+
+  it("deterministic final QA warns when education is omitted", async () => {
+    const { runDeterministicFinalQa } = await import("../../server/workflows/final-qa");
+    const result = runDeterministicFinalQa({
+      sections: [
+        {
+          type: "experience",
+          title: "Experience",
+          order: 0,
+          items: [{ heading: "Test", bullets: [{ text: "Built APIs", evidenceIds: ["ev_1"] }] }],
+        },
+      ],
+      unresolvedCriticalFindings: 0,
+      knownEvidenceIds: ["ev_1"],
+      knownTechnologies: ["Python"],
+      attestedTechnologies: [],
+    });
+    expect(result.passed).toBe(true);
+    expect(result.checks.some((c) => c.label === "Education" && c.status === "warning")).toBe(true);
   });
 });

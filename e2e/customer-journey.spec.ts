@@ -34,7 +34,7 @@ test.describe("primary customer journey", () => {
 
     const jd = `Senior Platform Engineer
 Company: Acme Robotics
-We need someone with Python, AWS, and API design experience.
+We need someone with Python, Kubernetes, and API design experience.
 Responsibilities include building reliable services and mentoring engineers.
 Requirements: 5+ years experience, strong ownership, measurable impact.`;
 
