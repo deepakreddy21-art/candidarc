@@ -33,6 +33,9 @@ describe("AI intelligence safety", () => {
       STORAGE_DRIVER: "s3",
       QUEUE_BACKEND: "redis",
       SESSION_SECRET: "a-unique-production-secret-that-is-long-enough",
+      MALWARE_SCANNER: "clamav",
+      RESUME_INTELLIGENCE_BACKEND: "python",
+      PYTHON_BACKEND_TOKEN: "production-python-backend-token-32chars",
     };
     Object.entries(env).forEach(([key, value]) => vi.stubEnv(key, value));
     vi.stubGlobal("window", undefined);

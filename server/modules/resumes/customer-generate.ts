@@ -607,6 +607,17 @@ export class CustomerGenerateService {
     if (app.ownerUserId && app.ownerUserId !== user.id) {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
+    // Explicitly reject downloads unless FINAL_READY
+    if (app.workflowStage === "FINAL_QA_FAILED") {
+      throw new AppError(
+        "FINAL_QA_FAILED",
+        "This resume did not pass quality checks and cannot be downloaded. Please retry or review the issues.",
+        409,
+      );
+    }
+    if (app.workflowStage !== "FINAL_READY") {
+      throw new AppError("DOCUMENT_NOT_READY", "Resume is not ready for download yet", 409);
+    }
     const files = app.metadata?.customerFiles as CustomerFilesMeta | undefined;
     const storageKey = format === "pdf" ? files?.pdfStorageKey : files?.docxStorageKey;
     if (!storageKey) throw new AppError("DOCUMENT_NOT_READY", "That document is not ready yet", 409);

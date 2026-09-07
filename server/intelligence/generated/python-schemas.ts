@@ -243,6 +243,8 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "EvidenceSearchRequest",
   "EvidenceSearchResponse",
   "FinalQaCheck",
+  "FinalQaFailedCheck",
+  "FinalQaRepairDirective",
   "FinalQaRequest",
   "FinalQaResponse",
   "HTTPValidationError",

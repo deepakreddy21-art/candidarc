@@ -1,0 +1,144 @@
+[
+  {
+    "id": "spelled-number-nine-platforms",
+    "claim_text": "Scaled infrastructure to nine platforms serving global customers",
+    "claim_category": "spelled_numbers",
+    "evidence": [
+      {
+        "id": "ev-sp-1",
+        "title": "Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Engineer at Acme Labs supporting 3 platforms",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high"
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_violations": ["UNSUPPORTED_NUMBER"]
+  },
+  {
+    "id": "single-digit-metric-9-platforms",
+    "claim_text": "Architected 9 platforms for enterprise customers at Acme Labs",
+    "claim_category": "single_digit_metrics",
+    "evidence": [
+      {
+        "id": "ev-sd-1",
+        "title": "Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Engineer at Acme Labs supporting 3 platforms",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high"
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_violations": ["UNSUPPORTED_NUMBER"]
+  },
+  {
+    "id": "single-word-employer-google",
+    "claim_text": "Led platform engineering initiatives at Google",
+    "claim_category": "single_word_employer",
+    "evidence": [
+      {
+        "id": "ev-goog-1",
+        "title": "Software Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Software Engineer at Acme Labs building APIs",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high"
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_violations": ["UNSUPPORTED_COMPANY"]
+  },
+  {
+    "id": "single-word-employer-meta",
+    "claim_text": "Built distributed systems at Meta serving billions of users",
+    "claim_category": "single_word_employer",
+    "evidence": [
+      {
+        "id": "ev-meta-1",
+        "title": "Software Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Software Engineer at Acme Labs building web services",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high"
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_violations": ["UNSUPPORTED_COMPANY"]
+  },
+  {
+    "id": "single-word-employer-amazon",
+    "claim_text": "Owned critical infrastructure services at Amazon",
+    "claim_category": "single_word_employer",
+    "evidence": [
+      {
+        "id": "ev-amz-1",
+        "title": "Software Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Software Engineer at Acme Labs",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high"
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_violations": ["UNSUPPORTED_COMPANY"]
+  },
+  {
+    "id": "valid-single-word-employer",
+    "claim_text": "Built search infrastructure at Google improving latency by 20%",
+    "claim_category": "single_word_employer",
+    "evidence": [
+      {
+        "id": "ev-goog-valid-1",
+        "title": "Software Engineer",
+        "organization": "Google",
+        "claim_text": "Software Engineer at Google. Improved search latency by 20%",
+        "technologies": ["Python", "C++"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high",
+        "metrics": ["20%"]
+      }
+    ],
+    "allowed_technologies": ["Python", "C++"],
+    "expected_clean": true
+  },
+  {
+    "id": "valid-spelled-number",
+    "claim_text": "Architected five microservices for the payment platform at Acme Labs",
+    "claim_category": "spelled_numbers",
+    "evidence": [
+      {
+        "id": "ev-sp-valid-1",
+        "title": "Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Engineer at Acme Labs. Built 5 microservices for payments",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high",
+        "metrics": ["5 microservices"]
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_clean": true
+  }
+]

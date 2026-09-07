@@ -71,7 +71,7 @@ describe("MemoryRepositories durability", () => {
       status: "reserved",
       metadata: {},
     });
-    const committed = await repos.usage.updateStatus(entry.idempotencyKey, "committed");
+    const committed = await repos.usage.updateStatus("tenant-1", entry.idempotencyKey, "committed");
     expect(committed.status).toBe("committed");
   });
 });

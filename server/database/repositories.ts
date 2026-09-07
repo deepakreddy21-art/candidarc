@@ -430,6 +430,8 @@ export interface ResumeRepository {
   createResume(resume: Omit<ResumeRecord, "createdAt" | "updatedAt" | "deletedAt">): Promise<ResumeRecord>;
   appendVersion(version: Omit<ResumeVersionRecord, "createdAt"> & { createdAt?: string }): Promise<ResumeVersionRecord>;
   setCurrentVersion(tenantId: string, resumePublicId: string, versionPublicId: string): Promise<ResumeRecord>;
+  /** Atomically allocate the next numeric version for a resume (concurrency-safe). */
+  allocateNextVersionNumber?(tenantId: string, resumePublicId: string): Promise<number>;
 }
 
 export interface AuditRepository {
@@ -469,10 +471,29 @@ export interface WorkflowRepository {
 }
 
 export interface UsageRepository {
-  findByIdempotency(idempotencyKey: string): Promise<UsageLedgerRecord | null>;
+  findByIdempotency(tenantId: string, idempotencyKey: string): Promise<UsageLedgerRecord | null>;
   append(entry: Omit<UsageLedgerRecord, "id" | "publicId" | "createdAt"> & { id?: string; publicId?: string }): Promise<UsageLedgerRecord>;
-  updateStatus(idempotencyKey: string, status: UsageLedgerRecord["status"]): Promise<UsageLedgerRecord>;
-  releaseReservedForWorkflowRun(workflowRunId: string): Promise<number>;
+  updateStatus(tenantId: string, idempotencyKey: string, status: UsageLedgerRecord["status"]): Promise<UsageLedgerRecord>;
+  releaseReservedForWorkflowRun(tenantId: string, workflowRunId: string): Promise<number>;
+  /**
+   * Atomically commit a reserved usage entry and create a cost observation row.
+   * Uses a transaction to ensure committed status and cost row are written together.
+   *
+   * - If already committed, returns existing reservation + existing cost row (idempotent).
+   * - If released, throws an error.
+   * - If costCents is null, creates a `${key}:cost-unknown` row with billable=false.
+   * - If costCents is provided, creates a `${key}:cost` row.
+   *
+   * Never leaves a reservation committed without a corresponding cost observation row.
+   */
+  commitReservedWithCost(input: {
+    tenantId: string;
+    idempotencyKey: string; // already tenant-scoped key as stored
+    costCents: number | string | null; // null = unknown
+    userId: string;
+    workflowRunId?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{ reservation: UsageLedgerRecord; costRow: UsageLedgerRecord | null }>;
 }
 
 export interface FileRepository {
@@ -751,7 +772,7 @@ export class MemoryRepositories implements Repositories {
           items = items.filter((e) => e.ownerUserId === opts.ownerUserId);
         }
         if (opts?.applicationPublicId) {
-          items = items.filter((e) => !e.excludedFromApplicationIds.includes(opts.applicationPublicId!));
+          items = items.filter((e) => !(e.excludedFromApplicationIds ?? []).includes(opts.applicationPublicId!));
         }
         return items;
       },
@@ -770,6 +791,8 @@ export class MemoryRepositories implements Repositories {
       async create(item) {
         const record: EvidenceRecord = {
           ...item,
+          excludedFromApplicationIds: item.excludedFromApplicationIds ?? [],
+          matchedApplicationIds: item.matchedApplicationIds ?? [],
           version: item.version ?? 1,
           createdAt: nowIso(),
           updatedAt: nowIso(),
@@ -846,18 +869,43 @@ export class MemoryRepositories implements Repositories {
         return record;
       },
       async appendVersion(version) {
-        const existing = [...store.resumeVersions.values()].find(
-          (v) => v.tenantId === version.tenantId && v.idempotencyKey === version.idempotencyKey,
-        );
-        if (existing) return existing;
-        const record: ResumeVersionRecord = {
-          ...version,
-          scoreBreakdown: structuredClone(version.scoreBreakdown),
-          sections: structuredClone(version.sections),
-          createdAt: version.createdAt ?? nowIso(),
-        };
-        store.resumeVersions.set(record.id, record);
-        return record;
+        return withMemoryClaimLock(`resume-version:${version.resumeId}`, () => {
+          const existing = [...store.resumeVersions.values()].find(
+            (v) => v.tenantId === version.tenantId && v.idempotencyKey === version.idempotencyKey,
+          );
+          if (existing) return existing;
+          const collision = [...store.resumeVersions.values()].find(
+            (v) => v.resumeId === version.resumeId && v.versionNumber === version.versionNumber,
+          );
+          if (collision) {
+            // Idempotent reuse only when same idempotency key; otherwise allocate next free number
+            if (collision.idempotencyKey === version.idempotencyKey) return collision;
+            throw new AppError(
+              "RESUME_VERSION_CONFLICT",
+              `Resume version ${version.versionNumber} already exists`,
+              409,
+            );
+          }
+          const record: ResumeVersionRecord = {
+            ...version,
+            scoreBreakdown: structuredClone(version.scoreBreakdown),
+            sections: structuredClone(version.sections),
+            createdAt: version.createdAt ?? nowIso(),
+          };
+          store.resumeVersions.set(record.id, record);
+          return record;
+        });
+      },
+      async allocateNextVersionNumber(tenantId, resumePublicId) {
+        const resume = [...store.resumes.values()].find((r) => r.tenantId === tenantId && r.publicId === resumePublicId);
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+        // Share the appendVersion lock so allocate+append stay serialized under concurrency.
+        return withMemoryClaimLock(`resume-version:${resume.id}`, () => {
+          const nums = [...store.resumeVersions.values()]
+            .filter((v) => v.resumeId === resume.id)
+            .map((v) => v.versionNumber);
+          return (nums.length ? Math.max(...nums) : -1) + 1;
+        });
       },
       async setCurrentVersion(tenantId, resumePublicId, versionPublicId) {
         const resume = [...store.resumes.values()].find((r) => r.tenantId === tenantId && r.publicId === resumePublicId);
@@ -1048,15 +1096,15 @@ export class MemoryRepositories implements Repositories {
     };
 
     this.usage = {
-      async findByIdempotency(idempotencyKey) {
+      async findByIdempotency(tenantId, idempotencyKey) {
         for (const u of store.usageLedger.values()) {
-          if (u.idempotencyKey === idempotencyKey) return u;
+          if (u.tenantId === tenantId && u.idempotencyKey === idempotencyKey) return u;
         }
         return null;
       },
       async append(entry) {
         for (const u of store.usageLedger.values()) {
-          if (u.idempotencyKey === entry.idempotencyKey) return u;
+          if (u.tenantId === entry.tenantId && u.idempotencyKey === entry.idempotencyKey) return u;
         }
         const record: UsageLedgerRecord = {
           ...entry,
@@ -1067,10 +1115,10 @@ export class MemoryRepositories implements Repositories {
         store.usageLedger.set(record.id, record);
         return record;
       },
-      async updateStatus(idempotencyKey, status) {
+      async updateStatus(tenantId, idempotencyKey, status) {
         let existing: UsageLedgerRecord | null = null;
         for (const u of store.usageLedger.values()) {
-          if (u.idempotencyKey === idempotencyKey) {
+          if (u.tenantId === tenantId && u.idempotencyKey === idempotencyKey) {
             existing = u;
             break;
           }
@@ -1080,10 +1128,14 @@ export class MemoryRepositories implements Repositories {
         store.usageLedger.set(existing.id, updated);
         return updated;
       },
-      async releaseReservedForWorkflowRun(workflowRunId) {
+      async releaseReservedForWorkflowRun(tenantId, workflowRunId) {
         let released = 0;
         for (const entry of store.usageLedger.values()) {
-          if (entry.workflowRunId === workflowRunId && entry.status === "reserved") {
+          if (
+            entry.tenantId === tenantId &&
+            entry.workflowRunId === workflowRunId &&
+            entry.status === "reserved"
+          ) {
             entry.status = "released";
             store.usageLedger.set(entry.id, entry);
             released += 1;
@@ -1091,6 +1143,73 @@ export class MemoryRepositories implements Repositories {
         }
         return released;
       },
+      commitReservedWithCost: (input) =>
+        withMemoryClaimLock(`usage:${input.tenantId}:${input.idempotencyKey}`, async () => {
+          // Find the reservation
+          let reservation: UsageLedgerRecord | null = null;
+          for (const u of store.usageLedger.values()) {
+            if (u.tenantId === input.tenantId && u.idempotencyKey === input.idempotencyKey) {
+              reservation = u;
+              break;
+            }
+          }
+          if (!reservation) {
+            throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
+          }
+          if (reservation.tenantId !== input.tenantId) {
+            throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
+          }
+
+          // Check for existing cost row (for idempotency)
+          const costKey = input.costCents == null
+            ? `${input.idempotencyKey}:cost-unknown`
+            : `${input.idempotencyKey}:cost`;
+          let existingCostRow: UsageLedgerRecord | null = null;
+          for (const u of store.usageLedger.values()) {
+            if (u.tenantId === input.tenantId && u.idempotencyKey === costKey) {
+              existingCostRow = u;
+              break;
+            }
+          }
+
+          // If already committed, return existing reservation + cost row (idempotent)
+          if (reservation.status === "committed") {
+            return { reservation, costRow: existingCostRow };
+          }
+
+          // If released, throw
+          if (reservation.status === "released") {
+            throw new AppError("USAGE_ALREADY_RELEASED", "Cannot commit a released reservation", 409);
+          }
+
+          // Update status to committed
+          const updatedReservation: UsageLedgerRecord = { ...reservation, status: "committed" };
+          store.usageLedger.set(reservation.id, updatedReservation);
+
+          // Create cost row if it doesn't exist
+          if (!existingCostRow) {
+            const costRecord: UsageLedgerRecord = {
+              id: newId("ul"),
+              publicId: newPublicId("ulp"),
+              tenantId: input.tenantId,
+              userId: input.userId,
+              kind: "provider_cost",
+              units: "0",
+              costCents: input.costCents == null ? "0" : String(input.costCents),
+              workflowRunId: input.workflowRunId,
+              idempotencyKey: costKey,
+              status: "committed",
+              metadata: input.costCents == null
+                ? { parentKey: input.idempotencyKey, costStatus: "unknown", billable: false, ...(input.metadata ?? {}) }
+                : { parentKey: input.idempotencyKey, costStatus: "known", billable: true, ...(input.metadata ?? {}) },
+              createdAt: nowIso(),
+            };
+            store.usageLedger.set(costRecord.id, costRecord);
+            existingCostRow = costRecord;
+          }
+
+          return { reservation: updatedReservation, costRow: existingCostRow };
+        }),
     };
 
     this.files = {

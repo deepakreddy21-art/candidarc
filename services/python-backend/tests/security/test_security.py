@@ -261,3 +261,46 @@ def test_schema_strict_rejection(client: TestClient) -> None:
         },
     )
     assert response.status_code == 422
+
+
+def test_422_validation_vs_guardrail_distinction(client: TestClient) -> None:
+    """FastAPI validation 422 has code=VALIDATION_ERROR, not GUARDRAIL_VIOLATION."""
+    ctx = qa_context()
+    # Invalid schema request — missing required fields
+    response = client.post(
+        "/v1/resumes/generate",
+        headers=AUTH_HEADERS,
+        json={"context": ctx.model_dump()},  # Missing required fields
+    )
+    assert response.status_code == 422
+    body = response.json()
+    # FastAPI validation errors should use VALIDATION_ERROR code
+    assert body.get("code") == "VALIDATION_ERROR"
+    assert "details" in body  # Pydantic validation details
+
+    # GUARDRAIL_VIOLATION should have its own distinct code
+    # (This happens when guardrail checks fail, not schema validation)
+    evidence = qa_evidence(ctx)
+    gen_resp = client.post(
+        "/v1/resumes/generate",
+        headers=AUTH_HEADERS,
+        json={
+            "context": ctx.model_dump(),
+            "absolute_version": 0,
+            "job_description": "Python platform engineer " + ("y" * 20),
+            "evidence": [item.model_dump() for item in evidence],
+            "allowed_technologies": ["Python", "PyTorch", "OpenSearch"],
+        },
+    )
+    # Generation should succeed with valid input
+    assert gen_resp.status_code == 200
+
+
+def test_constant_time_token_comparison() -> None:
+    """Token comparison should use hmac.compare_digest for constant-time security."""
+    import inspect
+
+    from app.core.security import require_service_token
+    source = inspect.getsource(require_service_token)
+    # The function should use hmac.compare_digest
+    assert "compare_digest" in source, "Token comparison should use hmac.compare_digest"

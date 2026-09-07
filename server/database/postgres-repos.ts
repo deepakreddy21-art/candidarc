@@ -630,45 +630,85 @@ function createResumeRepository(): Repositories["resumes"] {
         )[0];
         if (existing) return mapResumeVersion(existing, await loadSections(db, existing.id));
 
-        const row = (
-          await db
-            .insert(s.resumeVersions)
-            .values({
-              id: version.id,
-              publicId: version.publicId,
-              tenantId: version.tenantId,
-              resumeId: version.resumeId,
-              versionNumber: version.versionNumber,
-              versionLabel: version.versionLabel,
-              score: version.score,
-              scoreBreakdown: version.scoreBreakdown,
-              notes: version.notes,
-              triggeredBy: version.triggeredBy,
-              idempotencyKey: version.idempotencyKey,
-              promptVersion: version.promptVersion,
-            })
-            .returning()
-        )[0]!;
-
-        const sections = Array.isArray(version.sections) ? version.sections : [];
-        if (sections.length) {
-          await db.insert(s.resumeSections).values(
-            sections.map((section, index) => {
-              const payload = section as Record<string, unknown>;
-              return {
-                publicId: String(payload.id ?? newId("rs")),
+        try {
+          const row = (
+            await db
+              .insert(s.resumeVersions)
+              .values({
+                id: version.id,
+                publicId: version.publicId,
                 tenantId: version.tenantId,
-                resumeVersionId: row.id,
-                type: String(payload.type ?? "summary"),
-                title: String(payload.title ?? "Section"),
-                order: typeof payload.order === "number" ? payload.order : index,
-                payload,
-              };
-            }),
-          );
-        }
+                resumeId: version.resumeId,
+                versionNumber: version.versionNumber,
+                versionLabel: version.versionLabel,
+                score: version.score,
+                scoreBreakdown: version.scoreBreakdown,
+                notes: version.notes,
+                triggeredBy: version.triggeredBy,
+                idempotencyKey: version.idempotencyKey,
+                promptVersion: version.promptVersion,
+              })
+              .returning()
+          )[0]!;
 
-        return mapResumeVersion(row, sections);
+          const sections = Array.isArray(version.sections) ? version.sections : [];
+          if (sections.length) {
+            await db.insert(s.resumeSections).values(
+              sections.map((section, index) => {
+                const payload = section as Record<string, unknown>;
+                return {
+                  publicId: String(payload.id ?? newId("rs")),
+                  tenantId: version.tenantId,
+                  resumeVersionId: row.id,
+                  type: String(payload.type ?? "summary"),
+                  title: String(payload.title ?? "Section"),
+                  order: typeof payload.order === "number" ? payload.order : index,
+                  payload,
+                };
+              }),
+            );
+          }
+
+          return mapResumeVersion(row, sections);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/unique|duplicate/i.test(message)) {
+            const byKey = (
+              await db
+                .select()
+                .from(s.resumeVersions)
+                .where(
+                  and(
+                    eq(s.resumeVersions.tenantId, version.tenantId),
+                    eq(s.resumeVersions.idempotencyKey, version.idempotencyKey),
+                  ),
+                )
+                .limit(1)
+            )[0];
+            if (byKey) return mapResumeVersion(byKey, await loadSections(db, byKey.id));
+            throw new AppError("RESUME_VERSION_CONFLICT", "Resume version conflict under concurrency", 409);
+          }
+          throw error;
+        }
+      }),
+    allocateNextVersionNumber: async (tenantId, resumePublicId) =>
+      withTenant(tenantId, async (db) => {
+        const resume = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.publicId, resumePublicId), isNull(s.resumes.deletedAt)))
+            .limit(1)
+            .for("update")
+        )[0];
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+        // Serialize version allocation across concurrent repair attempts for this resume.
+        await db.execute(sql`select pg_advisory_xact_lock(hashtext(${resume.id}::text))`);
+        const [{ max }] = await db
+          .select({ max: sql<number>`coalesce(max(${s.resumeVersions.versionNumber}), -1)` })
+          .from(s.resumeVersions)
+          .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.resumeId, resume.id)));
+        return Number(max) + 1;
       }),
     setCurrentVersion: async (tenantId, resumePublicId, versionPublicId) =>
       withTenant(tenantId, async (db) => {
@@ -1283,55 +1323,183 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
 
 function createUsageRepository(db: Db): Repositories["usage"] {
   return {
-    findByIdempotency: async (idempotencyKey) => {
+    findByIdempotency: async (tenantId, idempotencyKey) => {
       const row = (
-        await db.select().from(s.usageLedger).where(eq(s.usageLedger.idempotencyKey, idempotencyKey)).limit(1)
+        await db
+          .select()
+          .from(s.usageLedger)
+          .where(and(eq(s.usageLedger.tenantId, tenantId), eq(s.usageLedger.idempotencyKey, idempotencyKey)))
+          .limit(1)
       )[0];
       return row ? mapUsage(row) : null;
     },
     append: async (entry) => {
+      const inserted = await db
+        .insert(s.usageLedger)
+        .values({
+          id: entry.id,
+          publicId: entry.publicId ?? newId("ulp"),
+          tenantId: entry.tenantId,
+          userId: entry.userId,
+          kind: entry.kind as typeof s.usageLedger.$inferInsert.kind,
+          units: String(entry.units),
+          costCents: String(entry.costCents),
+          workflowRunId: entry.workflowRunId,
+          idempotencyKey: entry.idempotencyKey,
+          status: entry.status,
+          metadata: entry.metadata ?? {},
+        })
+        .onConflictDoNothing({
+          target: [s.usageLedger.tenantId, s.usageLedger.idempotencyKey],
+        })
+        .returning();
+      if (inserted[0]) return mapUsage(inserted[0]);
       const existing = (
-        await db.select().from(s.usageLedger).where(eq(s.usageLedger.idempotencyKey, entry.idempotencyKey)).limit(1)
-      )[0];
-      if (existing) return mapUsage(existing);
-      const row = (
         await db
-          .insert(s.usageLedger)
-          .values({
-            id: entry.id,
-            publicId: entry.publicId ?? newId("ulp"),
-            tenantId: entry.tenantId,
-            userId: entry.userId,
-            kind: entry.kind as typeof s.usageLedger.$inferInsert.kind,
-            units: String(entry.units),
-            costCents: String(entry.costCents),
-            workflowRunId: entry.workflowRunId,
-            idempotencyKey: entry.idempotencyKey,
-            status: entry.status,
-            metadata: entry.metadata ?? {},
-          })
-          .returning()
-      )[0]!;
-      return mapUsage(row);
+          .select()
+          .from(s.usageLedger)
+          .where(
+            and(eq(s.usageLedger.tenantId, entry.tenantId), eq(s.usageLedger.idempotencyKey, entry.idempotencyKey)),
+          )
+          .limit(1)
+      )[0];
+      if (!existing) throw new AppError("USAGE_NOT_FOUND", "Usage ledger entry not found after conflict", 404);
+      return mapUsage(existing);
     },
-    updateStatus: async (idempotencyKey, status) => {
+    updateStatus: async (tenantId, idempotencyKey, status) => {
       const row = (
         await db
           .update(s.usageLedger)
           .set({ status })
-          .where(eq(s.usageLedger.idempotencyKey, idempotencyKey))
+          .where(and(eq(s.usageLedger.tenantId, tenantId), eq(s.usageLedger.idempotencyKey, idempotencyKey)))
           .returning()
       )[0];
       if (!row) throw new AppError("USAGE_NOT_FOUND", "Usage ledger entry not found", 404);
       return mapUsage(row);
     },
-    releaseReservedForWorkflowRun: async (workflowRunId) => {
+    releaseReservedForWorkflowRun: async (tenantId, workflowRunId) => {
       const rows = await db
         .update(s.usageLedger)
         .set({ status: "released" })
-        .where(and(eq(s.usageLedger.workflowRunId, workflowRunId), eq(s.usageLedger.status, "reserved")))
+        .where(
+          and(
+            eq(s.usageLedger.tenantId, tenantId),
+            eq(s.usageLedger.workflowRunId, workflowRunId),
+            eq(s.usageLedger.status, "reserved"),
+          ),
+        )
         .returning();
       return rows.length;
+    },
+    /**
+     * Atomically commit a reserved usage entry and create a cost observation row.
+     * Uses a transaction with SELECT FOR UPDATE to ensure atomicity.
+     *
+     * Postgres semantics:
+     * - SELECT reservation FOR UPDATE where tenant_id + idempotency_key
+     * - Verify exists and tenant matches
+     * - If already committed, return existing reservation + existing cost row (idempotent)
+     * - If released, throw
+     * - UPDATE status to committed
+     * - If costCents != null: INSERT provider_cost row with key `${key}:cost` ON CONFLICT DO NOTHING, then select it
+     * - If costCents == null: INSERT `${key}:cost-unknown` with costStatus unknown, billable false, ON CONFLICT DO NOTHING
+     * - Never leaves committed without a cost or cost-unknown observation row in the same transaction
+     *
+     * Note: If crash occurs mid-transaction, Postgres rolls back the entire transaction,
+     * so we never leave a committed reservation without a cost observation row.
+     */
+    commitReservedWithCost: async (input) => {
+      return db.transaction(async (tx) => {
+        // 1. SELECT reservation FOR UPDATE
+        const reservationRows = await tx
+          .select()
+          .from(s.usageLedger)
+          .where(
+            and(eq(s.usageLedger.tenantId, input.tenantId), eq(s.usageLedger.idempotencyKey, input.idempotencyKey)),
+          )
+          .for("update")
+          .limit(1);
+
+        const reservation = reservationRows[0];
+
+        // 2. Verify exists and tenant matches
+        if (!reservation) {
+          throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
+        }
+        if (reservation.tenantId !== input.tenantId) {
+          throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
+        }
+
+        // Determine cost key based on whether cost is known
+        const costKey =
+          input.costCents == null ? `${input.idempotencyKey}:cost-unknown` : `${input.idempotencyKey}:cost`;
+
+        // 3. If already committed, return existing reservation + existing cost row (idempotent)
+        if (reservation.status === "committed") {
+          const existingCostRow = (
+            await tx
+              .select()
+              .from(s.usageLedger)
+              .where(and(eq(s.usageLedger.tenantId, input.tenantId), eq(s.usageLedger.idempotencyKey, costKey)))
+              .limit(1)
+          )[0];
+          return {
+            reservation: mapUsage(reservation),
+            costRow: existingCostRow ? mapUsage(existingCostRow) : null,
+          };
+        }
+
+        // 4. If released, throw
+        if (reservation.status === "released") {
+          throw new AppError("USAGE_ALREADY_RELEASED", "Cannot commit a released reservation", 409);
+        }
+
+        // 5. UPDATE status to committed
+        const [updatedReservation] = await tx
+          .update(s.usageLedger)
+          .set({ status: "committed" })
+          .where(eq(s.usageLedger.id, reservation.id))
+          .returning();
+
+        // 6-7. INSERT cost row ON CONFLICT DO NOTHING, then select it
+        const costMetadata =
+          input.costCents == null
+            ? { parentKey: input.idempotencyKey, costStatus: "unknown", billable: false, ...(input.metadata ?? {}) }
+            : { parentKey: input.idempotencyKey, costStatus: "known", billable: true, ...(input.metadata ?? {}) };
+
+        await tx
+          .insert(s.usageLedger)
+          .values({
+            publicId: newId("ulp"),
+            tenantId: input.tenantId,
+            userId: input.userId,
+            kind: "provider_cost",
+            units: "0",
+            costCents: input.costCents == null ? "0" : String(input.costCents),
+            workflowRunId: input.workflowRunId,
+            idempotencyKey: costKey,
+            status: "committed",
+            metadata: costMetadata,
+          })
+          .onConflictDoNothing({
+            target: [s.usageLedger.tenantId, s.usageLedger.idempotencyKey],
+          });
+
+        // Select the cost row (either just inserted or existing)
+        const costRow = (
+          await tx
+            .select()
+            .from(s.usageLedger)
+            .where(and(eq(s.usageLedger.tenantId, input.tenantId), eq(s.usageLedger.idempotencyKey, costKey)))
+            .limit(1)
+        )[0];
+
+        // 8. Transaction commits atomically — never leaves committed without cost row
+        return {
+          reservation: mapUsage(updatedReservation!),
+          costRow: costRow ? mapUsage(costRow) : null,
+        };
+      });
     },
   };
 }

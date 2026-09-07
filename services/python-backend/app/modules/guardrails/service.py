@@ -19,11 +19,33 @@ from app.modules.scoring.service import score_resume
 
 PERCENT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*%")
 DOLLAR_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s*(?:k|m|b|million|billion))?", re.I)
+# Multi-digit numbers (10+), decimal numbers, or comma-formatted numbers
 NUMBER_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+\.\d+\b|\b\d{2,}\b")
+# Single-digit metrics when followed by metric-context words (e.g., "9 platforms", "5 engineers")
+SINGLE_DIGIT_METRIC_RE = re.compile(
+    r"\b([1-9])\s+(?:platform|platforms|engineer|engineers|people|users|customers|projects|systems|services|"
+    r"microservices|applications|apps|api|apis|teams|members|regions|countries)\b",
+    re.I,
+)
+# Spelled-out numbers (one through twenty, hundred, thousand, million, billion)
+SPELLED_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "hundred": 100, "thousand": 1000, "million": 1000000, "billion": 1000000000,
+}
+SPELLED_NUMBER_RE = re.compile(
+    r"\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+    r"sixteen|seventeen|eighteen|nineteen|twenty|hundred|thousand|million|billion)\s+"
+    r"(?:platform|platforms|engineer|engineers|people|users|customers|projects|systems|services|"
+    r"microservices|applications|apps|api|apis|teams|members|regions|countries)\b",
+    re.I,
+)
 DATE_RE = re.compile(
     r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
     r"sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}\b|\b\d{4}\s*[–-]\s*(?:\d{4}|present)\b|"
-    r"\bpresent\b",
+    r"\bpresent\b|\b(?:19|20)\d{2}\b",
     re.I,
 )
 TEAM_SIZE_RE = re.compile(r"\b(?:team of|led a team of|managed)\s+\d+\b|\b\d+\s*(?:engineers|people|members)\b", re.I)
@@ -96,6 +118,26 @@ KNOWN_TECH_HINTS = (
     "node.js",
 )
 
+# Well-known single-word employer names that are commonly used in resumes
+# These need special handling since normal org detection requires multi-word names
+KNOWN_SINGLE_WORD_EMPLOYERS = frozenset({
+    # FAANG / Big Tech
+    "google", "meta", "amazon", "apple", "netflix", "microsoft", "nvidia", "intel", "oracle", "ibm",
+    "salesforce", "adobe", "cisco", "vmware", "qualcomm", "amd", "dell", "hp", "samsung",
+    # Fintech / Finance
+    "stripe", "plaid", "square", "paypal", "visa", "mastercard", "bloomberg", "robinhood",
+    # Enterprise / Cloud
+    "slack", "zoom", "atlassian", "twilio", "datadog", "snowflake", "databricks", "confluent",
+    # Consumer / Social
+    "twitter", "x", "tiktok", "snap", "snapchat", "pinterest", "spotify", "discord", "reddit",
+    # Startups / Scale-ups
+    "uber", "lyft", "airbnb", "doordash", "instacart", "coinbase", "figma", "notion",
+    # E-commerce / Retail
+    "shopify", "etsy", "ebay", "walmart", "target", "costco",
+    # Other notable
+    "spacex", "tesla", "palantir", "openai", "anthropic", "deepmind",
+})
+
 # Only these sources may create first-person experience claims
 FIRST_PERSON_CLAIM_SOURCES: frozenset[ClaimSourceKind] = frozenset({"candidate_evidence", "user_confirmation"})
 
@@ -113,17 +155,78 @@ class ClaimAtoms:
     team_ownership: bool = False
 
 
+@dataclass(frozen=True)
+class StructuredSupport:
+    """Internal, citation-scoped representation of one supported claim."""
+
+    claimKind: str | None = None
+    subject: str | None = None
+    action: str | None = None
+    value: str | None = None
+    unit: str | None = None
+    metricLabel: str | None = None
+    organization: str | None = None
+    project: str | None = None
+    role: str | None = None
+    startDate: str | None = None
+    endDate: str | None = None
+    technology: str | None = None
+    ownership: str | None = None
+    evidenceId: str | None = None
+    supportingText: str | None = None
+
+
+METRIC_LABEL_VOCABULARY: dict[str, frozenset[str]] = {
+    "latency": frozenset({"latency", "response time", "load time", "page load", "speed"}),
+    "revenue": frozenset({"revenue", "sales", "arr", "mrr", "bookings", "profit"}),
+    "users": frozenset({"user", "users", "customer", "customers", "subscriber", "subscribers", "accounts"}),
+    "projects": frozenset({"project", "projects", "initiative", "initiatives", "program", "programs"}),
+    "conversion": frozenset({"conversion", "conversions", "signup", "signups", "activation"}),
+    "availability": frozenset({"availability", "uptime", "reliability", "sla"}),
+    "cost": frozenset({"cost", "costs", "spend", "expense", "expenses", "budget"}),
+    "throughput": frozenset({"throughput", "requests", "qps", "transactions", "volume"}),
+    "quality": frozenset({"defect", "defects", "error", "errors", "failure", "failures", "bugs"}),
+    "satisfaction": frozenset({"satisfaction", "nps", "csat", "retention"}),
+    "team": frozenset({"engineer", "engineers", "people", "members", "team", "reports"}),
+    "duration": frozenset({"hour", "hours", "day", "days", "week", "weeks", "month", "months", "time"}),
+}
+METRIC_TOKEN_RE = re.compile(
+    r"(?<!\w)(?P<currency>[$£€])?\s*(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>%|percent|percentage|ms|milliseconds?|seconds?|secs?|minutes?|mins?|hours?|days?|weeks?|"
+    r"months?|years?|users?|customers?|projects?|engineers?|people|members?|requests?|transactions?|"
+    r"k|m|b|million|billion)?(?=\W|$)",
+    re.I,
+)
+
+
 def extract_claim_atoms(text: str, explicit_techs: list[str] | None = None) -> ClaimAtoms:
     lower = text.lower()
     techs = [t for t in (explicit_techs or []) if t]
     for hint in KNOWN_TECH_HINTS:
         if re.search(rf"\b{re.escape(hint)}\b", lower):
             techs.append(hint)
+    # Multi-word orgs from capitalized sequences
     orgs = re.findall(r"\b([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Z][A-Za-z0-9&.\-]+){0,3})\b", text)
+    # Add known single-word employers (e.g., Google, Meta, Amazon)
+    for word in re.findall(r"\b([A-Za-z]+)\b", text):
+        if word.lower() in KNOWN_SINGLE_WORD_EMPLOYERS:
+            orgs.append(word)
+
+    # Collect all numbers: multi-digit, single-digit metrics, and spelled numbers
+    numbers = NUMBER_RE.findall(text)
+    # Single-digit metrics (e.g., "9 platforms", "5 engineers")
+    single_digit_matches = SINGLE_DIGIT_METRIC_RE.findall(text)
+    numbers.extend(single_digit_matches)
+    # Spelled numbers (e.g., "nine platforms", "five engineers")
+    for match in SPELLED_NUMBER_RE.finditer(text):
+        spelled_word = match.group(1).lower()
+        if spelled_word in SPELLED_NUMBER_WORDS:
+            numbers.append(str(SPELLED_NUMBER_WORDS[spelled_word]))
+
     return ClaimAtoms(
         percentages=PERCENT_RE.findall(text),
         dollars=DOLLAR_RE.findall(text),
-        numbers=NUMBER_RE.findall(text),
+        numbers=numbers,
         dates=DATE_RE.findall(text),
         team_sizes=TEAM_SIZE_RE.findall(text),
         technologies=sorted({t.lower() for t in techs}),
@@ -135,6 +238,136 @@ def extract_claim_atoms(text: str, explicit_techs: list[str] | None = None) -> C
 
 def _norm_tech(value: str) -> str:
     return value.strip().lower()
+
+
+def _confirmation_evidence_id(index: int, confirmation: UserConfirmation) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", confirmation.topic.lower()).strip("-")[:24] or "attestation"
+    return f"conf-{index}-{slug}"
+
+
+def _unit_family(currency: str | None, unit: str | None) -> str:
+    if currency:
+        return "currency"
+    normalized = (unit or "count").lower()
+    if normalized in {"%", "percent", "percentage"}:
+        return "percent"
+    if normalized in {"ms", "millisecond", "milliseconds", "second", "seconds", "sec", "secs", "minute", "minutes",
+                      "min", "mins", "hour", "hours", "day", "days", "week", "weeks", "month", "months", "year", "years"}:
+        return "duration"
+    if normalized in {"k", "m", "b", "million", "billion"}:
+        return "scaled-count"
+    return "count"
+
+
+def _metric_labels(context: str) -> set[str]:
+    lower = context.lower()
+    return {
+        label
+        for label, terms in METRIC_LABEL_VOCABULARY.items()
+        if any(re.search(rf"\b{re.escape(term)}\b", lower) for term in terms)
+    }
+
+
+def _metric_supports(text: str, *, evidence_id: str | None = None) -> list[StructuredSupport]:
+    words = list(re.finditer(r"\S+", text))
+    supports: list[StructuredSupport] = []
+    date_spans = [match.span() for match in DATE_RE.finditer(text)]
+    for match in METRIC_TOKEN_RE.finditer(text):
+        if any(start <= match.start("value") < end for start, end in date_spans):
+            continue
+        if (
+            len(match.group("value").replace(",", "").replace(".", "")) < 2
+            and not match.group("currency")
+            and not match.group("unit")
+        ):
+            continue
+        nearby_indexes = [i for i, word in enumerate(words) if word.end() >= match.start() and word.start() <= match.end()]
+        center = nearby_indexes[0] if nearby_indexes else next(
+            (i for i, word in enumerate(words) if word.start() > match.start()), len(words) - 1
+        )
+        window = " ".join(word.group(0) for word in words[max(0, center - 7): center + 8])
+        labels = _metric_labels(window)
+        value = match.group("value").replace(",", "")
+        unit = _unit_family(match.group("currency"), match.group("unit"))
+        for label in (labels if labels else [None]):
+            supports.append(
+                StructuredSupport(
+                    claimKind="metric",
+                    value=value,
+                    unit=unit,
+                    metricLabel=label,
+                    evidenceId=evidence_id,
+                    supportingText=window,
+                )
+            )
+    return supports
+
+
+def _structured_supports(item: EvidenceItem) -> list[StructuredSupport]:
+    corpus = _evidence_corpus([item])
+    supports = _metric_supports(corpus, evidence_id=item.id)
+    dates = DATE_RE.findall(corpus)
+    ownership = "individual" if OWNERSHIP_INDIVIDUAL_RE.search(corpus) else "team" if OWNERSHIP_TEAM_RE.search(corpus) else None
+    for tech in item.technologies:
+        supports.append(
+            StructuredSupport(
+                claimKind="technology",
+                organization=item.organization or item.employer_association,
+                project=item.project_association,
+                technology=_norm_tech(tech),
+                ownership=ownership,
+                evidenceId=item.id,
+                supportingText=corpus,
+            )
+        )
+    supports.append(
+        StructuredSupport(
+            claimKind=(item.source_type or "evidence").lower(),
+            subject=item.title,
+            action=(item.actions[0] if item.actions else item.task),
+            organization=item.organization or item.employer_association,
+            project=item.project_association,
+            role=item.title,
+            startDate=dates[0] if dates else None,
+            endDate=dates[-1] if dates else None,
+            ownership=ownership,
+            evidenceId=item.id,
+            supportingText=corpus,
+        )
+    )
+    return supports
+
+
+def _append_metric_semantic_violations(text: str, cited: list[EvidenceItem], violations: list[str]) -> None:
+    """Require semantic overlap for metric value+unit pairs.
+
+    A single numeric mention can pick up multiple noisy labels from nearby vocabulary
+    (e.g. "reliability" vs "deployment time"). Pass when any claim label for that
+    value/unit intersects evidence labels; fail only when meanings are disjoint.
+    """
+    claims = _metric_supports(text)
+    evidence_support = [
+        support for item in cited for support in _structured_supports(item) if support.claimKind == "metric"
+    ]
+    grouped: dict[tuple[str | None, str | None], list[StructuredSupport]] = {}
+    for claim in claims:
+        grouped.setdefault((claim.value, claim.unit), []).append(claim)
+
+    for (value, unit), claim_group in grouped.items():
+        same_value = [support for support in evidence_support if support.value == value]
+        if not same_value:
+            continue  # Existing atom checks report the unsupported numeric value.
+        unit_matches = [support for support in same_value if support.unit == unit]
+        if not unit_matches:
+            violations.append("UNSUPPORTED_METRIC_UNIT")
+            continue
+        claim_labels = {support.metricLabel for support in claim_group if support.metricLabel}
+        evidence_labels = {support.metricLabel for support in unit_matches if support.metricLabel}
+        if not claim_labels:
+            violations.append("UNSUPPORTED_METRIC_MEANING")
+            continue
+        if not evidence_labels or claim_labels.isdisjoint(evidence_labels):
+            violations.append("UNSUPPORTED_METRIC_MEANING")
 
 
 def collect_allowed_technologies(evidence: list[EvidenceItem], attested: list[str] | None = None) -> set[str]:
@@ -237,7 +470,10 @@ def _append_atom_violations(
     for org in atoms.orgs:
         org_l = org.lower()
         if evidence_orgs and org_l not in corpus and not any(org_l in eo or eo in org_l for eo in evidence_orgs if eo):
-            if len(org.split()) >= 2 and org_l not in corpus:
+            # Flag unsupported orgs: multi-word names OR known single-word employers
+            is_multi_word = len(org.split()) >= 2
+            is_known_single_word_employer = org_l in KNOWN_SINGLE_WORD_EMPLOYERS
+            if (is_multi_word or is_known_single_word_employer) and org_l not in corpus:
                 violations.append(org_code)
 
 
@@ -323,29 +559,29 @@ def validate_resume_claims(
     violations: list[str] = []
     evidence_ids = {item.id for item in evidence}
     evidence_by_id = {item.id: item for item in evidence}
-    # Evidence-backed confirmations may appear as synthetic conf-* evidence IDs in resume bullets
+    # Every affirmative, described confirmation gets a dedicated synthetic item.
+    # It is never appended to any other bullet's corpus.
     for idx, conf in enumerate(evidence_backed_confirmations(user_confirmations)):
-        if conf.related_evidence_ids:
-            continue
-        synth_id = f"conf-{idx}-{conf.topic[:24].replace(' ', '-').lower()}"
+        synth_id = _confirmation_evidence_id(idx, conf)
         evidence_ids.add(synth_id)
-        if synth_id not in evidence_by_id and evidence:
+        if synth_id not in evidence_by_id:
+            related = [evidence_by_id[eid] for eid in conf.related_evidence_ids if eid in evidence_by_id]
+            tenant = related[0].tenant_id if related else evidence[0].tenant_id if evidence else tenant_id or "unknown"
+            owner = related[0].owner_user_id if related else evidence[0].owner_user_id if evidence else owner_user_id or "unknown"
             evidence_by_id[synth_id] = EvidenceItem(
                 id=synth_id,
-                tenant_id=evidence[0].tenant_id,
-                owner_user_id=evidence[0].owner_user_id,
+                tenant_id=tenant,
+                owner_user_id=owner,
                 title=conf.topic,
                 claim_text=(conf.evidence_description or "").strip()[:3900],
-                technologies=[],
+                technologies=sorted(extract_claim_atoms(conf.evidence_description or "").technologies),
                 source_type="user_confirmation",
                 verification_status="user_attested",
                 candidate_confirmation_status="confirmed",
                 confidence="medium",
             )
-    allowed = collect_allowed_technologies(evidence, allowed_technologies)
-    for conf in evidence_backed_confirmations(user_confirmations):
-        for tech in extract_claim_atoms(conf.evidence_description or "").technologies:
-            allowed.add(tech)
+    synthetic_evidence = [item for eid, item in evidence_by_id.items() if eid not in {e.id for e in evidence}]
+    allowed = collect_allowed_technologies(evidence + synthetic_evidence, allowed_technologies)
     research_techs = {_norm_tech(t) for t in (research_technologies or [])}
     for finding in research_findings or []:
         research_techs.update(extract_claim_atoms(finding.summary).technologies)
@@ -356,8 +592,6 @@ def validate_resume_claims(
     }
     bare_yes_topics = {c.topic.lower() for c in confirmation_without_evidence(user_confirmations)}
     full_corpus = _evidence_corpus(evidence)
-    for conf in evidence_backed_confirmations(user_confirmations):
-        full_corpus = f"{full_corpus} {(conf.evidence_description or '').lower()}"
 
     if tenant_id is not None:
         for item in evidence:
@@ -409,10 +643,23 @@ def validate_resume_claims(
                 violations.append("ATS_MANIPULATION")
             content_atoms = extract_claim_atoms(section.content)
             if section_types & {"summary", "professional_summary", "skills", "education", "certifications", "awards"}:
+                section_evidence = evidence
+                if section_types & {"education"}:
+                    section_evidence = [item for item in evidence if (item.source_type or "").lower() == "education"]
+                elif section_types & {"certifications", "awards"}:
+                    section_evidence = [
+                        item for item in evidence if (item.source_type or "").lower() in {"certification", "certifications", "award"}
+                    ]
+                section_corpus = _evidence_corpus(section_evidence)
+                section_allowed = collect_allowed_technologies(section_evidence)
+                if not section_evidence and section_types & {"education"}:
+                    violations.append("UNSUPPORTED_EDUCATION")
+                if not section_evidence and section_types & {"certifications", "awards"}:
+                    violations.append("UNSUPPORTED_CERTIFICATION")
                 _append_atom_violations(
                     content_atoms,
-                    corpus=full_corpus,
-                    allowed=allowed,
+                    corpus=section_corpus if section_types & {"education", "certifications", "awards"} else full_corpus,
+                    allowed=section_allowed if section_types & {"education", "certifications", "awards"} else allowed,
                     research_techs=research_techs,
                     evidence_orgs=evidence_orgs,
                     violations=violations,
@@ -420,6 +667,19 @@ def validate_resume_claims(
                 )
 
         for resume_item in section.items or []:
+            associated_ids = {
+                evidence_id
+                for item_bullet in resume_item.bullets
+                for evidence_id in item_bullet.evidence_ids
+                if evidence_id in evidence_by_id
+            }
+            associated = [evidence_by_id[eid] for eid in associated_ids]
+            item_corpus = _evidence_corpus(associated)
+            item_orgs = {
+                (item.organization or item.employer_association or "").lower()
+                for item in associated
+                if item.organization or item.employer_association
+            }
             item_fields = [
                 resume_item.heading,
                 resume_item.subheading or "",
@@ -432,45 +692,55 @@ def validate_resume_claims(
                 item_atoms = extract_claim_atoms(item_blob)
                 _append_atom_violations(
                     item_atoms,
-                    corpus=full_corpus,
-                    allowed=allowed,
+                    corpus=item_corpus,
+                    allowed=collect_allowed_technologies(associated),
                     research_techs=research_techs,
-                    evidence_orgs=evidence_orgs,
+                    evidence_orgs=item_orgs,
                     violations=violations,
                     org_code=org_code,
                 )
                 # Explicit education / cert grounding for employer/institution/title fields.
                 if section_types & {"experience", "projects"}:
                     if resume_item.heading and not _text_grounded_in_corpus(
-                        resume_item.heading, full_corpus, evidence_orgs
+                        resume_item.heading, item_corpus, item_orgs
                     ):
-                        # Multi-token employer names only (avoid single-word noise)
-                        if len(resume_item.heading.split()) >= 2:
-                            violations.append("UNSUPPORTED_COMPANY")
-                    if resume_item.dates and not _text_grounded_in_corpus(resume_item.dates, full_corpus, set()):
+                        violations.append("UNSUPPORTED_COMPANY")
+                    if resume_item.subheading and not _text_grounded_in_corpus(resume_item.subheading, item_corpus, set()):
+                        violations.append("UNSUPPORTED_TITLE")
+                    if resume_item.dates and not _text_grounded_in_corpus(resume_item.dates, item_corpus, set()):
                         date_atoms = extract_claim_atoms(resume_item.dates)
                         if date_atoms.dates:
                             _append_atom_violations(
                                 date_atoms,
-                                corpus=full_corpus,
-                                allowed=allowed,
+                                corpus=item_corpus,
+                                allowed=collect_allowed_technologies(associated),
                                 research_techs=research_techs,
                                 evidence_orgs=evidence_orgs,
                                 violations=violations,
                             )
                 if section_types & {"education"}:
+                    education_associated = [
+                        item for item in associated if (item.source_type or "").lower() == "education"
+                    ]
+                    education_corpus = _evidence_corpus(education_associated)
                     for field in (resume_item.heading, resume_item.subheading):
-                        if field and not _text_grounded_in_corpus(field, full_corpus, evidence_orgs):
+                        if field and not _text_grounded_in_corpus(field, education_corpus, item_orgs):
                             if len((field or "").split()) >= 2 or (field and field.lower() not in full_corpus):
                                 violations.append("UNSUPPORTED_EDUCATION")
-                    if resume_item.dates and not _text_grounded_in_corpus(resume_item.dates, full_corpus, set()):
+                    if resume_item.dates and not _text_grounded_in_corpus(resume_item.dates, education_corpus, set()):
                         date_atoms = extract_claim_atoms(resume_item.dates)
                         if date_atoms.dates or resume_item.dates.strip():
-                            if not any(tok in full_corpus for tok in resume_item.dates.lower().split() if tok):
+                            if not any(tok in education_corpus for tok in resume_item.dates.lower().split() if tok):
                                 violations.append("UNSUPPORTED_DATE")
                 if section_types & {"certifications", "awards"}:
+                    cert_associated = [
+                        item
+                        for item in associated
+                        if (item.source_type or "").lower() in {"certification", "certifications", "award"}
+                    ]
+                    cert_corpus = _evidence_corpus(cert_associated)
                     for field in (resume_item.heading, resume_item.subheading):
-                        if field and not _text_grounded_in_corpus(field, full_corpus, evidence_orgs):
+                        if field and not _text_grounded_in_corpus(field, cert_corpus, item_orgs):
                             violations.append("UNSUPPORTED_CERTIFICATION")
 
         bullets = list(section.bullets or [])
@@ -486,20 +756,32 @@ def validate_resume_claims(
                     violations.append("UNKNOWN_EVIDENCE_ID")
             cited = _cited_evidence(bullet, evidence_by_id)
             corpus = _evidence_corpus(cited) if cited else ""
-            for conf in evidence_backed_confirmations(user_confirmations):
-                if not conf.related_evidence_ids or any(eid in bullet.evidence_ids for eid in conf.related_evidence_ids):
-                    corpus = f"{corpus} {(conf.evidence_description or '').lower()}"
             atoms = extract_claim_atoms(bullet.text, bullet.technologies)
+            cited_allowed = collect_allowed_technologies(cited)
 
             _append_atom_violations(
                 atoms,
                 corpus=corpus,
-                allowed=allowed,
+                allowed=cited_allowed,
                 research_techs=research_techs,
                 evidence_orgs=evidence_orgs,
                 violations=violations,
                 org_code=org_code if section_types & {"education", "certifications", "awards"} else "UNSUPPORTED_COMPANY",
             )
+            _append_metric_semantic_violations(bullet.text, cited, violations)
+
+            source_types = {(item.source_type or "").lower() for item in cited}
+            if section_types & {"education"} and "education" not in source_types:
+                violations.append("UNSUPPORTED_EDUCATION")
+            if section_types & {"certifications", "awards"} and not source_types.intersection(
+                {"certification", "certifications", "award"}
+            ):
+                violations.append("UNSUPPORTED_CERTIFICATION")
+            if FIRST_PERSON_CLAIM_RE.search(bullet.text) and not all(
+                (item.source_type or "").lower() not in {"job_requirement", "company_research", "research"}
+                for item in cited
+            ):
+                violations.append("UNSUPPORTED_FIRST_PERSON_SOURCE")
 
             if atoms.individual_ownership:
                 if any(OWNERSHIP_TEAM_RE.search(_evidence_corpus([e])) for e in cited) and not any(
@@ -532,7 +814,6 @@ def adjudicate_finding(
     owner_user_id: str | None = None,
 ) -> tuple[bool, str]:
     """Return (accepted, reason). Factual additions without evidence are rejected."""
-    allowed = collect_allowed_technologies(evidence, allowed_technologies)
     suggested_lower = finding_suggested_text.lower()
     evidence_by_id = {item.id: item for item in evidence}
 
@@ -550,15 +831,20 @@ def adjudicate_finding(
 
     scoped = [evidence_by_id[eid] for eid in (evidence_ids or []) if eid in evidence_by_id] or evidence
     corpus = _evidence_corpus(scoped)
+    scoped_allowed = collect_allowed_technologies(scoped)
 
     for tech in KNOWN_TECH_HINTS:
-        if re.search(rf"\b{re.escape(tech)}\b", suggested_lower) and tech not in allowed:
+        if re.search(rf"\b{re.escape(tech)}\b", suggested_lower) and tech not in scoped_allowed:
             return False, "UNSUPPORTED_TECHNOLOGY"
 
     if any(marker in suggested_lower for marker in ATS_MARKERS):
         return False, "ATS_MANIPULATION"
 
     atoms = extract_claim_atoms(finding_suggested_text)
+    semantic_violations: list[str] = []
+    _append_metric_semantic_violations(finding_suggested_text, scoped, semantic_violations)
+    if semantic_violations:
+        return False, semantic_violations[0]
     for pct in atoms.percentages:
         bare = re.sub(r"[^\d.]", "", pct)
         if bare and not re.search(rf"\b{re.escape(bare)}\b", corpus):
@@ -601,6 +887,11 @@ def adjudicate_finding(
     if atoms.individual_ownership:
         if OWNERSHIP_TEAM_RE.search(corpus) and not OWNERSHIP_INDIVIDUAL_RE.search(corpus):
             return False, "TEAM_TO_INDIVIDUAL_OWNERSHIP"
+
+    if FIRST_PERSON_CLAIM_RE.search(finding_suggested_text) and any(
+        (item.source_type or "").lower() in {"job_requirement", "company_research", "research"} for item in scoped
+    ):
+        return False, "UNSUPPORTED_FIRST_PERSON_SOURCE"
 
     return True, "OK"
 
@@ -668,13 +959,12 @@ def build_grounded_resume(
 
     augmented = list(evidence)
     for idx, conf in enumerate(evidence_backed_confirmations(user_confirmations)):
-        if conf.related_evidence_ids:
-            continue
-        synth_id = f"conf-{idx}-{conf.topic[:24].replace(' ', '-').lower()}"
+        synth_id = _confirmation_evidence_id(idx, conf)
         if any(e.id == synth_id for e in augmented):
             continue
-        tenant = evidence[0].tenant_id if evidence else "unknown"
-        owner = evidence[0].owner_user_id if evidence else "unknown"
+        related = [item for item in evidence if item.id in conf.related_evidence_ids]
+        tenant = related[0].tenant_id if related else evidence[0].tenant_id if evidence else "unknown"
+        owner = related[0].owner_user_id if related else evidence[0].owner_user_id if evidence else "unknown"
         techs = sorted({t.title() for t in extract_claim_atoms(conf.evidence_description or "").technologies})
         augmented.append(
             EvidenceItem(
@@ -691,7 +981,6 @@ def build_grounded_resume(
             )
         )
 
-    first = augmented[0]
     tech_list = sorted({tech for item in augmented for tech in item.technologies if _norm_tech(tech) in allowed})[:12]
     employment = [
         item
@@ -762,19 +1051,8 @@ def build_grounded_resume(
         )
         for item in experience_source
     ]
-    education_bullets = [bullet_from(item) for item in education] or [
-        ResumeBullet(
-            text="Education details from candidate evidence.",
-            evidence_ids=[first.id],
-            matched_requirements=[],
-            technologies=[],
-            confidence="medium",
-            claim_risk="low",
-            source_version="career-evidence",
-        )
-    ]
-
     skills_text = " · ".join(tech_list) if tech_list else "Skills pending attested technologies"
+    all_evidence_ids = [item.id for item in augmented]
     sections = [
         ResumeSection(
             type="summary",
@@ -783,7 +1061,7 @@ def build_grounded_resume(
             bullets=[
                 ResumeBullet(
                     text=". ".join(summary_bits)[:3900],
-                    evidence_ids=[first.id],
+                    evidence_ids=all_evidence_ids,
                     matched_requirements=reqs[:3],
                     technologies=tech_list[:3],
                     confidence="high",
@@ -799,7 +1077,7 @@ def build_grounded_resume(
             bullets=[
                 ResumeBullet(
                     text=skills_text,
-                    evidence_ids=[first.id],
+                    evidence_ids=all_evidence_ids,
                     matched_requirements=[],
                     technologies=tech_list,
                     confidence="high",
@@ -809,8 +1087,16 @@ def build_grounded_resume(
             ],
         ),
         ResumeSection(type="experience", title="Experience", order=2, bullets=experience_bullets),
-        ResumeSection(type="education", title="Education", order=3, bullets=education_bullets),
     ]
+    if education:
+        sections.append(
+            ResumeSection(
+                type="education",
+                title="Education",
+                order=3,
+                bullets=[bullet_from(item) for item in education],
+            )
+        )
 
     scored = score_resume(
         sections=sections,

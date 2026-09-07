@@ -1,6 +1,14 @@
 """Retrieval rankers.
 
-Production baseline: deterministic hybrid keyword/vector scoring on request-scoped evidence.
+HEURISTIC RANKING — NOT ML:
+The production baseline is a deterministic hybrid of:
+  1. Keyword overlap (BM25-style token intersection)
+  2. Pseudo-vector cosine similarity (SHA256-based bag-of-hash embedding)
+
+This is a HEURISTIC retrieval system, not a learned embedding model.
+It does not use neural networks, does not require GPU inference,
+and does not download any model artifacts at import time.
+
 Experimental cross-encoder: loads ONLY from a local artifact path + checksum — never downloads.
 Disabled by default; readiness fails if configured but missing.
 """
@@ -42,9 +50,15 @@ class Ranker(Protocol):
 
 
 class HybridKeywordVectorRanker:
-    """Production baseline: keyword overlap + deterministic pseudo-vector cosine."""
+    """Production baseline HEURISTIC ranker: keyword overlap + deterministic pseudo-vector cosine.
 
-    name = "hybrid"
+    NOT ML — this is a deterministic heuristic scoring function.
+    The "vector" component uses SHA256-based bag-of-hash projection, not learned embeddings.
+    Suitable for request-scoped evidence retrieval where recall matters more than
+    perfect semantic similarity.
+    """
+
+    name = "heuristic_hybrid_ranker"  # Honest naming: not "embedding_model"
 
     def rank(self, query: str, items: list[EvidenceItem], limit: int = 8) -> list[tuple[EvidenceItem, float]]:
         q_tokens = set(_tokenize(query))

@@ -9,6 +9,7 @@ from app.core.errors import (
     CROSS_OWNER_EVIDENCE,
     CROSS_TENANT_EVIDENCE,
     EVIDENCE_STORE_UNAVAILABLE,
+    IDEMPOTENCY_IN_PROGRESS,
     IDEMPOTENCY_KEY_REUSED,
     ProviderError,
     http_status_for,
@@ -60,6 +61,11 @@ def _raise_provider(exc: Exception) -> None:
             status_code=422,
             detail={"code": "GUARDRAIL_VIOLATION", "message": str(exc)},
         ) from exc
+    if isinstance(exc, ValueError) and str(exc).startswith("REFINEMENT_NOT_APPLICABLE"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "REFINEMENT_NOT_APPLICABLE", "message": str(exc)},
+        ) from exc
     raise exc
 
 
@@ -101,10 +107,10 @@ async def _with_idempotency(
     try:
         begun = await store.begin(key, digest, lock_ttl)
     except ProviderError as exc:
-        if exc.code == IDEMPOTENCY_KEY_REUSED:
+        if exc.code in {IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_IN_PROGRESS}:
             raise HTTPException(
                 status_code=409,
-                detail={"code": IDEMPOTENCY_KEY_REUSED, "message": exc.message},
+                detail={"code": exc.code, "message": exc.message},
             ) from exc
         raise HTTPException(status_code=http_status_for(exc.code), detail={"code": exc.code, "message": exc.message}) from exc
 
@@ -317,6 +323,9 @@ async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> Re
             mistake_memory=body.mistake_memory,
             research_findings=body.research_findings,
             user_confirmations=body.user_confirmations,
+            refinement_instruction=body.refinement_instruction,
+            evidence_matches=body.evidence_matches,
+            final_qa_repair=body.final_qa_repair,
         )
     except Exception as exc:
         _raise_provider(exc)

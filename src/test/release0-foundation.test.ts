@@ -5,6 +5,7 @@ import { runDeterministicFinalQa } from "../../server/workflows/final-qa";
 import { allowDemoFallback, api, ApiError } from "@/services/api";
 import { resetRuntimeForTests, getRuntime } from "../../server/bootstrap";
 import { ApplicationsService } from "../../server/modules/applications/service";
+import { installMockPythonIntelligence } from "./helpers/mock-python-intelligence";
 
 const originalMode = process.env.NEXT_PUBLIC_APP_MODE;
 
@@ -79,7 +80,10 @@ describe("Release 0 production foundation", () => {
     process.env.APP_MODE = "demo";
     process.env.CANDIDARC_DATA_MODE = "memory";
     process.env.AI_PROVIDER = "mock";
+    process.env.AI_MODE = "mock";
+    process.env.RESUME_INTELLIGENCE_BACKEND = "python";
     process.env.QUEUE_BACKEND = "inprocess";
+    installMockPythonIntelligence();
     const runtime = await getRuntime();
     const user = await runtime.repos.users.findByEmail("deepak@candidarc.dev");
     expect(user).toBeTruthy();

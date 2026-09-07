@@ -25,7 +25,8 @@ import {
 export type PythonResume = ResumeDocument;
 export const pythonResumeSchema = ResumeDocumentSchema;
 
-export type IntelligenceBackendMode = "typescript" | "python" | "shadow";
+/** Python is the only supported backend. typescript/shadow are no longer valid. */
+export type IntelligenceBackendMode = "python";
 
 type RequestContext = {
   tenantId: string;
@@ -102,7 +103,23 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
   if (code === "PROVIDER_OUTPUT_INVALID") {
     return new AppError("PROVIDER_OUTPUT_INVALID", "Provider returned invalid output", 422, details);
   }
-  if (code === "GUARDRAIL_VIOLATION" || status === 422) {
+  if (code === "VALIDATION_ERROR" || code === "REQUEST_VALIDATION" || code === "CONTRACT_MISMATCH") {
+    return new AppError(
+      "PYTHON_CONTRACT_MISMATCH",
+      "Resume intelligence request did not match the service contract. Please retry or contact support.",
+      422,
+      details,
+    );
+  }
+  if (code === "REFINEMENT_NOT_APPLICABLE") {
+    return new AppError(
+      "REFINEMENT_NOT_APPLICABLE",
+      "That refinement could not change the resume without inventing unsupported claims.",
+      422,
+      details,
+    );
+  }
+  if (code === "GUARDRAIL_VIOLATION") {
     return new AppError(
       "GUARDRAIL_VIOLATION",
       "This request included unsupported or unverifiable claims. Please revise and try again.",
@@ -110,14 +127,23 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
       details,
     );
   }
+  if (status === 422) {
+    // Unknown 422: do not mislabel deployment/contract failures as unsupported claims.
+    return new AppError(
+      "PYTHON_CONTRACT_MISMATCH",
+      "Resume intelligence rejected the request. Please retry or contact support.",
+      422,
+      details,
+    );
+  }
   if (code === "IDEMPOTENCY_KEY_REUSED" || (status === 409 && code === "IDEMPOTENCY_KEY_REUSED")) {
     return new AppError("IDEMPOTENCY_KEY_REUSED", "This request was already processed", 409, details);
   }
-  if (code === "IDEMPOTENCY_IN_PROGRESS") {
+  if (code === "IDEMPOTENCY_IN_PROGRESS" || (status === 409 && code === "IDEMPOTENCY_IN_PROGRESS")) {
     return new AppError(
       "IDEMPOTENCY_IN_PROGRESS",
       "A matching request is already in progress",
-      503,
+      409,
       details,
       true,
     );
@@ -402,77 +428,7 @@ function mapQaStatus(status: string): "pass" | "fail" | "warning" | "pending" {
   return "pass";
 }
 
-/** Sanitized shadow comparison — counts/scores/latency only, no resume text. */
-export function compareResumeShapes(
-  tsResume: { sections?: Array<Record<string, unknown>>; score?: number },
-  pyResume: { sections?: Array<Record<string, unknown>>; score?: number },
-  meta?: {
-    tsLatencyMs?: number;
-    pyLatencyMs?: number;
-    tsUnsupportedClaims?: number;
-    pyUnsupportedClaims?: number;
-    tsEvidenceValidity?: number;
-    pyEvidenceValidity?: number;
-  },
-) {
-  const tsSections = tsResume.sections ?? [];
-  const pySections = pyResume.sections ?? [];
-  const countBullets = (sections: Array<Record<string, unknown>>) =>
-    sections.reduce((sum, section) => {
-      const bullets = Array.isArray(section.bullets) ? section.bullets.length : 0;
-      const items = Array.isArray(section.items) ? section.items : [];
-      const itemBullets = items.reduce((inner, item) => {
-        const rec = item as Record<string, unknown>;
-        return inner + (Array.isArray(rec.bullets) ? rec.bullets.length : 0);
-      }, 0);
-      return sum + bullets + itemBullets;
-    }, 0);
-  const countUnsupported = (sections: Array<Record<string, unknown>>) =>
-    sections.reduce((sum, section) => {
-      const bullets = Array.isArray(section.bullets) ? section.bullets : [];
-      const items = Array.isArray(section.items) ? section.items : [];
-      const fromBullets = bullets.filter((b) => {
-        const rec = b as Record<string, unknown>;
-        return rec.claimRisk === "high" || rec.claim_risk === "high" || rec.unsupported === true;
-      }).length;
-      const fromItems = items.reduce((inner, item) => {
-        const rec = item as Record<string, unknown>;
-        const itemBullets = Array.isArray(rec.bullets) ? rec.bullets : [];
-        return (
-          inner +
-          itemBullets.filter((b) => {
-            const bullet = b as Record<string, unknown>;
-            return bullet.claimRisk === "high" || bullet.claim_risk === "high" || bullet.unsupported === true;
-          }).length
-        );
-      }, 0);
-      return sum + fromBullets + fromItems;
-    }, 0);
-
-  const tsUnsupported = meta?.tsUnsupportedClaims ?? countUnsupported(tsSections);
-  const pyUnsupported = meta?.pyUnsupportedClaims ?? countUnsupported(pySections);
-  return {
-    sectionCountDiff: Math.abs(tsSections.length - pySections.length),
-    bulletCountDiff: Math.abs(countBullets(tsSections) - countBullets(pySections)),
-    tsSectionCount: tsSections.length,
-    pySectionCount: pySections.length,
-    tsBulletCount: countBullets(tsSections),
-    pyBulletCount: countBullets(pySections),
-    scoreDiff:
-      tsResume.score != null && pyResume.score != null ? Math.abs(Number(tsResume.score) - Number(pyResume.score)) : null,
-    tsScore: tsResume.score ?? null,
-    pyScore: pyResume.score ?? null,
-    unsupportedClaimsDiff: Math.abs(tsUnsupported - pyUnsupported),
-    evidenceValidityDiff:
-      meta?.tsEvidenceValidity != null && meta?.pyEvidenceValidity != null
-        ? Math.abs(meta.tsEvidenceValidity - meta.pyEvidenceValidity)
-        : null,
-    latencyDiffMs:
-      meta?.tsLatencyMs != null && meta?.pyLatencyMs != null ? Math.abs(meta.tsLatencyMs - meta.pyLatencyMs) : null,
-  };
-}
-
-/** Deterministic shadow sampling — stable for the same seed. */
+/** Deterministic shadow sampling — stable for the same seed (deprecated; pipeline never samples). */
 export function shouldSampleShadow(
   seed: string,
   samplePercent = getEnv().SHADOW_SAMPLE_PERCENT,
@@ -484,39 +440,165 @@ export function shouldSampleShadow(
   return bucket < bounded;
 }
 
-function parseTenantAllowlist(raw: string): Set<string> {
-  return new Set(
-    raw
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-  );
-}
-
 /**
- * Tenant-aware backend resolution.
- * Global `typescript` env is a kill switch. python/shadow require allowlist or metadata override.
+ * Backend resolution for resume intelligence.
+ * Python is the ONLY supported backend. Always returns "python".
+ * The tenantId parameter is kept for API compatibility but is ignored.
  */
-export function resolveIntelligenceBackendForTenant(opts: {
+export function resolveIntelligenceBackendForTenant(_opts: {
   tenantId: string;
-  tenantMetadata?: Record<string, unknown> | null;
 }): IntelligenceBackendMode {
-  const envMode = getEnv().RESUME_INTELLIGENCE_BACKEND;
-  if (envMode === "typescript") return "typescript";
-
-  const metaRaw = opts.tenantMetadata?.resumeIntelligenceBackend;
-  if (metaRaw === "python" || metaRaw === "shadow" || metaRaw === "typescript") {
-    return metaRaw;
-  }
-
-  if (envMode === "python" || envMode === "shadow") {
-    const allowlist = parseTenantAllowlist(getEnv().PYTHON_INTELLIGENCE_TENANT_ALLOWLIST);
-    if (allowlist.has(opts.tenantId)) return envMode;
-    return "typescript";
-  }
-
-  return "typescript";
+  // Python is the only backend. No fallback, no allowlist, no kill switch.
+  void _opts;
+  return "python";
 }
+
+const RESEARCH_CATEGORIES = new Set([
+  "role",
+  "company",
+  "team",
+  "project",
+  "technology",
+  "hiring-signal",
+]);
+
+/** Map Python research synthesize response into the TypeScript researchSchema shape. */
+export function mapPythonResearchToTs(py: {
+  findings: Array<{
+    category: string;
+    title: string;
+    summary: string;
+    confidence: "high" | "medium" | "low";
+    status?: string;
+    source_ids?: string[];
+  }>;
+  sources: Array<{
+    id: string;
+    url: string;
+    title: string;
+    accessed_at: string;
+    supporting_text: string;
+    confidence?: "high" | "medium" | "low";
+    classification?: "explicit" | "inferred" | "uncertain";
+    relevance?: number;
+  }>;
+  overall_confidence: number;
+  company_research_status?: string | null;
+}) {
+  const statusMap: Record<string, "verified" | "inferred" | "unverified" | "disputed"> = {
+    verified: "verified",
+    supported: "verified",
+    inferred: "inferred",
+    uncertain: "inferred",
+    unverified: "unverified",
+    unavailable: "unverified",
+    disputed: "disputed",
+  };
+  return {
+    findings: py.findings.map((f) => ({
+      category: (RESEARCH_CATEGORIES.has(f.category) ? f.category : "company") as
+        | "role"
+        | "company"
+        | "team"
+        | "project"
+        | "technology"
+        | "hiring-signal",
+      title: f.title,
+      summary: f.summary,
+      confidence: f.confidence,
+      status: statusMap[String(f.status ?? "inferred")] ?? "inferred",
+      sourceIds: f.source_ids ?? [],
+    })),
+    sources: py.sources.map((s) => ({
+      id: s.id,
+      url: s.url,
+      title: s.title,
+      accessedAt: s.accessed_at,
+      supportingText: s.supporting_text,
+      confidence: s.confidence ?? "medium",
+      classification: s.classification ?? "explicit",
+      relevance:
+        typeof s.relevance === "number"
+          ? `relevance=${s.relevance.toFixed(2)}`
+          : "Permitted public source collected for this job application",
+    })),
+    overallConfidence: Math.round(Math.min(1, Math.max(0, py.overall_confidence)) * 100),
+    companyResearchStatus:
+      py.company_research_status === "unavailable" ? ("unavailable" as const) : ("available" as const),
+  };
+}
+
+/** Map Python evidence match response into the TypeScript evidenceMatchSchema shape. */
+export function mapPythonEvidenceMatchToTs(py: {
+  evidence_coverage: number;
+  rows: Array<{
+    requirement: string;
+    importance?: "required" | "preferred" | "responsibility";
+    evidence_ids: string[];
+    evidence_strength: "strong" | "partial" | "none";
+    resume_usage?: "use" | "consider" | "skip";
+    coverage_gap?: string | null;
+  }>;
+}) {
+  const strengthMap = {
+    strong: "high" as const,
+    partial: "medium" as const,
+    none: "low" as const,
+  };
+  const usageMap = {
+    use: "used" as const,
+    consider: "partial" as const,
+    skip: "unused" as const,
+  };
+  return {
+    rows: py.rows.map((row) => ({
+      requirement: row.requirement,
+      importance: row.importance === "preferred" ? ("preferred" as const) : ("required" as const),
+      evidenceIds: row.evidence_ids,
+      evidenceStrength: strengthMap[row.evidence_strength] ?? "low",
+      resumeUsage: usageMap[row.resume_usage ?? "consider"] ?? "partial",
+      coverageGap: row.coverage_gap ?? undefined,
+    })),
+    evidenceCoverage: Math.round(Math.min(1, Math.max(0, py.evidence_coverage)) * 100),
+  };
+}
+
+/** Map Python job parse into JobExtractionOutput. */
+export function mapPythonJobParseToExtraction(py: {
+  title?: string | null;
+  company?: string | null;
+  role?: string | null;
+  location?: string | null;
+  employment_type?: string | null;
+  seniority?: string | null;
+  required_qualifications?: string[];
+  preferred_qualifications?: string[];
+  responsibilities?: string[];
+  target_technologies?: string[];
+}) {
+  return {
+    title: py.title ?? undefined,
+    company: py.company ?? undefined,
+    role: py.role ?? undefined,
+    location: py.location ?? undefined,
+    employmentType: py.employment_type ?? undefined,
+    seniority: py.seniority ?? undefined,
+    requiredQualifications: py.required_qualifications ?? [],
+    preferredQualifications: py.preferred_qualifications ?? [],
+    responsibilities: py.responsibilities ?? [],
+    targetTechnologies: py.target_technologies ?? [],
+  };
+}
+
+export type FinalQaRepairDirective = {
+  repairType: "final_qa_repair";
+  sourceVersion: number;
+  sourceVersionLabel?: string | null;
+  attempt: number;
+  failedChecks: Array<{ label: string; status: string; detail?: string }>;
+  approvedEvidenceIds?: string[];
+  groundedTargets?: string[];
+};
 
 export type GenerateResumeInput = {
   context: RequestContext;
@@ -531,11 +613,49 @@ export type GenerateResumeInput = {
   researchFindings?: Array<Record<string, unknown>>;
   mistakeMemory?: Array<Record<string, unknown>>;
   refinementInstruction?: string | null;
+  finalQaRepair?: FinalQaRepairDirective | null;
   jobRequirements?: string[];
   evidenceMatches?: Array<Record<string, unknown>>;
   userConfirmations?: Array<Record<string, unknown>>;
   idempotencyKey?: string;
 };
+
+/** Map TypeScript (or already-Python) evidence match rows into Python EvidenceMatchRow enums. */
+export function toSnakeEvidenceMatch(row: Record<string, unknown>) {
+  const strengthRaw = String(row.evidenceStrength ?? row.evidence_strength ?? "none").toLowerCase();
+  const usageRaw = String(row.resumeUsage ?? row.resume_usage ?? "use").toLowerCase();
+  const strengthMap: Record<string, "strong" | "partial" | "none"> = {
+    strong: "strong",
+    high: "strong",
+    partial: "partial",
+    medium: "partial",
+    none: "none",
+    low: "none",
+  };
+  const usageMap: Record<string, "use" | "consider" | "skip"> = {
+    use: "use",
+    used: "use",
+    consider: "consider",
+    partial: "consider",
+    skip: "skip",
+    unused: "skip",
+  };
+  const importanceRaw = String(row.importance ?? "required").toLowerCase();
+  const importance =
+    importanceRaw === "preferred"
+      ? ("preferred" as const)
+      : importanceRaw === "responsibility"
+        ? ("responsibility" as const)
+        : ("required" as const);
+  return {
+    requirement: String(row.requirement ?? ""),
+    importance,
+    evidence_ids: (row.evidenceIds ?? row.evidence_ids ?? []) as string[],
+    evidence_strength: strengthMap[strengthRaw] ?? "none",
+    resume_usage: usageMap[usageRaw] ?? "use",
+    coverage_gap: (row.coverageGap ?? row.coverage_gap ?? null) as string | null,
+  };
+}
 
 function buildGenerateBody(input: GenerateResumeInput) {
   return {
@@ -551,16 +671,24 @@ function buildGenerateBody(input: GenerateResumeInput) {
     rejected_findings: (input.rejectedFindings ?? []).map((finding) => toSnakeFinding(finding)),
     research_findings: (input.researchFindings ?? []).map((finding) => toSnakeResearchFinding(finding)),
     mistake_memory: (input.mistakeMemory ?? []).map((rule) => toSnakeMistakeMemory(rule)),
-    refinement_instruction: input.refinementInstruction ?? null,
+    refinement_instruction: input.finalQaRepair ? null : (input.refinementInstruction ?? null),
+    final_qa_repair: input.finalQaRepair
+      ? {
+          repair_type: "final_qa_repair" as const,
+          source_version: input.finalQaRepair.sourceVersion,
+          source_version_label: input.finalQaRepair.sourceVersionLabel ?? null,
+          attempt: input.finalQaRepair.attempt,
+          failed_checks: input.finalQaRepair.failedChecks.map((check) => ({
+            label: check.label,
+            status: check.status,
+            detail: check.detail ?? "",
+          })),
+          approved_evidence_ids: input.finalQaRepair.approvedEvidenceIds ?? [],
+          grounded_targets: input.finalQaRepair.groundedTargets ?? [],
+        }
+      : null,
     job_requirements: input.jobRequirements ?? [],
-    evidence_matches: (input.evidenceMatches ?? []).map((row) => ({
-      requirement: String(row.requirement ?? ""),
-      importance: row.importance ?? "required",
-      evidence_ids: (row.evidenceIds ?? row.evidence_ids ?? []) as string[],
-      evidence_strength: row.evidenceStrength ?? row.evidence_strength ?? "none",
-      resume_usage: row.resumeUsage ?? row.resume_usage ?? "use",
-      coverage_gap: (row.coverageGap ?? row.coverage_gap ?? null) as string | null,
-    })),
+    evidence_matches: (input.evidenceMatches ?? []).map((row) => toSnakeEvidenceMatch(row)),
     user_confirmations: (input.userConfirmations ?? []).map((item) => ({
       topic: String(item.topic ?? item.technology ?? ""),
       confirmed: Boolean(item.confirmed ?? item.answer === "yes"),
@@ -930,30 +1058,38 @@ export class PythonIntelligenceClient {
       }
 
       if (!response.ok) {
-        const detail = (json.detail ?? {}) as {
+        // FastAPI HTTPException nests under `detail`; validation handler returns top-level code/message.
+        const nested =
+          json.detail && typeof json.detail === "object" && !Array.isArray(json.detail)
+            ? (json.detail as Record<string, unknown>)
+            : null;
+        const envelope = (nested ?? json) as {
           code?: string;
           message?: string;
+          details?: unknown;
           [key: string]: unknown;
         };
         const code =
-          typeof detail.code === "string" && detail.code
-            ? detail.code
+          typeof envelope.code === "string" && envelope.code
+            ? envelope.code
             : `PYTHON_BACKEND_${response.status}`;
         const sanitizedMessage =
-          typeof detail.message === "string" && detail.message
-            ? detail.message.slice(0, 200)
+          typeof envelope.message === "string" && envelope.message
+            ? envelope.message.slice(0, 200)
             : `Python backend error ${response.status}`;
+        // In-progress is workflow-retryable but proves the backend is reachable — never trips the circuit.
+        const inProgress = code === "IDEMPOTENCY_IN_PROGRESS";
         const pyError = new PythonBackendError({
           status: response.status,
           code,
           sanitizedMessage,
-          details: detail,
-          retryable: isRetryableStatus(response.status),
+          details: envelope.details ?? envelope,
+          retryable: inProgress || isRetryableStatus(response.status),
         });
-        if (pyError.retryable) {
+        if (pyError.retryable && !inProgress) {
           this.recordRetryableFailure();
         } else {
-          // Non-retryable HTTP response proves the backend is reachable.
+          // Reachable non-infra response (incl. 409 in-progress / validation).
           this.recordSuccess();
         }
         logger.warn(
@@ -982,6 +1118,10 @@ export function resetPythonIntelligenceClient() {
   singleton = null;
 }
 
+/**
+ * Returns the resume intelligence backend mode.
+ * Python is the only supported backend.
+ */
 export function getResumeIntelligenceBackend(): IntelligenceBackendMode {
-  return getEnv().RESUME_INTELLIGENCE_BACKEND;
+  return "python";
 }

@@ -131,6 +131,10 @@ class Settings(BaseSettings):
                 if not path.is_file():
                     errors.append("Configured ranker artifact file is missing")
 
+        # Production with embedding_provider=openai requires valid API key
+        if self.embedding_provider == "openai" and not self.openai_api_key:
+            errors.append("EMBEDDING_PROVIDER=openai requires OPENAI_API_KEY in production")
+
         return errors
 
     def evidence_store_backend(self) -> Literal["memory", "postgres"]:

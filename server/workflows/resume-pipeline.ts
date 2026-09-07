@@ -1,5 +1,4 @@
-import { getProviderForRole } from "../ai";
-import { getPrompt } from "../ai/prompt-registry";
+import { createHash } from "crypto";
 import {
   auditSchema,
   evidenceMatchSchema,
@@ -26,6 +25,15 @@ import { newId, nowIso } from "../database/repositories";
 import { AppError, AUDIT_SEQUENCE, type WorkflowStage } from "../domain/types";
 import { logger } from "../observability/logger";
 import { assertAuditOrder, stageMatchesJobClaim } from "./stages";
+
+/** Drop active stage claim leases so a stage can be re-entered (e.g. Final QA after repair). */
+function withoutStageClaims(payload: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...payload };
+  for (const key of Object.keys(next)) {
+    if (key.startsWith("claimed:")) delete next[key];
+  }
+  return next;
+}
 import type { DurableWorkflowEngine } from "./engine";
 import { runDeterministicFinalQa } from "./final-qa";
 import type { QueueAdapter } from "./queues";
@@ -33,13 +41,20 @@ import { claimableTechnologies, extractTechQuestions, hasUnansweredTechQuestions
 import { computeCandidArcQualityScore } from "../resumes/quality-score";
 import {
   applyJobExtractionToApplication,
-  extractJobFromText,
   fetchJobDescriptionFromUrl,
   isPlaceholderIdentity,
   PLACEHOLDER_COMPANY,
   PLACEHOLDER_ROLE,
 } from "../resumes/job-extraction";
 import type { z } from "zod";
+
+function hashFinalQaChecks(checks: Array<{ label?: string; status?: string; detail?: string }>): string {
+  const normalized = checks
+    .map((check) => `${check.label ?? ""}|${check.status ?? ""}|${check.detail ?? ""}`)
+    .sort()
+    .join("\n");
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+}
 
 type ResumeGenerationResult = StructuredGenerationResult<z.infer<typeof resumeSchema>>;
 type AuditGenerationResult = StructuredGenerationResult<z.infer<typeof auditSchema>>;
@@ -193,8 +208,10 @@ export class ResumePipeline {
     }
   }
 
-  private async reserve(run: WorkflowRunRecord, kind: string, units: number) {
-    const key = `usage:${run.idempotencyKey}:${run.stage}:${kind}`;
+  private async reserve(run: WorkflowRunRecord, kind: string, units: number, operationId: string) {
+    // Distinct paid operations must not collide: include a stable operation identity.
+    // Retries of the same operationId remain idempotent via the usage ledger unique key.
+    const key = `${run.tenantId}:usage:${run.idempotencyKey}:${operationId}:${kind}`;
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind,
@@ -203,7 +220,7 @@ export class ResumePipeline {
       workflowRunId: run.id,
       idempotencyKey: key,
       status: "reserved",
-      metadata: { stage: run.stage },
+      metadata: { stage: run.stage, operationId },
     });
     return key;
   }
@@ -214,25 +231,38 @@ export class ResumePipeline {
     return hasUnansweredTechQuestions(questions);
   }
 
-  private async commit(key: string, costCents: string | null) {
-    const entry = await this.deps.usage.findByIdempotency(key);
-    if (!entry) return;
-    await this.deps.usage.updateStatus(key, "committed");
-    // Null cost means unknown — do not bill a provider_cost line as 0.
-    if (costCents == null) return;
-    if (costCents !== entry.costCents) {
-      await this.deps.usage.append({
-        tenantId: entry.tenantId,
-        userId: entry.userId,
-        kind: "provider_cost",
-        units: "0",
-        costCents,
-        workflowRunId: entry.workflowRunId,
-        idempotencyKey: `${key}:cost`,
-        status: "committed",
-        metadata: {},
-      });
+  /**
+   * Atomically commit a usage reservation and create a cost observation row.
+   * Uses the transactional commitReservedWithCost method to ensure atomicity.
+   *
+   * This prevents leaving a committed reservation without a cost observation row,
+   * even if the process crashes mid-commit (Postgres rolls back the transaction).
+   */
+  private async commit(key: string, costCents: string | null, opts?: { tenantId?: string; billable?: boolean }) {
+    const tenantId = opts?.tenantId;
+    if (!tenantId) {
+      // Legacy callers must pass tenant — look up is unsafe without it.
+      throw new AppError("USAGE_TENANT_REQUIRED", "tenantId required to commit usage", 500);
     }
+
+    // Look up the entry to get userId and workflowRunId for the cost row
+    const entry = await this.deps.usage.findByIdempotency(tenantId, key);
+    if (!entry) return;
+    if (entry.tenantId !== tenantId) {
+      throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
+    }
+
+    const billable = opts?.billable !== false;
+
+    // Use transactional commit to ensure reservation and cost row are written atomically
+    await this.deps.usage.commitReservedWithCost({
+      tenantId,
+      idempotencyKey: key,
+      costCents: costCents == null ? null : costCents,
+      userId: entry.userId ?? "",
+      workflowRunId: entry.workflowRunId,
+      metadata: costCents == null ? { billable: false } : { billable },
+    });
   }
 
   private async recordProviderUsage(
@@ -241,11 +271,19 @@ export class ResumePipeline {
     result: {
       model: { provider: string; model: string };
       prompt: { version: string };
-      usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number | null; costUnknown?: boolean };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        estimatedCostCents: number | null;
+        costUnknown?: boolean;
+        pricingVersion?: string;
+      };
       latencyMs: number;
     },
+    opts?: { billable?: boolean; shadow?: boolean },
   ) {
     const costUnknown = result.usage.estimatedCostCents == null || result.usage.costUnknown === true;
+    const billable = opts?.billable !== false && opts?.shadow !== true;
     if (costUnknown) {
       logger.warn(
         {
@@ -258,12 +296,12 @@ export class ResumePipeline {
         "PROVIDER_COST_UNKNOWN",
       );
     }
+    // Token row carries units only — monetary amount lives solely on provider_cost.
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind: "input_tokens",
       units: String(result.usage.inputTokens + result.usage.outputTokens),
-      // When cost is unknown, keep this line at 0 and skip provider_cost billing in commit.
-      costCents: costUnknown ? "0" : String(result.usage.estimatedCostCents),
+      costCents: "0",
       workflowRunId: run.id,
       idempotencyKey: `${key}:provider-usage`,
       status: "committed",
@@ -271,11 +309,15 @@ export class ResumePipeline {
         provider: result.model.provider,
         model: result.model.model,
         promptVersion: result.prompt.version,
+        pricingVersion: result.usage.pricingVersion,
         inputTokens: result.usage.inputTokens,
         outputTokens: result.usage.outputTokens,
         latencyMs: result.latencyMs,
         estimatedCostCents: result.usage.estimatedCostCents,
         costUnknown,
+        costStatus: costUnknown ? "unknown" : "known",
+        billable: billable && !costUnknown,
+        shadow: opts?.shadow === true,
       },
     });
     logger.info(
@@ -287,6 +329,7 @@ export class ResumePipeline {
         latencyMs: result.latencyMs,
         tokens: result.usage.inputTokens + result.usage.outputTokens,
         costUnknown,
+        billable: billable && !costUnknown,
       },
       "pipeline AI stage completed",
     );
@@ -296,9 +339,37 @@ export class ResumePipeline {
     return estimatedCostCents == null ? null : String(estimatedCostCents);
   }
 
-  private async resolveBackend(tenantId: string, metadata?: Record<string, unknown> | null) {
-    const { resolveIntelligenceBackendForTenant } = await import("../intelligence/python-client");
-    return resolveIntelligenceBackendForTenant({ tenantId, tenantMetadata: metadata ?? null });
+  /**
+   * Persist execution backend metadata on workflow start or first intelligence stage.
+   * This ensures the backend cannot change mid-run.
+   */
+  private async ensureExecutionBackendPersisted(run: WorkflowRunRecord) {
+    if (run.payload?.executionBackend) return; // Already persisted
+    await this.deps.workflows.updateRun(run.id, {
+      payload: {
+        ...run.payload,
+        executionBackend: "python",
+        intelligenceContractVersion: "2026-09-resume-intelligence.v1",
+      },
+    });
+  }
+
+  private async recordStageBackend(
+    run: WorkflowRunRecord,
+    operation: "parse" | "research" | "match" | "generate" | "regenerate" | "audit" | "final-qa",
+    executionBackend: "python",
+  ) {
+    await this.deps.workflows.appendEvent({
+      workflowRunId: run.id,
+      workflowRunPublicId: run.publicId,
+      tenantId: run.tenantId,
+      applicationId: run.applicationId,
+      applicationPublicId: run.applicationPublicId,
+      stage: run.stage,
+      status: run.status,
+      message: `intelligence:${operation}:${executionBackend}`,
+      metadata: { executionBackend, operation },
+    });
   }
 
   private async runResearch(run: WorkflowRunRecord) {
@@ -323,10 +394,28 @@ export class ResumePipeline {
         }
       }
       if (jobDescription.trim()) {
-        const extraction = await extractJobFromText(jobDescription, {
-          company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
-          role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
-        });
+        // Python is the only backend — always use Python for job parsing
+        const { getPythonIntelligenceClient, mapPythonJobParseToExtraction, mapPythonBackendErrorToAppError } =
+          await import("../intelligence/python-client");
+        let extraction;
+        try {
+          await this.recordStageBackend(run, "parse", "python");
+          const parsed = await getPythonIntelligenceClient().parseJob({
+            context: {
+              tenantId: run.tenantId,
+              userId: application.ownerUserId ?? "unknown",
+              applicationId: run.applicationPublicId,
+              workflowRunId: run.publicId,
+              requestId: run.id,
+            },
+            jobText: jobDescription,
+            company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
+            role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
+          });
+          extraction = mapPythonJobParseToExtraction(parsed);
+        } catch (error) {
+          throw mapPythonBackendErrorToAppError(error);
+        }
         const applied = applyJobExtractionToApplication(application, extraction);
         application = await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
           company: applied.company,
@@ -373,9 +462,8 @@ export class ResumePipeline {
       return;
     }
 
-    const usageKey = await this.reserve(run, "research", 1);
-    const provider = getProviderForRole("generation");
-    const prompt = getPrompt("research-synthesis");
+    const usageKey = await this.reserve(run, "research", 1, "research:synthesize");
+    await this.ensureExecutionBackendPersisted(run);
     const jobDescription = typeof application.metadata?.jobDescription === "string"
       ? application.metadata.jobDescription
       : "";
@@ -383,6 +471,7 @@ export class ResumePipeline {
     const researchDepth = typeof application.metadata?.researchDepth === "string"
       ? application.metadata.researchDepth
       : "standard";
+    // Public source collection stays in TypeScript — Python never fetches arbitrary URLs.
     const collectedSources = await collectResearchSources({
       company: application.company,
       role: application.role,
@@ -391,30 +480,87 @@ export class ResumePipeline {
       researchDepth,
     });
 
-    const result = await provider.generateStructured({
-      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: `${prompt.system}
-Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims without direct source support must be classified as inferred or uncertain.`,
-      user: JSON.stringify({
-        applicationPublicId: run.applicationPublicId,
+    let result: {
+      data: z.infer<typeof researchSchema>;
+      model: { provider: string; model: string };
+      prompt: { version: string };
+      usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number | null; costUnknown?: boolean };
+      latencyMs: number;
+    };
+    let promptVersion = "research-synthesis";
+
+    // Python is the only backend — no TypeScript fallback
+    const {
+      getPythonIntelligenceClient,
+      mapPythonResearchToTs,
+      mapPythonBackendErrorToAppError,
+      mapProviderUsage,
+    } = await import("../intelligence/python-client");
+    try {
+      await this.recordStageBackend(run, "research", "python");
+      const started = Date.now();
+      const py = await getPythonIntelligenceClient().synthesizeResearch({
+        context: {
+          tenantId: run.tenantId,
+          userId: application.ownerUserId ?? "unknown",
+          applicationId: run.applicationPublicId,
+          workflowRunId: run.publicId,
+          requestId: run.id,
+        },
         company: application.company,
         role: application.role,
-        jobUrl,
         jobDescription,
-        collectedSources,
-      }),
-      schema: researchSchema,
-    });
+        sources: collectedSources.map((source) => ({
+          id: source.id,
+          url: source.url,
+          title: source.title,
+          accessed_at: source.accessedAt,
+          supporting_text: source.excerpt,
+          confidence: source.confidence,
+          classification: "explicit",
+        })),
+      });
+      const mapped = mapPythonResearchToTs(py);
+      const usage = mapProviderUsage({
+        provider: "python",
+        model: "research-synthesize",
+        prompt_version: "research@python-v1",
+        latency_ms: Date.now() - started,
+        input_tokens: 0,
+        output_tokens: 0,
+        estimated_cost_cents: null,
+      });
+      result = {
+        data: mapped,
+        model: { provider: "python", model: "research-synthesize" },
+        prompt: { version: "research@python-v1" },
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          estimatedCostCents: usage.estimatedCostCents,
+          costUnknown: usage.costUnknown,
+        },
+        latencyMs: Date.now() - started,
+      };
+      promptVersion = "research@python-v1";
+    } catch (error) {
+      throw mapPythonBackendErrorToAppError(error);
+    }
     const candidateEvidence = (await this.listScopedEvidence(run)).evidence;
     const techQuestions = extractTechQuestions({
       jobDescription,
       researchFindings: result.data.findings,
       candidateTechnologies: candidateEvidence.flatMap((item) => item.technologies),
     });
+    const jobRequirements = Array.isArray(application.metadata?.jobRequirements)
+      ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+      : [];
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       metadata: {
         ...application.metadata,
         techQuestions,
+        jobRequirements,
+        researchFindings: result.data.findings,
         researchSourceCount: result.data.sources.length,
         excludedTechnologies: [],
       },
@@ -439,7 +585,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
 
     const existing = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     if (existing && existing.status === "completed") {
-      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
       const pauseForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
       await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
         status: pauseForTech ? "waiting_review" : undefined,
@@ -493,7 +639,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       });
     }
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
     const waitingForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
     await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
       status: waitingForTech ? "waiting_review" : undefined,
@@ -503,7 +649,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       patch: {
         provider: result.model.provider,
         model: result.model.model,
-        promptVersion: prompt.version,
+        promptVersion,
         tokenUsage: {
           input: result.usage.inputTokens,
           output: result.usage.outputTokens,
@@ -538,40 +684,113 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
   }
 
   private async runEvidenceMatching(run: WorkflowRunRecord) {
-    const usageKey = await this.reserve(run, "research", 1);
-    const provider = getProviderForRole("generation");
-    const prompt = getPrompt("evidence-matching");
+    const usageKey = await this.reserve(run, "research", 1, "match:evidence");
+    await this.ensureExecutionBackendPersisted(run);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     const { evidence } = await this.listScopedEvidence(run);
-    const result = await provider.generateStructured({
-      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: prompt.system,
-      user: JSON.stringify({
-        applicationPublicId: run.applicationPublicId,
-        jobDescription: application?.metadata?.jobDescription,
-        requirements: application?.metadata?.jobDescription,
-        research: { findings: research?.findings ?? [], sources: research?.sources ?? [] },
+    const requirements = Array.isArray(application?.metadata?.jobRequirements)
+      ? (application!.metadata!.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+      : typeof application?.metadata?.jobDescription === "string"
+        ? [String(application.metadata.jobDescription).slice(0, 2000)]
+        : [];
+
+    let result: {
+      data: z.infer<typeof evidenceMatchSchema>;
+      model: { provider: string; model: string };
+      prompt: { version: string };
+      usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number | null; costUnknown?: boolean };
+      latencyMs: number;
+    };
+    let promptVersion = "evidence-matching";
+
+    // Python is the only backend — no TypeScript fallback
+    const {
+      getPythonIntelligenceClient,
+      mapPythonEvidenceMatchToTs,
+      mapPythonBackendErrorToAppError,
+      mapProviderUsage,
+    } = await import("../intelligence/python-client");
+    try {
+      await this.recordStageBackend(run, "match", "python");
+      const started = Date.now();
+      const py = await getPythonIntelligenceClient().matchEvidence({
+        context: {
+          tenantId: run.tenantId,
+          userId: application?.ownerUserId ?? "unknown",
+          applicationId: run.applicationPublicId,
+          workflowRunId: run.publicId,
+          requestId: run.id,
+        },
+        requirements: requirements.length ? requirements : ["general platform engineering"],
         evidence: evidence.map((item) => ({
           id: item.publicId,
+          tenantId: item.tenantId,
+          ownerUserId: item.ownerUserId,
           title: item.title,
+          organization: item.organization,
           situation: item.situation,
           task: item.task,
           actions: item.actions,
           result: item.result,
           technologies: item.technologies,
+          confidence: item.confidence,
+          sourceType: item.sourceType,
+          claimText: item.claimText,
+          employerAssociation: item.employerAssociation,
+          projectAssociation: item.projectAssociation,
+          verificationStatus: item.verificationStatus,
+          candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+          privacyLevel: item.privacyLevel,
+          metrics: item.payload?.metrics,
           payload: item.payload,
         })),
-      }),
-      schema: evidenceMatchSchema,
-      metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
-    });
+        researchFindings: Array.isArray(research?.findings)
+          ? (research!.findings as Array<Record<string, unknown>>)
+          : [],
+      });
+      const mapped = mapPythonEvidenceMatchToTs(py);
+      const usage = mapProviderUsage({
+        provider: "python",
+        model: "evidence-match",
+        prompt_version: "evidence-match@lexical-v1",
+        latency_ms: Date.now() - started,
+        input_tokens: 0,
+        output_tokens: 0,
+        estimated_cost_cents: null,
+      });
+      result = {
+        data: mapped,
+        model: { provider: "python", model: "evidence-match" },
+        prompt: { version: "evidence-match@lexical-v1" },
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          estimatedCostCents: usage.estimatedCostCents,
+          costUnknown: usage.costUnknown,
+        },
+        latencyMs: Date.now() - started,
+      };
+      promptVersion = "evidence-match@lexical-v1";
+    } catch (error) {
+      throw mapPythonBackendErrorToAppError(error);
+    }
     await this.recordProviderUsage(run, usageKey, result);
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+      metadata: {
+        ...(application?.metadata ?? {}),
+        evidenceMatches: result.data.rows,
+        evidenceCoverage: result.data.evidenceCoverage,
+        jobRequirements: requirements,
+      },
+      evidenceCoverage: result.data.evidenceCoverage,
+    });
+
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
     await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_COMPLETED", {
       message: "Evidence matching completed",
-      patch: { provider: result.model.provider, model: result.model.model, promptVersion: prompt.version },
+      patch: { provider: result.model.provider, model: result.model.model, promptVersion },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       stage: "V0_GENERATING",
@@ -587,14 +806,28 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
 
   private async runResumeGeneration(run: WorkflowRunRecord, versionNumber: number, triggeredBy: string) {
     const cycleBase = typeof run.payload.cycleBase === "number" ? run.payload.cycleBase : 0;
-    const storedVersionNumber = cycleBase + versionNumber;
-    const idempotencyKey = `resume:${run.applicationPublicId}:v${storedVersionNumber}:${run.idempotencyKey}`;
+    const isFinalQaRepair = run.payload?.finalQaRepairAttempted === true;
+    const repairAttempt =
+      typeof run.payload.finalQaRepairAttempt === "number" ? run.payload.finalQaRepairAttempt : 1;
+    const repairSourceVersion =
+      typeof run.payload.finalQaRepairSourceVersion === "number"
+        ? run.payload.finalQaRepairSourceVersion
+        : null;
+    const repairChecksHash =
+      typeof run.payload.finalQaRepairChecksHash === "string" ? run.payload.finalQaRepairChecksHash : "na";
+    const versionLabel = isFinalQaRepair ? `V4R${repairAttempt}` : `V${cycleBase + versionNumber}`;
+    const effectiveTriggeredBy = isFinalQaRepair ? "final-qa-repair" : triggeredBy;
+    const idempotencyKey = isFinalQaRepair
+      ? `resume:${run.applicationPublicId}:repair:from${repairSourceVersion}:a${repairAttempt}:${repairChecksHash}:${run.idempotencyKey}`
+      : `resume:${run.applicationPublicId}:v${cycleBase + versionNumber}:${run.idempotencyKey}`;
     const existingVersion = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
     if (existingVersion) {
       const readyStage = `V${versionNumber}_READY` as WorkflowStage;
       await this.deps.engine.transition(run.id, readyStage, {
-        message: `V${versionNumber} already exists (idempotent)`,
-        outputVersion: String(versionNumber),
+        message: isFinalQaRepair
+          ? `${versionLabel} already exists (idempotent repair)`
+          : `V${versionNumber} already exists (idempotent)`,
+        outputVersion: String(existingVersion.versionNumber),
       });
       const nextRunning = [
         "HR_AUDIT_1_RUNNING",
@@ -603,15 +836,37 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         "EM_AUDIT_2_RUNNING",
         "FINAL_QA_RUNNING",
       ][versionNumber] as WorkflowStage;
-      await this.deps.engine.transition(run.id, nextRunning, { message: "Continuing pipeline automatically" });
+      const continuePatch = isFinalQaRepair
+        ? { payload: withoutStageClaims({ ...(run.payload ?? {}), finalQaRepairAttempted: true }) }
+        : undefined;
+      await this.deps.engine.transition(run.id, nextRunning, {
+        message: "Continuing pipeline automatically",
+        ...(continuePatch ? { patch: continuePatch } : {}),
+      });
       return;
     }
 
-    const usageKey = await this.reserve(run, "resume_generation", 1);
-    const provider = getProviderForRole("generation");
-    const prompt = getPrompt("resume-generation");
+    const generationOperationId = isFinalQaRepair
+      ? `repair:v${repairSourceVersion}-to-v4r${repairAttempt}:attempt-${repairAttempt}:${repairChecksHash}`
+      : `generate:v${cycleBase + versionNumber}`;
+    const usageKey = await this.reserve(run, "resume_generation", 1, generationOperationId);
     const { application, evidence } = await this.listScopedEvidence(run);
-    if (!evidence.length && versionNumber === 0) {
+    const payloadRefinement =
+      typeof run.payload.refinementInstruction === "string" && run.payload.refinementInstruction.trim().length > 0
+        ? run.payload.refinementInstruction
+        : null;
+    const metadataRefinement =
+      typeof application?.metadata?.refinementInstruction === "string" &&
+      String(application.metadata.refinementInstruction).trim().length > 0
+        ? String(application.metadata.refinementInstruction)
+        : null;
+    // Metadata refinements apply on V0 and the final V4 lifecycle step so audit rewrites
+    // cannot permanently erase the visible emphasis. Explicit payload refinements always apply.
+    const resolvedRefinementInstruction =
+      payloadRefinement ??
+      ((versionNumber === 0 || versionNumber === 4) && !isFinalQaRepair ? metadataRefinement : null);
+    const hasRefinementInstruction = Boolean(resolvedRefinementInstruction) || isFinalQaRepair;
+    if (!evidence.length && versionNumber === 0 && !isFinalQaRepair) {
       throw new AppError(
         "PROFILE_EVIDENCE_REQUIRED",
         "Cannot generate a resume without owned career evidence for this candidate.",
@@ -621,7 +876,31 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     const currentResume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
     const previousVersions = currentResume ? await this.deps.resumes.listVersions(run.tenantId, currentResume.publicId) : [];
-    const previousVersion = previousVersions.find((version) => version.versionNumber === storedVersionNumber - 1);
+    let storedVersionNumber = cycleBase + versionNumber;
+    if (isFinalQaRepair) {
+      if (!currentResume) {
+        throw new AppError("RESUME_NOT_FOUND", "Resume required for Final QA repair", 422);
+      }
+      storedVersionNumber = this.deps.resumes.allocateNextVersionNumber
+        ? await this.deps.resumes.allocateNextVersionNumber(run.tenantId, currentResume.publicId)
+        : Math.max(...previousVersions.map((v) => v.versionNumber), 0) + 1;
+      await this.deps.workflows.updateRun(run.id, {
+        payload: { ...run.payload, finalQaRepairVersionNumber: storedVersionNumber },
+      });
+    }
+    // Final-QA repair must start from the failed latest V4 — never fall back to V3.
+    const previousVersion = isFinalQaRepair
+      ? previousVersions.find((version) => version.versionNumber === repairSourceVersion) ??
+        previousVersions.at(-1) ??
+        null
+      : previousVersions.find((version) => version.versionNumber === storedVersionNumber - 1);
+    if (isFinalQaRepair && (!previousVersion || previousVersion.versionNumber !== repairSourceVersion)) {
+      throw new AppError(
+        "RESUME_VERSION_NOT_FOUND",
+        "Final QA repair requires the failed V4 revision as previousResume",
+        422,
+      );
+    }
     const auditRuns = await this.deps.audits.listRuns(run.tenantId, run.applicationPublicId);
     const previousAudit = auditRuns.at(-1);
     const auditFindings = previousAudit ? await this.deps.audits.listFindings(run.tenantId, previousAudit.publicId) : [];
@@ -635,11 +914,12 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       ...attestedTechnologies,
     ])];
 
-    const backend = await this.resolveBackend(run.tenantId, application?.metadata);
-    const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
+    await this.ensureExecutionBackendPersisted(run);
     let result: ResumeGenerationResult;
-    if (backend === "python") {
-      const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
+    // Python is the only backend — no TypeScript fallback
+    await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "python");
+    const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
+    {
       const client = getPythonIntelligenceClient();
       const context = {
         tenantId: run.tenantId,
@@ -719,8 +999,31 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         rejectedFindings: rejectedFindings as unknown as Array<Record<string, unknown>>,
         researchFindings,
         mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
-        refinementInstruction:
-          typeof run.payload.refinementInstruction === "string" ? run.payload.refinementInstruction : null,
+        refinementInstruction: isFinalQaRepair ? null : resolvedRefinementInstruction,
+        finalQaRepair: isFinalQaRepair
+          ? ((run.payload.finalQaRepairDirective as {
+              repairType: "final_qa_repair";
+              sourceVersion: number;
+              sourceVersionLabel?: string | null;
+              attempt: number;
+              failedChecks: Array<{ label: string; status: string; detail?: string }>;
+              approvedEvidenceIds?: string[];
+              groundedTargets?: string[];
+            } | undefined) ?? {
+              repairType: "final_qa_repair" as const,
+              sourceVersion: Number(repairSourceVersion),
+              sourceVersionLabel:
+                typeof run.payload.finalQaRepairSourceLabel === "string"
+                  ? String(run.payload.finalQaRepairSourceLabel)
+                  : `V${repairSourceVersion}`,
+              attempt: repairAttempt,
+              failedChecks: Array.isArray(run.payload.finalQaFailedChecks)
+                ? (run.payload.finalQaFailedChecks as Array<{ label: string; status: string; detail?: string }>)
+                : [],
+              approvedEvidenceIds: evidence.map((item) => item.publicId),
+              groundedTargets: evidenceTechnologies.slice(0, 8),
+            })
+          : null,
         jobRequirements,
         evidenceMatches,
         userConfirmations,
@@ -736,9 +1039,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           rawText: "",
           model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
           prompt: {
-            id: prompt.id,
-            version: py.promptVersion || prompt.version,
-            rubricVersion: prompt.rubricVersion,
+            id: versionNumber === 0 ? "resume-generation" : "resume-regeneration",
+            version: py.promptVersion || "python@v1",
+            rubricVersion: "candidarc-rubric@v1",
           },
           usage: {
             inputTokens: py.usage.inputTokens,
@@ -748,149 +1051,56 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           latencyMs: py.latencyMs,
         };
       } catch (error) {
-        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
-        const { mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
-        throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      result = await provider.generateStructured({
-      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: prompt.system,
-      user: JSON.stringify({
-        applicationPublicId: run.applicationPublicId,
-        versionNumber,
-        cycleBase,
-        storedVersionNumber,
-        jobDescription: application?.metadata?.jobDescription,
-        application: application?.metadata,
-        researchFindings: research?.findings ?? [],
-        researchSources: research?.sources ?? [],
-        evidence: evidence.map((item) => ({
-          id: item.publicId,
-          title: item.title,
-          organization: item.organization,
-          situation: item.situation,
-          task: item.task,
-          actions: item.actions,
-          result: item.result,
-          technologies: item.technologies,
-          confidence: item.confidence,
-          sourceType: item.sourceType,
-          claimText: item.claimText,
-          employerAssociation: item.employerAssociation,
-          projectAssociation: item.projectAssociation,
-          ...item.payload,
-        })),
-        previousVersion,
-        acceptedOrEditedAuditFindings: actionable,
-        mistakeMemory,
-        refinementInstruction: run.payload.refinementInstruction,
-      }),
-      schema: resumeSchema,
-      metadata: {
-        allowedEvidenceIds: evidence.map((item) => item.publicId),
-        allowedTechnologies: evidenceTechnologies,
-      },
-    });
-      if (backend === "shadow") {
-        const { shouldSampleShadow } = await import("../intelligence/python-client");
-        if (shouldSampleShadow(shadowSeed)) {
-          void (async () => {
-            try {
-              const { compareResumeShapes, getPythonIntelligenceClient } = await import(
-                "../intelligence/python-client"
-              );
-              const started = Date.now();
-              const py = await getPythonIntelligenceClient().generateResume({
-                context: {
-                  tenantId: run.tenantId,
-                  userId: application?.ownerUserId ?? "unknown",
-                  applicationId: run.applicationPublicId,
-                  workflowRunId: run.publicId,
-                  requestId: run.id,
-                },
-                absoluteVersion: storedVersionNumber,
-                cycleStep: versionNumber,
-                jobDescription: String(application?.metadata?.jobDescription ?? ""),
-                evidence: evidence.map((item) => ({
-                  id: item.publicId,
-                  tenantId: item.tenantId,
-                  ownerUserId: item.ownerUserId,
-                  title: item.title,
-                  organization: item.organization,
-                  situation: item.situation,
-                  task: item.task,
-                  actions: item.actions,
-                  result: item.result,
-                  technologies: item.technologies,
-                  confidence: item.confidence,
-                  sourceType: item.sourceType,
-                  claimText: item.claimText,
-                  employerAssociation: item.employerAssociation,
-                  projectAssociation: item.projectAssociation,
-                  verificationStatus: item.verificationStatus,
-                  candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-                  privacyLevel: item.privacyLevel,
-                  metrics: item.payload?.metrics,
-                  payload: item.payload,
-                })),
-                allowedTechnologies: evidenceTechnologies,
-                previousResume: previousVersion
-                  ? {
-                      versionNumber: previousVersion.versionNumber,
-                      score: previousVersion.score,
-                      scoreBreakdown: previousVersion.scoreBreakdown ?? {},
-                      notes: previousVersion.notes ?? "",
-                      sections: previousVersion.sections as Array<Record<string, unknown>>,
-                    }
-                  : null,
-                acceptedFindings: actionable as unknown as Array<Record<string, unknown>>,
-                rejectedFindings: auditFindings
-                  .filter((finding) => finding.status === "rejected")
-                  .map((finding) => finding as unknown as Record<string, unknown>),
-                researchFindings: Array.isArray(research?.findings)
-                  ? (research.findings as Array<Record<string, unknown>>)
-                  : [],
-                mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
-                refinementInstruction:
-                  typeof run.payload.refinementInstruction === "string" ? run.payload.refinementInstruction : null,
-                idempotencyKey: `shadow:${idempotencyKey}`,
-              });
-              const diff = compareResumeShapes(
-                result.data as { sections?: Array<Record<string, unknown>>; score?: number },
-                py.resume as { sections?: Array<Record<string, unknown>>; score?: number },
-                {
-                  tsLatencyMs: result.latencyMs,
-                  pyLatencyMs: py.latencyMs,
-                  tsEvidenceValidity: Number(result.data.scoreBreakdown.evidenceConfidence ?? 0),
-                  pyEvidenceValidity: Number(py.resume.scoreBreakdown.evidenceConfidence ?? 0),
-                },
-              );
-              logger.info(
-                {
-                  applicationPublicId: run.applicationPublicId,
-                  versionNumber,
-                  absoluteVersion: storedVersionNumber,
-                  shadowElapsedMs: Date.now() - started,
-                  ...diff,
-                },
-                "python shadow resume comparison (sanitized counts only)",
-              );
-            } catch (error) {
-              logger.warn(
-                { err: error, applicationPublicId: run.applicationPublicId, versionNumber },
-                "python shadow comparison failed",
-              );
-            }
-          })().catch((error) => {
-            logger.warn({ err: error }, "python shadow comparison promise rejected");
-          });
+        const mapped = mapPythonBackendErrorToAppError(error);
+        // Metadata re-emphasis on V4 is best-effort: if the visible resume already
+        // satisfies the instruction, continue without inventing further changes.
+        const metadataOnlyRetry =
+          mapped.code === "REFINEMENT_NOT_APPLICABLE" &&
+          !payloadRefinement &&
+          Boolean(metadataRefinement) &&
+          !isFinalQaRepair &&
+          versionNumber > 0;
+        if (!metadataOnlyRetry) {
+          logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
+          throw mapped;
         }
+        logger.info(
+          { applicationPublicId: run.applicationPublicId, versionNumber },
+          "metadata refinement already satisfied — regenerating without refinement",
+        );
+        const py = await client.regenerateResume({
+          ...generateInput,
+          refinementInstruction: null,
+        });
+        result = {
+          data: resumeSchema.parse(py.resume),
+          rawText: "",
+          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+          prompt: {
+            id: "resume-regeneration",
+            version: py.promptVersion || "python@v1",
+            rubricVersion: "candidarc-rubric@v1",
+          },
+          usage: {
+            inputTokens: py.usage.inputTokens,
+            outputTokens: py.usage.outputTokens,
+            estimatedCostCents: py.usage.estimatedCostCents,
+          },
+          latencyMs: py.latencyMs,
+        };
       }
     }
     await this.recordProviderUsage(run, usageKey, result);
 
-    if (versionNumber > 0 && previousVersion && actionable.length === 0) {
+    // Only restore previous sections when there is no refinement, no Final-QA repair,
+    // and no other explicit regeneration request with actionable findings already applied.
+    if (
+      versionNumber > 0 &&
+      previousVersion &&
+      actionable.length === 0 &&
+      !isFinalQaRepair &&
+      !hasRefinementInstruction
+    ) {
       result.data.sections = previousVersion.sections as typeof result.data.sections;
     }
 
@@ -909,27 +1119,75 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       });
     }
 
-    const version = await this.deps.resumes.appendVersion({
+    const versionPayload = () => ({
       id: newId("rv"),
       publicId: newId(`rvv${storedVersionNumber}`),
       tenantId: run.tenantId,
       resumeId: resume.id,
       versionNumber: storedVersionNumber,
-      versionLabel: `V${storedVersionNumber}`,
+      versionLabel,
       score: result.data.score,
       scoreBreakdown: result.data.scoreBreakdown,
       notes: result.data.notes,
-      triggeredBy,
+      triggeredBy: effectiveTriggeredBy,
       sections: withResumeProvenance(
         result.data.sections as Array<Record<string, unknown>>,
         storedVersionNumber,
       ),
       idempotencyKey,
-      promptVersion: prompt.version,
+      promptVersion: result.prompt.version,
     });
 
+    let version;
+    try {
+      version = await this.deps.resumes.appendVersion(versionPayload());
+    } catch (error) {
+      if (!isFinalQaRepair || !(error instanceof AppError) || error.code !== "RESUME_VERSION_CONFLICT") {
+        throw error;
+      }
+      // Concurrent repair safety: unique (resume_id, version_number) may race after allocate.
+      // Reuse by idempotency key, or reallocate and retry insert without a second provider call.
+      const existing = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
+      if (existing) {
+        version = existing;
+        storedVersionNumber = existing.versionNumber;
+      } else {
+        version = undefined;
+        for (let retry = 0; retry < 5; retry++) {
+          if (this.deps.resumes.allocateNextVersionNumber) {
+            storedVersionNumber = await this.deps.resumes.allocateNextVersionNumber(
+              run.tenantId,
+              resume.publicId,
+            );
+          } else {
+            const latestNums = (await this.deps.resumes.listVersions(run.tenantId, resume.publicId)).map(
+              (item) => item.versionNumber,
+            );
+            storedVersionNumber = (latestNums.length ? Math.max(...latestNums) : -1) + 1;
+          }
+          try {
+            version = await this.deps.resumes.appendVersion(versionPayload());
+            break;
+          } catch (retryError) {
+            if (!(retryError instanceof AppError) || retryError.code !== "RESUME_VERSION_CONFLICT") {
+              throw retryError;
+            }
+            const raced = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
+            if (raced) {
+              version = raced;
+              storedVersionNumber = raced.versionNumber;
+              break;
+            }
+          }
+        }
+        if (!version) {
+          throw new AppError("RESUME_VERSION_CONFLICT", "Unable to allocate Final QA repair version", 409);
+        }
+      }
+    }
+
     await this.deps.resumes.setCurrentVersion(run.tenantId, resume.publicId, version.publicId);
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
 
     const readyStage = `V${versionNumber}_READY` as WorkflowStage;
     await this.deps.engine.transition(run.id, readyStage, {
@@ -938,7 +1196,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       patch: {
         provider: result.model.provider,
         model: result.model.model,
-        promptVersion: prompt.version,
+        promptVersion: result.prompt.version,
         tokenUsage: {
           input: result.usage.inputTokens,
           output: result.usage.outputTokens,
@@ -964,8 +1222,11 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       "EM_AUDIT_2_RUNNING",
       "FINAL_QA_RUNNING",
     ][versionNumber] as WorkflowStage;
+    // Final-QA re-entry after repair must not be blocked by the prior FINAL_QA claim lease.
+    const nextPayload = isFinalQaRepair ? withoutStageClaims({ ...(run.payload ?? {}) }) : undefined;
     await this.deps.engine.transition(run.id, nextRunning, {
       message: versionNumber >= 4 ? "Final QA started automatically" : "Next audit started automatically",
+      ...(nextPayload ? { patch: { payload: nextPayload } } : {}),
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       stage: nextRunning,
@@ -986,9 +1247,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       producesVersion,
     });
 
-    const usageKey = await this.reserve(run, "audit", 1);
-    const provider = getProviderForRole(promptId.startsWith("hr-") ? "hr-audit" : "em-audit");
-    const prompt = getPrompt(promptId);
+    const usageKey = await this.reserve(run, "audit", 1, `audit:${promptId}:v${reviewsVersion}`);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const { evidence } = await this.listScopedEvidence(run);
     const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
@@ -1007,15 +1266,15 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     } as const;
     const lens = lensMap[promptId];
     const auditIdempotencyKey = `audit:${run.applicationPublicId}:${lens}:v${storedReviewsVersion}:${run.idempotencyKey}`;
-    const backend = await this.resolveBackend(run.tenantId, application?.metadata);
-    const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
+    await this.ensureExecutionBackendPersisted(run);
     let result: AuditGenerationResult;
-    if (backend === "python") {
-      const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-      const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
-      const client = getPythonIntelligenceClient();
-      try {
-        const py = await client.auditResume({
+    // Python is the only backend — no TypeScript fallback
+    await this.recordStageBackend(run, "audit", "python");
+    const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
+    const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
+    const client = getPythonIntelligenceClient();
+    try {
+      const py = await client.auditResume({
           context: {
             tenantId: run.tenantId,
             userId: application?.ownerUserId ?? "unknown",
@@ -1067,7 +1326,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           data: auditOutputSchema.parse(py.data),
           rawText: "",
           model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-          prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
+          prompt: { id: promptId, version: "python-audit@v1", rubricVersion: "candidarc-rubric@v1" },
           usage: {
             inputTokens: py.usage.inputTokens,
             outputTokens: py.usage.outputTokens,
@@ -1075,120 +1334,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           },
           latencyMs: py.latencyMs,
         };
-      } catch (error) {
-        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python audit failed");
-        const { mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
-        throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      result = await provider.generateStructured({
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        system: prompt.system,
-        user: JSON.stringify({
-          applicationPublicId: run.applicationPublicId,
-          reviewsVersion: storedReviewsVersion,
-          jobDescription: application?.metadata?.jobDescription,
-          resume: {
-            versionNumber: reviewedResume.versionNumber,
-            sections: reviewedResume.sections,
-            score: reviewedResume.score,
-          },
-          evidence: evidence.map((item) => ({
-            id: item.publicId,
-            title: item.title,
-            situation: item.situation,
-            task: item.task,
-            actions: item.actions,
-            result: item.result,
-            technologies: item.technologies,
-            payload: item.payload,
-          })),
-        }),
-        schema: auditSchema,
-        metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
-      });
-      if (backend === "shadow") {
-        const { shouldSampleShadow } = await import("../intelligence/python-client");
-        if (shouldSampleShadow(shadowSeed)) {
-          void (async () => {
-            try {
-              const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-              const started = Date.now();
-              const py = await getPythonIntelligenceClient().auditResume({
-                context: {
-                  tenantId: run.tenantId,
-                  userId: application?.ownerUserId ?? "unknown",
-                  applicationId: run.applicationPublicId,
-                  workflowRunId: run.publicId,
-                  requestId: run.id,
-                },
-                lens,
-                reviewsVersion: storedReviewsVersion,
-                producesVersion: storedProducesVersion,
-                resume: {
-                  versionNumber: reviewedResume.versionNumber,
-                  absoluteVersion: reviewedResume.versionNumber,
-                  cycleStep: reviewedResume.versionNumber % 5,
-                  score: reviewedResume.score,
-                  scoreBreakdown: reviewedResume.scoreBreakdown ?? {},
-                  notes: reviewedResume.notes ?? "",
-                  sections: reviewedResume.sections as Array<Record<string, unknown>>,
-                },
-                evidence: evidence.map((item) => ({
-                  id: item.publicId,
-                  tenantId: item.tenantId,
-                  ownerUserId: item.ownerUserId,
-                  title: item.title,
-                  organization: item.organization,
-                  situation: item.situation,
-                  task: item.task,
-                  actions: item.actions,
-                  result: item.result,
-                  technologies: item.technologies,
-                  confidence: item.confidence,
-                  sourceType: item.sourceType,
-                  claimText: item.claimText,
-                  employerAssociation: item.employerAssociation,
-                  projectAssociation: item.projectAssociation,
-                  verificationStatus: item.verificationStatus,
-                  candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-                  privacyLevel: item.privacyLevel,
-                  metrics: item.payload?.metrics,
-                  payload: item.payload,
-                })),
-                jobDescription: String(application?.metadata?.jobDescription ?? ""),
-                allowedTechnologies: claimableTechnologies(
-                  (application?.metadata?.techQuestions ?? []) as TechQuestion[],
-                ),
-                idempotencyKey: `shadow:${auditIdempotencyKey}`,
-              });
-              logger.info(
-                {
-                  applicationPublicId: run.applicationPublicId,
-                  lens,
-                  reviewsVersion: storedReviewsVersion,
-                  tsFindingCount: result.data.findings.length,
-                  pyFindingCount: py.data.findings.length,
-                  findingCountDiff: Math.abs(result.data.findings.length - py.data.findings.length),
-                  tsScoreAfter: result.data.scoreAfter,
-                  pyScoreAfter: py.data.scoreAfter,
-                  tsLatencyMs: result.latencyMs,
-                  pyLatencyMs: py.latencyMs,
-                  shadowElapsedMs: Date.now() - started,
-                },
-                "python shadow audit comparison (sanitized counts only)",
-              );
-            } catch (error) {
-              logger.warn(
-                { err: error, applicationPublicId: run.applicationPublicId, lens },
-                "python shadow audit comparison failed",
-              );
-            }
-          })().catch((error) => {
-            logger.warn({ err: error }, "python shadow audit comparison promise rejected");
-          });
-        }
-      }
+    } catch (error) {
+      logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python audit failed");
+      throw mapPythonBackendErrorToAppError(error);
     }
     await this.recordProviderUsage(run, usageKey, result);
 
@@ -1198,7 +1346,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         { expectedLens: expectedRule.lens, actualLens: result.data.lens, stage: run.stage },
         "audit lens mismatch — skipping invalid audit output",
       );
-      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
       const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
       await this.deps.engine.transition(run.id, nextStage, {
         message: "Skipped audit with mismatched lens",
@@ -1249,12 +1397,12 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       );
     }
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
 
     const reviewStage = run.stage.replace("_RUNNING", "_REVIEW") as WorkflowStage;
     await this.deps.engine.transition(run.id, reviewStage, {
       message: `${promptId} ready for review`,
-      patch: { promptVersion: prompt.version, provider: result.model.provider, model: result.model.model },
+      patch: { promptVersion: result.prompt.version, provider: result.model.provider, model: result.model.model },
     });
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       stage: reviewStage,
@@ -1392,171 +1540,166 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       throw new AppError("FINAL_QA_FAILED", "Final QA checks failed", 422, result.checks);
     }
 
-    const usageKey = await this.reserve(run, "final_review", 1);
-    const provider = getProviderForRole("final-review");
-    const prompt = getPrompt("final-qa");
+    // AI Final QA supplement - Python is the only backend
+    const finalQaOperationId = `final-qa:v${latest.versionNumber}`;
+    const usageKey = await this.reserve(run, "final_review", 1, finalQaOperationId);
+    await this.ensureExecutionBackendPersisted(run);
     const finalQaIdempotencyKey = `final-qa:${run.applicationPublicId}:v${latest.versionNumber}:${run.idempotencyKey}`;
-    const backend = await this.resolveBackend(run.tenantId, application?.metadata);
-    const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
     let supplement: FinalQaSupplementResult;
-    if (backend === "python") {
-      const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-      const { finalQaSchema: finalQaOutputSchema } = await import("../ai/schemas");
-      const client = getPythonIntelligenceClient();
-      try {
-        const py = await client.finalQa({
-          context: {
-            tenantId: run.tenantId,
-            userId: application?.ownerUserId ?? "unknown",
-            applicationId: run.applicationPublicId,
-            workflowRunId: run.publicId,
-            requestId: run.id,
-          },
-          resume: {
-            versionNumber: latest.versionNumber,
-            absoluteVersion: latest.versionNumber,
-            cycleStep: latest.versionNumber % 5,
-            score: latest.score,
-            scoreBreakdown: latest.scoreBreakdown ?? {},
-            notes: latest.notes ?? "",
-            sections: latest.sections as Array<Record<string, unknown>>,
-          },
-          evidence: evidence.map((item) => ({
-            id: item.publicId,
-            tenantId: item.tenantId,
-            ownerUserId: item.ownerUserId,
-            title: item.title,
-            organization: item.organization,
-            situation: item.situation,
-            task: item.task,
-            actions: item.actions,
-            result: item.result,
-            technologies: item.technologies,
-            confidence: item.confidence,
-            sourceType: item.sourceType,
-            claimText: item.claimText,
-            employerAssociation: item.employerAssociation,
-            projectAssociation: item.projectAssociation,
-            verificationStatus: item.verificationStatus,
-            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-            privacyLevel: item.privacyLevel,
-            metrics: item.payload?.metrics,
-            payload: item.payload,
-          })),
-          deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
-          allowedTechnologies: knownTechnologies,
-          idempotencyKey: finalQaIdempotencyKey,
-        });
-        supplement = {
-          data: finalQaOutputSchema.parse(py.data),
-          rawText: "",
-          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-          prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-          usage: {
-            inputTokens: py.usage.inputTokens,
-            outputTokens: py.usage.outputTokens,
-            estimatedCostCents: py.usage.estimatedCostCents,
-          },
-          latencyMs: py.latencyMs,
-        };
-      } catch (error) {
-        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python final QA failed");
-        const { mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
-        throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      supplement = await provider.generateStructured({
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        system: `${prompt.system}
-This is a supplement to deterministic checks. Do not claim deterministic or visual checks ran unless explicitly supplied.`,
-        user: JSON.stringify({
-          applicationPublicId: run.applicationPublicId,
-          resume: { versionNumber: latest.versionNumber, sections: latest.sections },
-          deterministicChecks: result,
-          evidenceIds: evidence.map((item) => item.publicId),
-        }),
-        schema: finalQaSchema,
-        metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
+
+    await this.recordStageBackend(run, "final-qa", "python");
+    const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
+    const { finalQaSchema: finalQaOutputSchema } = await import("../ai/schemas");
+    const client = getPythonIntelligenceClient();
+    try {
+      const py = await client.finalQa({
+        context: {
+          tenantId: run.tenantId,
+          userId: application?.ownerUserId ?? "unknown",
+          applicationId: run.applicationPublicId,
+          workflowRunId: run.publicId,
+          requestId: run.id,
+        },
+        resume: {
+          versionNumber: latest.versionNumber,
+          absoluteVersion: latest.versionNumber,
+          cycleStep: latest.versionNumber % 5,
+          score: latest.score,
+          scoreBreakdown: latest.scoreBreakdown ?? {},
+          notes: latest.notes ?? "",
+          sections: latest.sections as Array<Record<string, unknown>>,
+        },
+        evidence: evidence.map((item) => ({
+          id: item.publicId,
+          tenantId: item.tenantId,
+          ownerUserId: item.ownerUserId,
+          title: item.title,
+          organization: item.organization,
+          situation: item.situation,
+          task: item.task,
+          actions: item.actions,
+          result: item.result,
+          technologies: item.technologies,
+          confidence: item.confidence,
+          sourceType: item.sourceType,
+          claimText: item.claimText,
+          employerAssociation: item.employerAssociation,
+          projectAssociation: item.projectAssociation,
+          verificationStatus: item.verificationStatus,
+          candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+          privacyLevel: item.privacyLevel,
+          metrics: item.payload?.metrics,
+          payload: item.payload,
+        })),
+        deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
+        allowedTechnologies: knownTechnologies,
+        idempotencyKey: finalQaIdempotencyKey,
       });
-      if (backend === "shadow") {
-        const { shouldSampleShadow } = await import("../intelligence/python-client");
-        if (shouldSampleShadow(shadowSeed)) {
-          void (async () => {
-            try {
-              const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-              const started = Date.now();
-              const py = await getPythonIntelligenceClient().finalQa({
-                context: {
-                  tenantId: run.tenantId,
-                  userId: application?.ownerUserId ?? "unknown",
-                  applicationId: run.applicationPublicId,
-                  workflowRunId: run.publicId,
-                  requestId: run.id,
-                },
-                resume: {
-                  versionNumber: latest.versionNumber,
-                  absoluteVersion: latest.versionNumber,
-                  cycleStep: latest.versionNumber % 5,
-                  score: latest.score,
-                  scoreBreakdown: latest.scoreBreakdown ?? {},
-                  notes: latest.notes ?? "",
-                  sections: latest.sections as Array<Record<string, unknown>>,
-                },
-                evidence: evidence.map((item) => ({
-                  id: item.publicId,
-                  tenantId: item.tenantId,
-                  ownerUserId: item.ownerUserId,
-                  title: item.title,
-                  organization: item.organization,
-                  situation: item.situation,
-                  task: item.task,
-                  actions: item.actions,
-                  result: item.result,
-                  technologies: item.technologies,
-                  confidence: item.confidence,
-                  sourceType: item.sourceType,
-                  claimText: item.claimText,
-                  employerAssociation: item.employerAssociation,
-                  projectAssociation: item.projectAssociation,
-                  verificationStatus: item.verificationStatus,
-                  candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-                  privacyLevel: item.privacyLevel,
-                  metrics: item.payload?.metrics,
-                  payload: item.payload,
-                })),
-                deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
-                allowedTechnologies: knownTechnologies,
-                idempotencyKey: `shadow:${finalQaIdempotencyKey}`,
-              });
-              logger.info(
-                {
-                  applicationPublicId: run.applicationPublicId,
-                  versionNumber: latest.versionNumber,
-                  tsPassed: supplement.data.passed,
-                  pyPassed: py.data.passed,
-                  tsCheckCount: supplement.data.checks.length,
-                  pyCheckCount: py.data.checks.length,
-                  checkCountDiff: Math.abs(supplement.data.checks.length - py.data.checks.length),
-                  tsLatencyMs: supplement.latencyMs,
-                  pyLatencyMs: py.latencyMs,
-                  shadowElapsedMs: Date.now() - started,
-                },
-                "python shadow finalQa comparison (sanitized counts only)",
-              );
-            } catch (error) {
-              logger.warn(
-                { err: error, applicationPublicId: run.applicationPublicId },
-                "python shadow finalQa comparison failed",
-              );
-            }
-          })().catch((error) => {
-            logger.warn({ err: error }, "python shadow finalQa comparison promise rejected");
-          });
-        }
-      }
+      supplement = {
+        data: finalQaOutputSchema.parse(py.data),
+        rawText: "",
+        model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+        prompt: { id: "final-qa", version: "final-qa@python-v2", rubricVersion: "candidarc-rubric@v1" },
+        usage: {
+          inputTokens: py.usage.inputTokens,
+          outputTokens: py.usage.outputTokens,
+          estimatedCostCents: py.usage.estimatedCostCents,
+        },
+        latencyMs: py.latencyMs,
+      };
+    } catch (error) {
+      logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python final QA failed");
+      throw mapPythonBackendErrorToAppError(error);
     }
     await this.recordProviderUsage(run, usageKey, supplement);
-    await this.commit(usageKey, this.commitCostCents(supplement.usage.estimatedCostCents));
+    await this.commit(usageKey, this.commitCostCents(supplement.usage.estimatedCostCents), { tenantId: run.tenantId });
+
+    // Final QA authority: if AI final QA fails, attempt ONE bounded repair
+    if (supplement.data.passed === false) {
+      const repairAttempted = run.payload?.finalQaRepairAttempted === true;
+      if (repairAttempted) {
+        // Already attempted repair — fail permanently
+        logger.warn(
+          { applicationPublicId: run.applicationPublicId, checks: supplement.data.checks },
+          "Final QA failed after repair attempt",
+        );
+        await this.deps.engine.transition(run.id, "FINAL_QA_FAILED", {
+          status: "failed",
+          message: "Final QA failed after repair attempt",
+          patch: {
+            payload: {
+              ...run.payload,
+              failedAtStage: "FINAL_QA_RUNNING",
+              finalQaChecks: supplement.data.checks,
+              aiFinalQaFailed: true,
+            },
+          },
+        });
+        await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+          stage: "FINAL_QA_FAILED",
+          workflowStage: "FINAL_QA_FAILED",
+          status: "failed",
+          nextAction: "Resume quality checks failed. Please review and retry.",
+        });
+        throw new AppError("FINAL_QA_FAILED", "Final QA checks failed after repair attempt", 422, supplement.data.checks);
+      }
+
+      // Attempt bounded repair: create a new immutable V4R1 revision from failed V4
+      logger.info(
+        { applicationPublicId: run.applicationPublicId, failedChecks: supplement.data.checks.filter((c) => c.status !== "pass") },
+        "Final QA failed — attempting bounded repair",
+      );
+      const failedChecks = supplement.data.checks.filter((check) => check.status !== "pass");
+      const failedCheckSummary = failedChecks
+        .map((check) => `${check.label}: ${check.detail}`)
+        .join("; ");
+      const checksHash = hashFinalQaChecks(supplement.data.checks);
+      const finalQaRepairDirective = {
+        repairType: "final_qa_repair" as const,
+        sourceVersion: latest.versionNumber,
+        sourceVersionLabel: latest.versionLabel,
+        attempt: 1,
+        failedChecks: failedChecks.map((check) => ({
+          label: check.label,
+          status: check.status,
+          detail: check.detail,
+        })),
+        approvedEvidenceIds: evidence.map((item) => item.publicId),
+        groundedTargets: knownTechnologies.slice(0, 8),
+      };
+
+      const repairPayload = withoutStageClaims({
+        ...run.payload,
+        finalQaRepairAttempted: true,
+        finalQaRepairAttempt: 1,
+        finalQaRepairSourceVersion: latest.versionNumber,
+        finalQaRepairSourcePublicId: latest.publicId,
+        finalQaRepairSourceLabel: latest.versionLabel,
+        finalQaRepairChecksHash: checksHash,
+        finalQaRepairReason: failedCheckSummary,
+        finalQaFailedChecks: supplement.data.checks,
+        finalQaRepairDirective,
+        // Version number allocated under lock at generation time
+        finalQaRepairVersionNumber: undefined,
+        // Never smuggle repair through free-form refinement_instruction
+        refinementInstruction: undefined,
+      });
+
+      await this.deps.workflows.updateRun(run.id, { payload: repairPayload });
+
+      await this.deps.engine.transition(run.id, "V4_GENERATING", {
+        status: "running",
+        message: `Bounded repair: generating V4R1 from failed V${latest.versionNumber}`,
+        patch: { payload: repairPayload },
+      });
+      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+        stage: "V4_GENERATING",
+        workflowStage: "V4_GENERATING",
+        status: "resume",
+        nextAction: "Regenerating to fix quality issues",
+      });
+      return; // Let the regeneration stage handle the next steps
+    }
 
     await this.deps.engine.transition(run.id, "FINAL_READY", {
       message: "Final QA passed",

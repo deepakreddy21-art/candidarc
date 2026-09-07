@@ -163,6 +163,7 @@ export const usageKindEnum = pgEnum("usage_kind", [
   "input_tokens",
   "output_tokens",
   "provider_cost",
+  "final_review",
 ]);
 
 export const outboxStatusEnum = pgEnum("outbox_status", [
@@ -1237,7 +1238,12 @@ export const usageLedger = pgTable(
   },
   (t) => [
     uniqueIndex("usage_ledger_public_id_uidx").on(t.publicId),
-    uniqueIndex("usage_ledger_idempotency_uidx").on(t.idempotencyKey),
+    // Composite index for tenant-scoped queries: WHERE tenant_id = $1 AND idempotency_key = $2
+    uniqueIndex("usage_ledger_tenant_idempotency_uidx").on(t.tenantId, t.idempotencyKey),
+    // Global unique index: safe because all keys are tenant-prefixed (${tenantId}:...)
+    // Enables efficient lookups by key alone when the app knows the key is correctly scoped.
+    // See migration 0011_usage_ledger_idempotency_expand_contract.sql for expand/contract strategy.
+    uniqueIndex("usage_ledger_idempotency_key_global_uidx").on(t.idempotencyKey),
     index("usage_ledger_tenant_idx").on(t.tenantId),
     index("usage_ledger_created_idx").on(t.createdAt),
   ],

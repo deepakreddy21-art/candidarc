@@ -1,35 +1,45 @@
 # Python resume-intelligence production rollout
 
-**Default remains:** `RESUME_INTELLIGENCE_BACKEND=typescript`.
+**Status:** Python is the ONLY supported backend. `RESUME_INTELLIGENCE_BACKEND=python` is the only valid value.
 
-Do **not** enable Python for customers until every gate below passes. Rollback is an **env flag flip only** — never roll back or delete migrations.
+TypeScript and shadow modes have been removed from the resume pipeline. There is no fallback — if Python fails, the resume generation fails.
 
-## Actual routing mechanisms (truthful)
+## Current routing (Python-only)
 
 These are the mechanisms implemented in `server/config/env.ts`, `server/intelligence/python-client.ts`, and `server/workflows/resume-pipeline.ts`:
 
 | Mechanism | Behavior |
 | --- | --- |
-| Global kill switch | `RESUME_INTELLIGENCE_BACKEND=typescript` forces TypeScript for **all** tenants. This is the instant rollback. |
-| Env mode + allowlist | When env is `python` or `shadow`, only tenants listed in `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST` (comma-separated ids) get that mode. Others stay on TypeScript. |
-| Tenant metadata override | Tenant metadata key `resumeIntelligenceBackend` (`typescript` \| `python` \| `shadow`) overrides allowlist routing when the global env is **not** the typescript kill switch. |
-| Deterministic shadow sampling | `shouldSampleShadow(seed)` uses `sha256(seed)[0] % 100 < SHADOW_SAMPLE_PERCENT` — **not** `Math.random()`. Seed is typically `tenantId:applicationPublicId:workflowRunPublicId`. |
-| Shadow coverage | When backend resolves to `shadow` and the seed is sampled, the pipeline fire-and-forgets Python calls for **generate**, **audit**, and **final QA**. Results are comparison logs only (sanitized counts/scores/latency). Customer-facing output stays TypeScript. Shadow calls use `shadow:` idempotency keys and are **non-billable** (no customer usage commit for the shadow path). |
-| Unknown cost | Provider usage with missing/unknown `estimatedCostCents` is **not billed** as `$0` — `commit` skips the `provider_cost` line when cost is null/`costUnknown`. |
-| Pricing table | Python estimates use `candidarc-pricing@v2` (`services/python-backend/app/core/pricing.py`). Rates are observability estimates and **require review** before any production billing. |
+| Python-only backend | `RESUME_INTELLIGENCE_BACKEND` only accepts `"python"`. Setting `"typescript"` or `"shadow"` causes a Zod validation error at startup. |
+| No allowlist needed | `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST` is deprecated and ignored. All tenants use Python. |
+| No shadow mode | Shadow comparison code has been removed. `SHADOW_SAMPLE_PERCENT` is deprecated and ignored. |
+| Authoritative Python stages | The pipeline uses FastAPI for **parse**, **research synthesize**, **evidence match**, **generate/regenerate**, **HR/EM audits**, and **final QA**. TypeScript still owns source collection, orchestration, persistence, billing, and PDF/DOCX. |
+| Stage metadata | Workflow events record `{ executionBackend: "python", operation }` for each intelligence stage. |
+| Execution backend persisted | On workflow start, `executionBackend: "python"` and `intelligenceContractVersion` are persisted in run payload to ensure consistency across stages. |
+| Final QA authority | If AI final QA fails, the pipeline attempts ONE bounded repair: regenerate with refinement instruction summarizing failed checks, then re-run Final QA. If still fails, transition to `FINAL_QA_FAILED`. No FINAL_READY without passing QA. |
+| Unknown cost | Provider usage with missing/unknown cost writes a non-billable `costStatus: "unknown"` marker. |
+| Pricing table | Python estimates use `candidarc-pricing@v2` (`services/python-backend/app/core/pricing.py`). |
+| Usage isolation | Usage ledger lookups/updates are scoped by `(tenant_id, idempotency_key)`. |
 
-## Executable sequence
+## Breaking changes from cutover
 
-1. **TypeScript baseline** — Confirm production traffic is healthy on the TypeScript pipeline (`RESUME_INTELLIGENCE_BACKEND=typescript`). Capture baseline truthfulness, error rate, P95 latency, token cost, and quality scores.
-2. **Apply forward-compatible migrations** — Ship schema migrations (including evidence embeddings / pgvector) via the TypeScript/Drizzle path. Migrations are additive and forward-compatible; **do not delete or roll them back**.
-3. **Deploy Python dark** — Deploy the Python backend with service token, Redis, and `EVIDENCE_STORE=postgres`, but keep customer traffic on TypeScript (`RESUME_INTELLIGENCE_BACKEND=typescript`, `SHADOW_SAMPLE_PERCENT=0`, empty allowlist).
-4. **Readiness / schema checks** — Verify `/health/live`, `/health/ready`, pgvector extension, and evidence tables. Confirm embedding dimensions match config (**1536**). Fail closed if the store is unavailable. CI job `python-pgvector` runs the Postgres evidence-store suite with `RUN_PGVECTOR_TESTS=1` (skips are failures).
-5. **Shadow for approved tenants** — Set `RESUME_INTELLIGENCE_BACKEND=shadow`, populate `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST`, set `SHADOW_SAMPLE_PERCENT=1` (then 10). Shadow never charges customers and never serves Python output.
-6. **Compare gates** — Side-by-side vs TypeScript baseline on unsupported-claim / truthfulness rate, error rate, P95 latency, token cost / cost per resume, audit acceptance, final QA pass rate.
-7. **Internal Python canary** — Route allowlisted internal tenants to Python (`RESUME_INTELLIGENCE_BACKEND=python` + allowlist, and/or tenant metadata `resumeIntelligenceBackend=python`).
-8. **Small customer canary** — Single-digit % of eligible customer traffic (allowlist / metadata), with stop thresholds armed.
-9. **Gradual ramp** — Expand allowlist / metadata cohort only while all gates stay green.
-10. **Full Python** — Broaden only after sustained green gates. Keep TypeScript deployable for instant rollback via the global kill switch.
+1. **No TypeScript fallback** — If Python backend is unavailable, resume generation fails with `PYTHON_BACKEND_UNAVAILABLE`.
+2. **No kill switch** — `RESUME_INTELLIGENCE_BACKEND=typescript` is no longer valid. To roll back, deploy a previous version of the application.
+3. **No shadow comparison** — Shadow mode code has been removed. Comparison metrics are no longer collected.
+4. **Final QA is authoritative** — Resumes that fail AI Final QA (after deterministic checks pass) get ONE repair attempt. If still failing, they go to `FINAL_QA_FAILED` and cannot be downloaded.
+
+## Deprecated environment variables
+
+These environment variables are still accepted for backward compatibility but are ignored:
+
+- `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST` — All tenants use Python
+- `SHADOW_SAMPLE_PERCENT` — Shadow mode removed
+
+## Operational requirements
+
+1. **Python backend must be available** — The FastAPI backend at `PYTHON_BACKEND_URL` must be healthy for resume generation to work.
+2. **Production token required** — `PYTHON_BACKEND_TOKEN` must be a non-dev secret (at least 24 characters, not starting with "dev-") in production.
+3. **Evidence store** — Production requires `EVIDENCE_STORE=postgres` with pgvector extension.
 
 ## Stop / rollback thresholds
 
@@ -52,6 +62,35 @@ These are the mechanisms implemented in `server/config/env.ts`, `server/intellig
 4. Leave Python dark or scaled down for forensics.
 5. **Do not** roll back, delete, or reverse schema migrations.
 6. Keep `SHADOW_SAMPLE_PERCENT=0` until the incident is understood.
+
+## Migration compatibility and rollback safety
+
+### Usage ledger idempotency key strategy (migration 0011)
+
+The usage ledger uses **tenant-prefixed idempotency keys** (`${tenantId}:...`) to ensure global uniqueness. This enables two indexing strategies:
+
+| Index | Purpose | Safe to drop? |
+| --- | --- | --- |
+| `(tenant_id, idempotency_key)` composite | Tenant-scoped queries | No — required for RLS and tenant isolation |
+| `(idempotency_key)` global | Efficient lookups when key is already scoped | Only if all code uses composite lookups |
+
+**Rollback rules:**
+- ✅ Rolling back **application code** to pre-cutover that queries only by idempotency_key is safe — keys are tenant-prefixed, so global uniqueness is maintained.
+- ⚠️ Rolling back **schema** by dropping the global unique index requires verifying all code uses composite lookups.
+- ❌ Never roll back migrations that enforce tenant isolation without understanding the prefixing strategy.
+- 📌 Git tag is NOT a DB rollback — migrations are forward-only.
+
+### Transactional usage commit (commitReservedWithCost)
+
+The `commitReservedWithCost` method ensures atomicity:
+1. SELECT reservation FOR UPDATE (row-level lock)
+2. UPDATE status to committed
+3. INSERT cost observation row ON CONFLICT DO NOTHING
+4. COMMIT or ROLLBACK atomically
+
+**Crash safety:** If the process crashes mid-transaction, Postgres rolls back the entire transaction. We never leave a committed reservation without a corresponding cost observation row.
+
+**Idempotency:** If already committed, returns existing reservation + existing cost row without modification.
 
 ## Evidence store
 
@@ -84,14 +123,14 @@ CI lint job runs `npm audit --audit-level=high` (fails on high + critical). Curr
 
 ## Docker smoke
 
-`npm run smoke:docker` requires the full compose stack: postgres, redis, minio, migrate, python-backend, web, worker. It waits for Python readiness and web `/api/v1/health`, runs an in-container mock V0–V4 lifecycle (`scripts/smoke_lifecycle.py` with service token), restarts the worker and checks it recovers, then tears down. Compose smoke sets `RESUME_INTELLIGENCE_BACKEND=python` for web/worker; `.env.example` default remains `typescript`.
+`npm run smoke:docker` requires the full compose stack: postgres, redis, minio, migrate, python-backend, web, worker. It waits for Python readiness and web `/api/v1/health`, runs an in-container mock V0–V4 lifecycle (`scripts/smoke_lifecycle.py` with service token), restarts the worker and checks it recovers, then tears down. Compose smoke sets `RESUME_INTELLIGENCE_BACKEND=python` for web/worker.
 
 Authenticated PDF download remains covered by `test:production` / e2e (not smoke).
 
 ## Related defaults
 
-- `RESUME_INTELLIGENCE_BACKEND=typescript`
-- `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST=` (empty)
-- `SHADOW_SAMPLE_PERCENT=0`
+- `RESUME_INTELLIGENCE_BACKEND=python` (only valid value)
+- `PYTHON_INTELLIGENCE_TENANT_ALLOWLIST=` (deprecated, ignored)
+- `SHADOW_SAMPLE_PERCENT=0` (deprecated, ignored)
 - `AI_MODE=mock` locally / CI; live keys only in staging+ with secrets
 - Docker compose smoke: full stack with `EVIDENCE_STORE=postgres` and Python intelligence for web/worker

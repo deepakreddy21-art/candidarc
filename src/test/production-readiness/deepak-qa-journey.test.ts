@@ -4,7 +4,7 @@
  * Uses real services, workflow engine, mock AI, and in-process queues.
  * Does not invent claims, weaken QA, or special-case candidate identity in product code.
  */
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { createHash } from "crypto";
@@ -26,6 +26,7 @@ import { AUDIT_SEQUENCE } from "../../../server/domain/types";
 import { hashPassword } from "../../../server/auth/password";
 import { resetEnvCache } from "../../../server/config/env";
 import { resetDbCache } from "../../../server/database/client";
+import { installMockPythonIntelligence } from "../helpers/mock-python-intelligence";
 
 const FORBIDDEN_PII = [
   Buffer.from("MzEyLTQ1OS05ODY5", "base64").toString("utf8"),
@@ -318,14 +319,17 @@ describe("Deepak QA production readiness journey", () => {
     process.env.CANDIDARC_DATA_MODE = "memory";
     process.env.QUEUE_BACKEND = "inprocess";
     process.env.SESSION_SECRET = "candidarc-dev-session-secret-change-me!!";
+    process.env.RESUME_INTELLIGENCE_BACKEND = "python";
     resetEnvCache();
     resetDbCache();
+    installMockPythonIntelligence({ evidenceId: "ev_deepak_1" });
     storageDir = mkdtempSync(join(tmpdir(), "candidarc-qa-"));
     process.env.STORAGE_LOCAL_PATH = storageDir;
     storage = new LocalFilesystemStorage(storageDir);
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (storageDir && existsSync(storageDir)) rmSync(storageDir, { recursive: true, force: true });
   });
 
