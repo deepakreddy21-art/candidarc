@@ -36,13 +36,13 @@ export const envSchema = z.object({
   OPENAI_GENERATION_MODEL: z.string().default("gpt-4o-mini"),
   ANTHROPIC_AUDIT_MODEL: z.string().default("claude-sonnet-4-20250514"),
   OPENAI_FINAL_MODEL: z.string().default("gpt-4o-mini"),
-  /** typescript = current TS pipeline; shadow = compare Python without customer effect; python = Python authoritative for intelligence. */
-  RESUME_INTELLIGENCE_BACKEND: z.enum(["typescript", "python", "shadow"]).default("typescript"),
+  /** Python is the ONLY supported backend for resume intelligence. typescript/shadow are no longer valid. */
+  RESUME_INTELLIGENCE_BACKEND: z.literal("python").default("python"),
   PYTHON_BACKEND_URL: z.string().default("http://127.0.0.1:8090"),
   PYTHON_BACKEND_TOKEN: z.string().default("dev-python-backend-token-change-me"),
-  /** Percent of shadow-mode stages that also call Python for comparison metrics (0–100). */
+  /** @deprecated Shadow mode removed. Kept for config compat — ignored at runtime. */
   SHADOW_SAMPLE_PERCENT: z.coerce.number().min(0).max(100).default(0),
-  /** Comma-separated tenant ids allowed to use python/shadow when env mode is python or shadow. Empty = none. */
+  /** @deprecated Allowlist removed. All tenants use Python. Kept for config compat — ignored at runtime. */
   PYTHON_INTELLIGENCE_TENANT_ALLOWLIST: z.string().default(""),
   WORKFLOW_ENGINE: z.enum(["db", "temporal"]).default("db"),
   TEMPORAL_ADDRESS: z.string().default("localhost:7233"),
@@ -109,15 +109,12 @@ export function assertSafeRuntime(env: Env): void {
     if (env.SESSION_SECRET === DEMO_SESSION_SECRET) unsafe.push("demo SESSION_SECRET");
     if (env.SESSION_SECRET.length < 32) unsafe.push("SESSION_SECRET must be at least 32 characters");
     if (env.MALWARE_SCANNER !== "clamav") unsafe.push("MALWARE_SCANNER must be clamav in production");
-    const pythonOrShadow =
-      env.RESUME_INTELLIGENCE_BACKEND === "python" || env.RESUME_INTELLIGENCE_BACKEND === "shadow";
-    if (pythonOrShadow) {
-      if (env.PYTHON_BACKEND_TOKEN.startsWith("dev-") || env.PYTHON_BACKEND_TOKEN.length < 24) {
-        unsafe.push("PYTHON_BACKEND_TOKEN must be a non-dev secret for production python/shadow mode");
-      }
-      if (isObviouslyPublicExfilUrl(env.PYTHON_BACKEND_URL)) {
-        unsafe.push("PYTHON_BACKEND_URL looks like a public exfiltration endpoint");
-      }
+    // Python is the only backend — always validate its configuration in production.
+    if (env.PYTHON_BACKEND_TOKEN.startsWith("dev-") || env.PYTHON_BACKEND_TOKEN.length < 24) {
+      unsafe.push("PYTHON_BACKEND_TOKEN must be a non-dev secret for production");
+    }
+    if (isObviouslyPublicExfilUrl(env.PYTHON_BACKEND_URL)) {
+      unsafe.push("PYTHON_BACKEND_URL looks like a public exfiltration endpoint");
     }
   }
   if (production || env.AI_MODE === "live") {

@@ -1,4 +1,3 @@
-import { getProviderForRole } from "../ai";
 import { getPrompt } from "../ai/prompt-registry";
 import {
   auditSchema,
@@ -33,7 +32,6 @@ import { claimableTechnologies, extractTechQuestions, hasUnansweredTechQuestions
 import { computeCandidArcQualityScore } from "../resumes/quality-score";
 import {
   applyJobExtractionToApplication,
-  extractJobFromText,
   fetchJobDescriptionFromUrl,
   isPlaceholderIdentity,
   PLACEHOLDER_COMPANY,
@@ -214,43 +212,37 @@ export class ResumePipeline {
     return hasUnansweredTechQuestions(questions);
   }
 
+  /**
+   * Atomically commit a usage reservation and create a cost observation row.
+   * Uses the transactional commitReservedWithCost method to ensure atomicity.
+   *
+   * This prevents leaving a committed reservation without a cost observation row,
+   * even if the process crashes mid-commit (Postgres rolls back the transaction).
+   */
   private async commit(key: string, costCents: string | null, opts?: { tenantId?: string; billable?: boolean }) {
     const tenantId = opts?.tenantId;
     if (!tenantId) {
       // Legacy callers must pass tenant — look up is unsafe without it.
       throw new AppError("USAGE_TENANT_REQUIRED", "tenantId required to commit usage", 500);
     }
+
+    // Look up the entry to get userId and workflowRunId for the cost row
     const entry = await this.deps.usage.findByIdempotency(tenantId, key);
     if (!entry) return;
     if (entry.tenantId !== tenantId) {
       throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
     }
-    await this.deps.usage.updateStatus(tenantId, key, "committed");
+
     const billable = opts?.billable !== false;
-    if (costCents == null) {
-      await this.deps.usage.append({
-        tenantId: entry.tenantId,
-        userId: entry.userId,
-        kind: "provider_cost",
-        units: "0",
-        costCents: "0",
-        workflowRunId: entry.workflowRunId,
-        idempotencyKey: `${key}:cost-unknown`,
-        status: "committed",
-        metadata: { costStatus: "unknown", billable: false },
-      });
-      return;
-    }
-    await this.deps.usage.append({
-      tenantId: entry.tenantId,
-      userId: entry.userId,
-      kind: "provider_cost",
-      units: "0",
-      costCents,
+
+    // Use transactional commit to ensure reservation and cost row are written atomically
+    await this.deps.usage.commitReservedWithCost({
+      tenantId,
+      idempotencyKey: key,
+      costCents: costCents == null ? null : costCents,
+      userId: entry.userId ?? "",
       workflowRunId: entry.workflowRunId,
-      idempotencyKey: `${key}:cost`,
-      status: "committed",
-      metadata: { costStatus: "known", billable },
+      metadata: costCents == null ? { billable: false } : { billable },
     });
   }
 
@@ -328,15 +320,25 @@ export class ResumePipeline {
     return estimatedCostCents == null ? null : String(estimatedCostCents);
   }
 
-  private async resolveBackend(tenantId: string) {
-    const { resolveIntelligenceBackendForTenant } = await import("../intelligence/python-client");
-    return resolveIntelligenceBackendForTenant({ tenantId });
+  /**
+   * Persist execution backend metadata on workflow start or first intelligence stage.
+   * This ensures the backend cannot change mid-run.
+   */
+  private async ensureExecutionBackendPersisted(run: WorkflowRunRecord) {
+    if (run.payload?.executionBackend) return; // Already persisted
+    await this.deps.workflows.updateRun(run.id, {
+      payload: {
+        ...run.payload,
+        executionBackend: "python",
+        intelligenceContractVersion: "2026-09-resume-intelligence.v1",
+      },
+    });
   }
 
   private async recordStageBackend(
     run: WorkflowRunRecord,
     operation: "parse" | "research" | "match" | "generate" | "regenerate" | "audit" | "final-qa",
-    executionBackend: "typescript" | "python",
+    executionBackend: "python",
   ) {
     await this.deps.workflows.appendEvent({
       workflowRunId: run.id,
@@ -373,35 +375,27 @@ export class ResumePipeline {
         }
       }
       if (jobDescription.trim()) {
-        const backend = await this.resolveBackend(run.tenantId);
+        // Python is the only backend — always use Python for job parsing
+        const { getPythonIntelligenceClient, mapPythonJobParseToExtraction, mapPythonBackendErrorToAppError } =
+          await import("../intelligence/python-client");
         let extraction;
-        if (backend === "python") {
-          const { getPythonIntelligenceClient, mapPythonJobParseToExtraction, mapPythonBackendErrorToAppError } =
-            await import("../intelligence/python-client");
-          try {
-            await this.recordStageBackend(run, "parse", "python");
-            const parsed = await getPythonIntelligenceClient().parseJob({
-              context: {
-                tenantId: run.tenantId,
-                userId: application.ownerUserId ?? "unknown",
-                applicationId: run.applicationPublicId,
-                workflowRunId: run.publicId,
-                requestId: run.id,
-              },
-              jobText: jobDescription,
-              company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
-              role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
-            });
-            extraction = mapPythonJobParseToExtraction(parsed);
-          } catch (error) {
-            throw mapPythonBackendErrorToAppError(error);
-          }
-        } else {
-          await this.recordStageBackend(run, "parse", "typescript");
-          extraction = await extractJobFromText(jobDescription, {
+        try {
+          await this.recordStageBackend(run, "parse", "python");
+          const parsed = await getPythonIntelligenceClient().parseJob({
+            context: {
+              tenantId: run.tenantId,
+              userId: application.ownerUserId ?? "unknown",
+              applicationId: run.applicationPublicId,
+              workflowRunId: run.publicId,
+              requestId: run.id,
+            },
+            jobText: jobDescription,
             company: application.company !== PLACEHOLDER_COMPANY ? application.company : undefined,
             role: application.role !== PLACEHOLDER_ROLE ? application.role : undefined,
           });
+          extraction = mapPythonJobParseToExtraction(parsed);
+        } catch (error) {
+          throw mapPythonBackendErrorToAppError(error);
         }
         const applied = applyJobExtractionToApplication(application, extraction);
         application = await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
@@ -450,7 +444,7 @@ export class ResumePipeline {
     }
 
     const usageKey = await this.reserve(run, "research", 1);
-    const backend = await this.resolveBackend(run.tenantId);
+    await this.ensureExecutionBackendPersisted(run);
     const jobDescription = typeof application.metadata?.jobDescription === "string"
       ? application.metadata.jobDescription
       : "";
@@ -476,82 +470,62 @@ export class ResumePipeline {
     };
     let promptVersion = "research-synthesis";
 
-    if (backend === "python") {
-      const {
-        getPythonIntelligenceClient,
-        mapPythonResearchToTs,
-        mapPythonBackendErrorToAppError,
-        mapProviderUsage,
-      } = await import("../intelligence/python-client");
-      try {
-        await this.recordStageBackend(run, "research", "python");
-        const started = Date.now();
-        const py = await getPythonIntelligenceClient().synthesizeResearch({
-          context: {
-            tenantId: run.tenantId,
-            userId: application.ownerUserId ?? "unknown",
-            applicationId: run.applicationPublicId,
-            workflowRunId: run.publicId,
-            requestId: run.id,
-          },
-          company: application.company,
-          role: application.role,
-          jobDescription,
-          sources: collectedSources.map((source) => ({
-            id: source.id,
-            url: source.url,
-            title: source.title,
-            accessed_at: source.accessedAt,
-            supporting_text: source.excerpt,
-            confidence: source.confidence,
-            classification: "explicit",
-          })),
-        });
-        const mapped = mapPythonResearchToTs(py);
-        const usage = mapProviderUsage({
-          provider: "python",
-          model: "research-synthesize",
-          prompt_version: "research@python-v1",
-          latency_ms: Date.now() - started,
-          input_tokens: 0,
-          output_tokens: 0,
-          estimated_cost_cents: null,
-        });
-        result = {
-          data: mapped,
-          model: { provider: "python", model: "research-synthesize" },
-          prompt: { version: "research@python-v1" },
-          usage: {
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            estimatedCostCents: usage.estimatedCostCents,
-            costUnknown: usage.costUnknown,
-          },
-          latencyMs: Date.now() - started,
-        };
-        promptVersion = "research@python-v1";
-      } catch (error) {
-        throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      await this.recordStageBackend(run, "research", "typescript");
-      const provider = getProviderForRole("generation");
-      const prompt = getPrompt("research-synthesis");
-      promptVersion = prompt.version;
-      result = await provider.generateStructured({
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        system: `${prompt.system}
-Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims without direct source support must be classified as inferred or uncertain.`,
-        user: JSON.stringify({
-          applicationPublicId: run.applicationPublicId,
-          company: application.company,
-          role: application.role,
-          jobUrl,
-          jobDescription,
-          collectedSources,
-        }),
-        schema: researchSchema,
+    // Python is the only backend — no TypeScript fallback
+    const {
+      getPythonIntelligenceClient,
+      mapPythonResearchToTs,
+      mapPythonBackendErrorToAppError,
+      mapProviderUsage,
+    } = await import("../intelligence/python-client");
+    try {
+      await this.recordStageBackend(run, "research", "python");
+      const started = Date.now();
+      const py = await getPythonIntelligenceClient().synthesizeResearch({
+        context: {
+          tenantId: run.tenantId,
+          userId: application.ownerUserId ?? "unknown",
+          applicationId: run.applicationPublicId,
+          workflowRunId: run.publicId,
+          requestId: run.id,
+        },
+        company: application.company,
+        role: application.role,
+        jobDescription,
+        sources: collectedSources.map((source) => ({
+          id: source.id,
+          url: source.url,
+          title: source.title,
+          accessed_at: source.accessedAt,
+          supporting_text: source.excerpt,
+          confidence: source.confidence,
+          classification: "explicit",
+        })),
       });
+      const mapped = mapPythonResearchToTs(py);
+      const usage = mapProviderUsage({
+        provider: "python",
+        model: "research-synthesize",
+        prompt_version: "research@python-v1",
+        latency_ms: Date.now() - started,
+        input_tokens: 0,
+        output_tokens: 0,
+        estimated_cost_cents: null,
+      });
+      result = {
+        data: mapped,
+        model: { provider: "python", model: "research-synthesize" },
+        prompt: { version: "research@python-v1" },
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          estimatedCostCents: usage.estimatedCostCents,
+          costUnknown: usage.costUnknown,
+        },
+        latencyMs: Date.now() - started,
+      };
+      promptVersion = "research@python-v1";
+    } catch (error) {
+      throw mapPythonBackendErrorToAppError(error);
     }
     const candidateEvidence = (await this.listScopedEvidence(run)).evidence;
     const techQuestions = extractTechQuestions({
@@ -692,7 +666,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
 
   private async runEvidenceMatching(run: WorkflowRunRecord) {
     const usageKey = await this.reserve(run, "research", 1);
-    const backend = await this.resolveBackend(run.tenantId);
+    await this.ensureExecutionBackendPersisted(run);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     const { evidence } = await this.listScopedEvidence(run);
@@ -711,104 +685,76 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     };
     let promptVersion = "evidence-matching";
 
-    if (backend === "python") {
-      const {
-        getPythonIntelligenceClient,
-        mapPythonEvidenceMatchToTs,
-        mapPythonBackendErrorToAppError,
-        mapProviderUsage,
-      } = await import("../intelligence/python-client");
-      try {
-        await this.recordStageBackend(run, "match", "python");
-        const started = Date.now();
-        const py = await getPythonIntelligenceClient().matchEvidence({
-          context: {
-            tenantId: run.tenantId,
-            userId: application?.ownerUserId ?? "unknown",
-            applicationId: run.applicationPublicId,
-            workflowRunId: run.publicId,
-            requestId: run.id,
-          },
-          requirements: requirements.length ? requirements : ["general platform engineering"],
-          evidence: evidence.map((item) => ({
-            id: item.publicId,
-            tenantId: item.tenantId,
-            ownerUserId: item.ownerUserId,
-            title: item.title,
-            organization: item.organization,
-            situation: item.situation,
-            task: item.task,
-            actions: item.actions,
-            result: item.result,
-            technologies: item.technologies,
-            confidence: item.confidence,
-            sourceType: item.sourceType,
-            claimText: item.claimText,
-            employerAssociation: item.employerAssociation,
-            projectAssociation: item.projectAssociation,
-            verificationStatus: item.verificationStatus,
-            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-            privacyLevel: item.privacyLevel,
-            metrics: item.payload?.metrics,
-            payload: item.payload,
-          })),
-          researchFindings: Array.isArray(research?.findings)
-            ? (research!.findings as Array<Record<string, unknown>>)
-            : [],
-        });
-        const mapped = mapPythonEvidenceMatchToTs(py);
-        const usage = mapProviderUsage({
-          provider: "python",
-          model: "evidence-match",
-          prompt_version: "evidence-match@lexical-v1",
-          latency_ms: Date.now() - started,
-          input_tokens: 0,
-          output_tokens: 0,
-          estimated_cost_cents: null,
-        });
-        result = {
-          data: mapped,
-          model: { provider: "python", model: "evidence-match" },
-          prompt: { version: "evidence-match@lexical-v1" },
-          usage: {
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            estimatedCostCents: usage.estimatedCostCents,
-            costUnknown: usage.costUnknown,
-          },
-          latencyMs: Date.now() - started,
-        };
-        promptVersion = "evidence-match@lexical-v1";
-      } catch (error) {
-        throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      await this.recordStageBackend(run, "match", "typescript");
-      const provider = getProviderForRole("generation");
-      const prompt = getPrompt("evidence-matching");
-      promptVersion = prompt.version;
-      result = await provider.generateStructured({
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        system: prompt.system,
-        user: JSON.stringify({
-          applicationPublicId: run.applicationPublicId,
-          jobDescription: application?.metadata?.jobDescription,
-          requirements,
-          research: { findings: research?.findings ?? [], sources: research?.sources ?? [] },
-          evidence: evidence.map((item) => ({
-            id: item.publicId,
-            title: item.title,
-            situation: item.situation,
-            task: item.task,
-            actions: item.actions,
-            result: item.result,
-            technologies: item.technologies,
-            payload: item.payload,
-          })),
-        }),
-        schema: evidenceMatchSchema,
-        metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
+    // Python is the only backend — no TypeScript fallback
+    const {
+      getPythonIntelligenceClient,
+      mapPythonEvidenceMatchToTs,
+      mapPythonBackendErrorToAppError,
+      mapProviderUsage,
+    } = await import("../intelligence/python-client");
+    try {
+      await this.recordStageBackend(run, "match", "python");
+      const started = Date.now();
+      const py = await getPythonIntelligenceClient().matchEvidence({
+        context: {
+          tenantId: run.tenantId,
+          userId: application?.ownerUserId ?? "unknown",
+          applicationId: run.applicationPublicId,
+          workflowRunId: run.publicId,
+          requestId: run.id,
+        },
+        requirements: requirements.length ? requirements : ["general platform engineering"],
+        evidence: evidence.map((item) => ({
+          id: item.publicId,
+          tenantId: item.tenantId,
+          ownerUserId: item.ownerUserId,
+          title: item.title,
+          organization: item.organization,
+          situation: item.situation,
+          task: item.task,
+          actions: item.actions,
+          result: item.result,
+          technologies: item.technologies,
+          confidence: item.confidence,
+          sourceType: item.sourceType,
+          claimText: item.claimText,
+          employerAssociation: item.employerAssociation,
+          projectAssociation: item.projectAssociation,
+          verificationStatus: item.verificationStatus,
+          candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+          privacyLevel: item.privacyLevel,
+          metrics: item.payload?.metrics,
+          payload: item.payload,
+        })),
+        researchFindings: Array.isArray(research?.findings)
+          ? (research!.findings as Array<Record<string, unknown>>)
+          : [],
       });
+      const mapped = mapPythonEvidenceMatchToTs(py);
+      const usage = mapProviderUsage({
+        provider: "python",
+        model: "evidence-match",
+        prompt_version: "evidence-match@lexical-v1",
+        latency_ms: Date.now() - started,
+        input_tokens: 0,
+        output_tokens: 0,
+        estimated_cost_cents: null,
+      });
+      result = {
+        data: mapped,
+        model: { provider: "python", model: "evidence-match" },
+        prompt: { version: "evidence-match@lexical-v1" },
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          estimatedCostCents: usage.estimatedCostCents,
+          costUnknown: usage.costUnknown,
+        },
+        latencyMs: Date.now() - started,
+      };
+      promptVersion = "evidence-match@lexical-v1";
+    } catch (error) {
+      throw mapPythonBackendErrorToAppError(error);
     }
     await this.recordProviderUsage(run, usageKey, result);
 
@@ -887,12 +833,12 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       ...attestedTechnologies,
     ])];
 
-    const backend = await this.resolveBackend(run.tenantId);
-    const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
+    await this.ensureExecutionBackendPersisted(run);
     let result: ResumeGenerationResult;
-    if (backend === "python") {
-      await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "python");
-      const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
+    // Python is the only backend — no TypeScript fallback
+    await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "python");
+    const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
+    {
       const client = getPythonIntelligenceClient();
       const context = {
         tenantId: run.tenantId,
@@ -1002,146 +948,7 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
         };
       } catch (error) {
         logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
-        const { mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
         throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "typescript");
-      const provider = getProviderForRole("generation");
-      const prompt = getPrompt("resume-generation");
-      result = await provider.generateStructured({
-      prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-      system: prompt.system,
-      user: JSON.stringify({
-        applicationPublicId: run.applicationPublicId,
-        versionNumber,
-        cycleBase,
-        storedVersionNumber,
-        jobDescription: application?.metadata?.jobDescription,
-        application: application?.metadata,
-        researchFindings: research?.findings ?? [],
-        researchSources: research?.sources ?? [],
-        evidence: evidence.map((item) => ({
-          id: item.publicId,
-          title: item.title,
-          organization: item.organization,
-          situation: item.situation,
-          task: item.task,
-          actions: item.actions,
-          result: item.result,
-          technologies: item.technologies,
-          confidence: item.confidence,
-          sourceType: item.sourceType,
-          claimText: item.claimText,
-          employerAssociation: item.employerAssociation,
-          projectAssociation: item.projectAssociation,
-          ...item.payload,
-        })),
-        previousVersion,
-        acceptedOrEditedAuditFindings: actionable,
-        mistakeMemory,
-        refinementInstruction: run.payload.refinementInstruction,
-      }),
-      schema: resumeSchema,
-      metadata: {
-        allowedEvidenceIds: evidence.map((item) => item.publicId),
-        allowedTechnologies: evidenceTechnologies,
-      },
-    });
-      if (backend === "shadow") {
-        const { shouldSampleShadow } = await import("../intelligence/python-client");
-        if (shouldSampleShadow(shadowSeed)) {
-          void (async () => {
-            try {
-              const { compareResumeShapes, getPythonIntelligenceClient } = await import(
-                "../intelligence/python-client"
-              );
-              const started = Date.now();
-              const py = await getPythonIntelligenceClient().generateResume({
-                context: {
-                  tenantId: run.tenantId,
-                  userId: application?.ownerUserId ?? "unknown",
-                  applicationId: run.applicationPublicId,
-                  workflowRunId: run.publicId,
-                  requestId: run.id,
-                },
-                absoluteVersion: storedVersionNumber,
-                cycleStep: versionNumber,
-                jobDescription: String(application?.metadata?.jobDescription ?? ""),
-                evidence: evidence.map((item) => ({
-                  id: item.publicId,
-                  tenantId: item.tenantId,
-                  ownerUserId: item.ownerUserId,
-                  title: item.title,
-                  organization: item.organization,
-                  situation: item.situation,
-                  task: item.task,
-                  actions: item.actions,
-                  result: item.result,
-                  technologies: item.technologies,
-                  confidence: item.confidence,
-                  sourceType: item.sourceType,
-                  claimText: item.claimText,
-                  employerAssociation: item.employerAssociation,
-                  projectAssociation: item.projectAssociation,
-                  verificationStatus: item.verificationStatus,
-                  candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-                  privacyLevel: item.privacyLevel,
-                  metrics: item.payload?.metrics,
-                  payload: item.payload,
-                })),
-                allowedTechnologies: evidenceTechnologies,
-                previousResume: previousVersion
-                  ? {
-                      versionNumber: previousVersion.versionNumber,
-                      score: previousVersion.score,
-                      scoreBreakdown: previousVersion.scoreBreakdown ?? {},
-                      notes: previousVersion.notes ?? "",
-                      sections: previousVersion.sections as Array<Record<string, unknown>>,
-                    }
-                  : null,
-                acceptedFindings: actionable as unknown as Array<Record<string, unknown>>,
-                rejectedFindings: auditFindings
-                  .filter((finding) => finding.status === "rejected")
-                  .map((finding) => finding as unknown as Record<string, unknown>),
-                researchFindings: Array.isArray(research?.findings)
-                  ? (research.findings as Array<Record<string, unknown>>)
-                  : [],
-                mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
-                refinementInstruction:
-                  typeof run.payload.refinementInstruction === "string" ? run.payload.refinementInstruction : null,
-                idempotencyKey: `shadow:${idempotencyKey}`,
-              });
-              const diff = compareResumeShapes(
-                result.data as { sections?: Array<Record<string, unknown>>; score?: number },
-                py.resume as { sections?: Array<Record<string, unknown>>; score?: number },
-                {
-                  tsLatencyMs: result.latencyMs,
-                  pyLatencyMs: py.latencyMs,
-                  tsEvidenceValidity: Number(result.data.scoreBreakdown.evidenceConfidence ?? 0),
-                  pyEvidenceValidity: Number(py.resume.scoreBreakdown.evidenceConfidence ?? 0),
-                },
-              );
-              logger.info(
-                {
-                  applicationPublicId: run.applicationPublicId,
-                  versionNumber,
-                  absoluteVersion: storedVersionNumber,
-                  shadowElapsedMs: Date.now() - started,
-                  ...diff,
-                },
-                "python shadow resume comparison (sanitized counts only)",
-              );
-            } catch (error) {
-              logger.warn(
-                { err: error, applicationPublicId: run.applicationPublicId, versionNumber },
-                "python shadow comparison failed",
-              );
-            }
-          })().catch((error) => {
-            logger.warn({ err: error }, "python shadow comparison promise rejected");
-          });
-        }
       }
     }
     await this.recordProviderUsage(run, usageKey, result);
@@ -1261,16 +1068,15 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
     } as const;
     const lens = lensMap[promptId];
     const auditIdempotencyKey = `audit:${run.applicationPublicId}:${lens}:v${storedReviewsVersion}:${run.idempotencyKey}`;
-    const backend = await this.resolveBackend(run.tenantId);
-    const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
+    await this.ensureExecutionBackendPersisted(run);
     let result: AuditGenerationResult;
-    if (backend === "python") {
-      await this.recordStageBackend(run, "audit", "python");
-      const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-      const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
-      const client = getPythonIntelligenceClient();
-      try {
-        const py = await client.auditResume({
+    // Python is the only backend — no TypeScript fallback
+    await this.recordStageBackend(run, "audit", "python");
+    const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
+    const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
+    const client = getPythonIntelligenceClient();
+    try {
+      const py = await client.auditResume({
           context: {
             tenantId: run.tenantId,
             userId: application?.ownerUserId ?? "unknown",
@@ -1330,123 +1136,9 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
           },
           latencyMs: py.latencyMs,
         };
-      } catch (error) {
-        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python audit failed");
-        const { mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
-        throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      await this.recordStageBackend(run, "audit", "typescript");
-      const provider = getProviderForRole(promptId.startsWith("hr-") ? "hr-audit" : "em-audit");
-      const prompt = getPrompt(promptId);
-      result = await provider.generateStructured({
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        system: prompt.system,
-        user: JSON.stringify({
-          applicationPublicId: run.applicationPublicId,
-          reviewsVersion: storedReviewsVersion,
-          jobDescription: application?.metadata?.jobDescription,
-          resume: {
-            versionNumber: reviewedResume.versionNumber,
-            sections: reviewedResume.sections,
-            score: reviewedResume.score,
-          },
-          evidence: evidence.map((item) => ({
-            id: item.publicId,
-            title: item.title,
-            situation: item.situation,
-            task: item.task,
-            actions: item.actions,
-            result: item.result,
-            technologies: item.technologies,
-            payload: item.payload,
-          })),
-        }),
-        schema: auditSchema,
-        metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
-      });
-      if (backend === "shadow") {
-        const { shouldSampleShadow } = await import("../intelligence/python-client");
-        if (shouldSampleShadow(shadowSeed)) {
-          void (async () => {
-            try {
-              const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-              const started = Date.now();
-              const py = await getPythonIntelligenceClient().auditResume({
-                context: {
-                  tenantId: run.tenantId,
-                  userId: application?.ownerUserId ?? "unknown",
-                  applicationId: run.applicationPublicId,
-                  workflowRunId: run.publicId,
-                  requestId: run.id,
-                },
-                lens,
-                reviewsVersion: storedReviewsVersion,
-                producesVersion: storedProducesVersion,
-                resume: {
-                  versionNumber: reviewedResume.versionNumber,
-                  absoluteVersion: reviewedResume.versionNumber,
-                  cycleStep: reviewedResume.versionNumber % 5,
-                  score: reviewedResume.score,
-                  scoreBreakdown: reviewedResume.scoreBreakdown ?? {},
-                  notes: reviewedResume.notes ?? "",
-                  sections: reviewedResume.sections as Array<Record<string, unknown>>,
-                },
-                evidence: evidence.map((item) => ({
-                  id: item.publicId,
-                  tenantId: item.tenantId,
-                  ownerUserId: item.ownerUserId,
-                  title: item.title,
-                  organization: item.organization,
-                  situation: item.situation,
-                  task: item.task,
-                  actions: item.actions,
-                  result: item.result,
-                  technologies: item.technologies,
-                  confidence: item.confidence,
-                  sourceType: item.sourceType,
-                  claimText: item.claimText,
-                  employerAssociation: item.employerAssociation,
-                  projectAssociation: item.projectAssociation,
-                  verificationStatus: item.verificationStatus,
-                  candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-                  privacyLevel: item.privacyLevel,
-                  metrics: item.payload?.metrics,
-                  payload: item.payload,
-                })),
-                jobDescription: String(application?.metadata?.jobDescription ?? ""),
-                allowedTechnologies: claimableTechnologies(
-                  (application?.metadata?.techQuestions ?? []) as TechQuestion[],
-                ),
-                idempotencyKey: `shadow:${auditIdempotencyKey}`,
-              });
-              logger.info(
-                {
-                  applicationPublicId: run.applicationPublicId,
-                  lens,
-                  reviewsVersion: storedReviewsVersion,
-                  tsFindingCount: result.data.findings.length,
-                  pyFindingCount: py.data.findings.length,
-                  findingCountDiff: Math.abs(result.data.findings.length - py.data.findings.length),
-                  tsScoreAfter: result.data.scoreAfter,
-                  pyScoreAfter: py.data.scoreAfter,
-                  tsLatencyMs: result.latencyMs,
-                  pyLatencyMs: py.latencyMs,
-                  shadowElapsedMs: Date.now() - started,
-                },
-                "python shadow audit comparison (sanitized counts only)",
-              );
-            } catch (error) {
-              logger.warn(
-                { err: error, applicationPublicId: run.applicationPublicId, lens },
-                "python shadow audit comparison failed",
-              );
-            }
-          })().catch((error) => {
-            logger.warn({ err: error }, "python shadow audit comparison promise rejected");
-          });
-        }
-      }
+    } catch (error) {
+      logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python audit failed");
+      throw mapPythonBackendErrorToAppError(error);
     }
     await this.recordProviderUsage(run, usageKey, result);
 
@@ -1650,173 +1342,149 @@ Use only CONTEXT sources supplied by the collector. Never invent a URL. Claims w
       throw new AppError("FINAL_QA_FAILED", "Final QA checks failed", 422, result.checks);
     }
 
+    // AI Final QA supplement - Python is the only backend
     const usageKey = await this.reserve(run, "final_review", 1);
+    await this.ensureExecutionBackendPersisted(run);
     const finalQaIdempotencyKey = `final-qa:${run.applicationPublicId}:v${latest.versionNumber}:${run.idempotencyKey}`;
-    const backend = await this.resolveBackend(run.tenantId);
-    const shadowSeed = `${run.tenantId}:${run.applicationPublicId}:${run.publicId}`;
     let supplement: FinalQaSupplementResult;
-    if (backend === "python") {
-      await this.recordStageBackend(run, "final-qa", "python");
-      const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-      const { finalQaSchema: finalQaOutputSchema } = await import("../ai/schemas");
-      const client = getPythonIntelligenceClient();
-      try {
-        const py = await client.finalQa({
-          context: {
-            tenantId: run.tenantId,
-            userId: application?.ownerUserId ?? "unknown",
-            applicationId: run.applicationPublicId,
-            workflowRunId: run.publicId,
-            requestId: run.id,
-          },
-          resume: {
-            versionNumber: latest.versionNumber,
-            absoluteVersion: latest.versionNumber,
-            cycleStep: latest.versionNumber % 5,
-            score: latest.score,
-            scoreBreakdown: latest.scoreBreakdown ?? {},
-            notes: latest.notes ?? "",
-            sections: latest.sections as Array<Record<string, unknown>>,
-          },
-          evidence: evidence.map((item) => ({
-            id: item.publicId,
-            tenantId: item.tenantId,
-            ownerUserId: item.ownerUserId,
-            title: item.title,
-            organization: item.organization,
-            situation: item.situation,
-            task: item.task,
-            actions: item.actions,
-            result: item.result,
-            technologies: item.technologies,
-            confidence: item.confidence,
-            sourceType: item.sourceType,
-            claimText: item.claimText,
-            employerAssociation: item.employerAssociation,
-            projectAssociation: item.projectAssociation,
-            verificationStatus: item.verificationStatus,
-            candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-            privacyLevel: item.privacyLevel,
-            metrics: item.payload?.metrics,
-            payload: item.payload,
-          })),
-          deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
-          allowedTechnologies: knownTechnologies,
-          idempotencyKey: finalQaIdempotencyKey,
-        });
-        supplement = {
-          data: finalQaOutputSchema.parse(py.data),
-          rawText: "",
-          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-          prompt: { id: "final-qa", version: "final-qa@python-v2", rubricVersion: "candidarc-rubric@v1" },
-          usage: {
-            inputTokens: py.usage.inputTokens,
-            outputTokens: py.usage.outputTokens,
-            estimatedCostCents: py.usage.estimatedCostCents,
-          },
-          latencyMs: py.latencyMs,
-        };
-      } catch (error) {
-        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python final QA failed");
-        const { mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
-        throw mapPythonBackendErrorToAppError(error);
-      }
-    } else {
-      await this.recordStageBackend(run, "final-qa", "typescript");
-      const provider = getProviderForRole("final-review");
-      const prompt = getPrompt("final-qa");
-      supplement = await provider.generateStructured({
-        prompt: { id: prompt.id, version: prompt.version, rubricVersion: prompt.rubricVersion },
-        system: `${prompt.system}
-This is a supplement to deterministic checks. Do not claim deterministic or visual checks ran unless explicitly supplied.`,
-        user: JSON.stringify({
-          applicationPublicId: run.applicationPublicId,
-          resume: { versionNumber: latest.versionNumber, sections: latest.sections },
-          deterministicChecks: result,
-          evidenceIds: evidence.map((item) => item.publicId),
-        }),
-        schema: finalQaSchema,
-        metadata: { allowedEvidenceIds: evidence.map((item) => item.publicId) },
+
+    await this.recordStageBackend(run, "final-qa", "python");
+    const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
+    const { finalQaSchema: finalQaOutputSchema } = await import("../ai/schemas");
+    const client = getPythonIntelligenceClient();
+    try {
+      const py = await client.finalQa({
+        context: {
+          tenantId: run.tenantId,
+          userId: application?.ownerUserId ?? "unknown",
+          applicationId: run.applicationPublicId,
+          workflowRunId: run.publicId,
+          requestId: run.id,
+        },
+        resume: {
+          versionNumber: latest.versionNumber,
+          absoluteVersion: latest.versionNumber,
+          cycleStep: latest.versionNumber % 5,
+          score: latest.score,
+          scoreBreakdown: latest.scoreBreakdown ?? {},
+          notes: latest.notes ?? "",
+          sections: latest.sections as Array<Record<string, unknown>>,
+        },
+        evidence: evidence.map((item) => ({
+          id: item.publicId,
+          tenantId: item.tenantId,
+          ownerUserId: item.ownerUserId,
+          title: item.title,
+          organization: item.organization,
+          situation: item.situation,
+          task: item.task,
+          actions: item.actions,
+          result: item.result,
+          technologies: item.technologies,
+          confidence: item.confidence,
+          sourceType: item.sourceType,
+          claimText: item.claimText,
+          employerAssociation: item.employerAssociation,
+          projectAssociation: item.projectAssociation,
+          verificationStatus: item.verificationStatus,
+          candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+          privacyLevel: item.privacyLevel,
+          metrics: item.payload?.metrics,
+          payload: item.payload,
+        })),
+        deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
+        allowedTechnologies: knownTechnologies,
+        idempotencyKey: finalQaIdempotencyKey,
       });
-      if (backend === "shadow") {
-        const { shouldSampleShadow } = await import("../intelligence/python-client");
-        if (shouldSampleShadow(shadowSeed)) {
-          void (async () => {
-            try {
-              const { getPythonIntelligenceClient } = await import("../intelligence/python-client");
-              const started = Date.now();
-              const py = await getPythonIntelligenceClient().finalQa({
-                context: {
-                  tenantId: run.tenantId,
-                  userId: application?.ownerUserId ?? "unknown",
-                  applicationId: run.applicationPublicId,
-                  workflowRunId: run.publicId,
-                  requestId: run.id,
-                },
-                resume: {
-                  versionNumber: latest.versionNumber,
-                  absoluteVersion: latest.versionNumber,
-                  cycleStep: latest.versionNumber % 5,
-                  score: latest.score,
-                  scoreBreakdown: latest.scoreBreakdown ?? {},
-                  notes: latest.notes ?? "",
-                  sections: latest.sections as Array<Record<string, unknown>>,
-                },
-                evidence: evidence.map((item) => ({
-                  id: item.publicId,
-                  tenantId: item.tenantId,
-                  ownerUserId: item.ownerUserId,
-                  title: item.title,
-                  organization: item.organization,
-                  situation: item.situation,
-                  task: item.task,
-                  actions: item.actions,
-                  result: item.result,
-                  technologies: item.technologies,
-                  confidence: item.confidence,
-                  sourceType: item.sourceType,
-                  claimText: item.claimText,
-                  employerAssociation: item.employerAssociation,
-                  projectAssociation: item.projectAssociation,
-                  verificationStatus: item.verificationStatus,
-                  candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-                  privacyLevel: item.privacyLevel,
-                  metrics: item.payload?.metrics,
-                  payload: item.payload,
-                })),
-                deterministicChecks: result.checks as unknown as Array<Record<string, unknown>>,
-                allowedTechnologies: knownTechnologies,
-                idempotencyKey: `shadow:${finalQaIdempotencyKey}`,
-              });
-              logger.info(
-                {
-                  applicationPublicId: run.applicationPublicId,
-                  versionNumber: latest.versionNumber,
-                  tsPassed: supplement.data.passed,
-                  pyPassed: py.data.passed,
-                  tsCheckCount: supplement.data.checks.length,
-                  pyCheckCount: py.data.checks.length,
-                  checkCountDiff: Math.abs(supplement.data.checks.length - py.data.checks.length),
-                  tsLatencyMs: supplement.latencyMs,
-                  pyLatencyMs: py.latencyMs,
-                  shadowElapsedMs: Date.now() - started,
-                },
-                "python shadow finalQa comparison (sanitized counts only)",
-              );
-            } catch (error) {
-              logger.warn(
-                { err: error, applicationPublicId: run.applicationPublicId },
-                "python shadow finalQa comparison failed",
-              );
-            }
-          })().catch((error) => {
-            logger.warn({ err: error }, "python shadow finalQa comparison promise rejected");
-          });
-        }
-      }
+      supplement = {
+        data: finalQaOutputSchema.parse(py.data),
+        rawText: "",
+        model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+        prompt: { id: "final-qa", version: "final-qa@python-v2", rubricVersion: "candidarc-rubric@v1" },
+        usage: {
+          inputTokens: py.usage.inputTokens,
+          outputTokens: py.usage.outputTokens,
+          estimatedCostCents: py.usage.estimatedCostCents,
+        },
+        latencyMs: py.latencyMs,
+      };
+    } catch (error) {
+      logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python final QA failed");
+      throw mapPythonBackendErrorToAppError(error);
     }
     await this.recordProviderUsage(run, usageKey, supplement);
     await this.commit(usageKey, this.commitCostCents(supplement.usage.estimatedCostCents), { tenantId: run.tenantId });
+
+    // Final QA authority: if AI final QA fails, attempt ONE bounded repair
+    if (supplement.data.passed === false) {
+      const repairAttempted = run.payload?.finalQaRepairAttempted === true;
+      if (repairAttempted) {
+        // Already attempted repair — fail permanently
+        logger.warn(
+          { applicationPublicId: run.applicationPublicId, checks: supplement.data.checks },
+          "Final QA failed after repair attempt",
+        );
+        await this.deps.engine.transition(run.id, "FINAL_QA_FAILED", {
+          status: "failed",
+          message: "Final QA failed after repair attempt",
+          patch: {
+            payload: {
+              ...run.payload,
+              failedAtStage: "FINAL_QA_RUNNING",
+              finalQaChecks: supplement.data.checks,
+              aiFinalQaFailed: true,
+            },
+          },
+        });
+        await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+          stage: "FINAL_QA_FAILED",
+          workflowStage: "FINAL_QA_FAILED",
+          status: "failed",
+          nextAction: "Resume quality checks failed. Please review and retry.",
+        });
+        throw new AppError("FINAL_QA_FAILED", "Final QA checks failed after repair attempt", 422, supplement.data.checks);
+      }
+
+      // Attempt bounded repair: regenerate once with refinement instruction
+      logger.info(
+        { applicationPublicId: run.applicationPublicId, failedChecks: supplement.data.checks.filter((c) => c.status !== "pass") },
+        "Final QA failed — attempting bounded repair",
+      );
+      const failedCheckSummary = supplement.data.checks
+        .filter((check) => check.status !== "pass")
+        .map((check) => `${check.label}: ${check.detail}`)
+        .join("; ");
+      const refinementInstruction = `Address the following quality issues: ${failedCheckSummary}`;
+
+      // Mark repair as attempted to prevent loops
+      await this.deps.workflows.updateRun(run.id, {
+        payload: {
+          ...run.payload,
+          finalQaRepairAttempted: true,
+          finalQaRepairReason: failedCheckSummary,
+        },
+      });
+
+      // Trigger regeneration with repair instruction and re-run Final QA
+      await this.deps.engine.transition(run.id, "V4_GENERATING", {
+        status: "running",
+        message: "Bounded repair: regenerating resume to address quality issues",
+        patch: {
+          payload: {
+            ...run.payload,
+            finalQaRepairAttempted: true,
+            refinementInstruction,
+          },
+        },
+      });
+      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+        stage: "V4_GENERATING",
+        workflowStage: "V4_GENERATING",
+        status: "resume",
+        nextAction: "Regenerating to fix quality issues",
+      });
+      return; // Let the regeneration stage handle the next steps
+    }
 
     await this.deps.engine.transition(run.id, "FINAL_READY", {
       message: "Final QA passed",

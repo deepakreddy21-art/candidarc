@@ -25,7 +25,8 @@ import {
 export type PythonResume = ResumeDocument;
 export const pythonResumeSchema = ResumeDocumentSchema;
 
-export type IntelligenceBackendMode = "typescript" | "python" | "shadow";
+/** Python is the only supported backend. typescript/shadow are no longer valid. */
+export type IntelligenceBackendMode = "python";
 
 type RequestContext = {
   tenantId: string;
@@ -484,6 +485,9 @@ export function shouldSampleShadow(
   return bucket < bounded;
 }
 
+/**
+ * @deprecated Allowlist parsing is no longer used. All tenants use Python.
+ */
 function parseTenantAllowlist(raw: string): Set<string> {
   return new Set(
     raw
@@ -494,24 +498,15 @@ function parseTenantAllowlist(raw: string): Set<string> {
 }
 
 /**
- * Tenant-aware backend resolution.
- * Global `typescript` env is a kill switch. `python`/`shadow` require an explicit tenant allowlist.
- * (Tenants table has no metadata column — application metadata is not used for routing.)
+ * Backend resolution for resume intelligence.
+ * Python is the ONLY supported backend. Always returns "python".
+ * The tenantId parameter is kept for API compatibility but is ignored.
  */
-export function resolveIntelligenceBackendForTenant(opts: {
+export function resolveIntelligenceBackendForTenant(_opts: {
   tenantId: string;
 }): IntelligenceBackendMode {
-  const envMode = getEnv().RESUME_INTELLIGENCE_BACKEND;
-  // Global kill switch — instant rollback for all tenants.
-  if (envMode === "typescript") return "typescript";
-
-  if (envMode === "python" || envMode === "shadow") {
-    const allowlist = parseTenantAllowlist(getEnv().PYTHON_INTELLIGENCE_TENANT_ALLOWLIST);
-    if (allowlist.has(opts.tenantId)) return envMode;
-    return "typescript";
-  }
-
-  return "typescript";
+  // Python is the only backend. No fallback, no allowlist, no kill switch.
+  return "python";
 }
 
 const RESEARCH_CATEGORIES = new Set([
@@ -1117,6 +1112,10 @@ export function resetPythonIntelligenceClient() {
   singleton = null;
 }
 
+/**
+ * Returns the resume intelligence backend mode.
+ * Python is the only supported backend.
+ */
 export function getResumeIntelligenceBackend(): IntelligenceBackendMode {
-  return getEnv().RESUME_INTELLIGENCE_BACKEND;
+  return "python";
 }
