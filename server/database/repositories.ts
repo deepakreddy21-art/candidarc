@@ -490,8 +490,8 @@ export interface WorkflowRepository {
   listByApplication(tenantId: string, applicationPublicId: string): Promise<WorkflowRunRecord[]>;
   /** Non-terminal runs that should be re-enqueued after a worker/process restart. */
   listIncomplete(limit?: number): Promise<WorkflowRunRecord[]>;
-  /** Compare-and-swap stage claim; returns null when stage mismatch or already claimed. */
-  claimStage(runId: string, expectedStage: WorkflowStage): Promise<WorkflowRunRecord | null>;
+  /** Tenant-scoped compare-and-swap stage claim; returns null when stage mismatch or lease is active. */
+  claimStage(tenantId: string, runId: string, expectedStage: WorkflowStage): Promise<WorkflowRunRecord | null>;
 }
 
 export interface UsageRepository {
@@ -1187,14 +1187,14 @@ export class MemoryRepositories implements Repositories {
           .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
           .slice(0, limit);
       },
-      async claimStage(runId, expectedStage) {
-        return withMemoryClaimLock(`${runId}:${expectedStage}`, () => {
+      async claimStage(tenantId, runId, expectedStage) {
+        return withMemoryClaimLock(`${tenantId}:${runId}:${expectedStage}`, () => {
           const claimKey = `claimed:${expectedStage}`;
           const running = expectedStage.endsWith("_QUEUED")
             ? (expectedStage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage)
             : null;
           const existing = store.workflowRuns.get(runId);
-          if (!existing) return null;
+          if (!existing || existing.tenantId !== tenantId) return null;
           const stageOk = existing.stage === expectedStage || (running !== null && existing.stage === running);
           if (!stageOk || isStageClaimActive(existing.payload[claimKey])) return null;
 

@@ -11,7 +11,7 @@ import {
   type WorkflowRunRecord,
 } from "./repositories";
 import { AppError, type WorkflowStage } from "../domain/types";
-import { buildStageClaimLease, isStageClaimActive } from "../workflows/stages";
+import { STAGE_CLAIM_LEASE_MS } from "../workflows/stages";
 import { withTenant } from "./with-tenant";
 import {
   buildEvidenceMatchMap,
@@ -1490,49 +1490,76 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
         })
         .filter((row): row is WorkflowRunRecord => Boolean(row));
     },
-    claimStage: async (runId, expectedStage) => {
+    claimStage: async (tenantId, runId, expectedStage) => {
       const claimKey = `claimed:${expectedStage}`;
       const running = expectedStage.endsWith("_QUEUED")
         ? (expectedStage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage)
         : null;
-      const rowData = (
-        await db
-          .select({ run: s.workflowRuns, applicationPublicId: s.applications.publicId })
-          .from(s.workflowRuns)
-          .innerJoin(s.applications, eq(s.applications.id, s.workflowRuns.applicationId))
-          .where(eq(s.workflowRuns.id, runId))
-          .limit(1)
-      )[0];
-      if (!rowData) return null;
-      const { run: row, applicationPublicId } = rowData;
-      const payload = (row.payload ?? {}) as Record<string, unknown>;
-      const stageOk = row.stage === expectedStage || (running !== null && row.stage === running);
-      if (!stageOk || isStageClaimActive(payload[claimKey])) return null;
-
-      let nextStage = row.stage as WorkflowStage;
-      if (row.stage === expectedStage && running) {
-        nextStage = running;
-      }
-
       const updated = (
         await db
           .update(s.workflowRuns)
           .set({
-            stage: nextStage,
+            stage: running
+              ? sql`CASE WHEN ${s.workflowRuns.stage} = ${expectedStage} THEN ${running} ELSE ${s.workflowRuns.stage} END`
+              : expectedStage,
             status: "running",
-            payload: { ...payload, [claimKey]: buildStageClaimLease(row.attempt ?? 1) },
-            updatedAt: new Date(),
+            payload: sql`jsonb_set(
+              COALESCE(${s.workflowRuns.payload}, '{}'::jsonb),
+              ARRAY[${claimKey}]::text[],
+              jsonb_build_object(
+                'at', now(),
+                'expiresAt', now() + (${STAGE_CLAIM_LEASE_MS} * interval '1 millisecond'),
+                'attempt', ${s.workflowRuns.attempt}
+              ),
+              true
+            )`,
+            updatedAt: sql`now()`,
           })
           .where(
             and(
+              eq(s.workflowRuns.tenantId, tenantId),
               eq(s.workflowRuns.id, runId),
               or(eq(s.workflowRuns.stage, expectedStage), running ? eq(s.workflowRuns.stage, running) : sql`false`),
-              sql`NOT (COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ? ${claimKey})`,
+              sql`(
+                NOT (COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ? ${claimKey})
+                OR CASE jsonb_typeof(COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey})
+                  WHEN 'object' THEN CASE
+                    WHEN jsonb_typeof(COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey} -> 'expiresAt') = 'string'
+                      AND pg_input_is_valid(
+                        COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey} ->> 'expiresAt',
+                        'timestamp with time zone'
+                      )
+                    THEN (
+                      COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) -> ${claimKey} ->> 'expiresAt'
+                    )::timestamptz <= now()
+                    ELSE true
+                  END
+                  WHEN 'string' THEN CASE
+                    WHEN pg_input_is_valid(
+                      COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ->> ${claimKey},
+                      'timestamp with time zone'
+                    )
+                    THEN (
+                      COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) ->> ${claimKey}
+                    )::timestamptz + (${STAGE_CLAIM_LEASE_MS} * interval '1 millisecond') <= now()
+                    ELSE true
+                  END
+                  ELSE true
+                END
+              )`,
             ),
           )
           .returning()
       )[0];
-      return updated ? mapWorkflow(updated, applicationPublicId) : null;
+      if (!updated) return null;
+      const application = (
+        await db
+          .select({ publicId: s.applications.publicId })
+          .from(s.applications)
+          .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.id, updated.applicationId)))
+          .limit(1)
+      )[0];
+      return mapWorkflow(updated, application?.publicId ?? "");
     },
   };
 }
