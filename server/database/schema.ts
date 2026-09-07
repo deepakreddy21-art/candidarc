@@ -163,6 +163,7 @@ export const usageKindEnum = pgEnum("usage_kind", [
   "input_tokens",
   "output_tokens",
   "provider_cost",
+  "final_review",
 ]);
 
 export const outboxStatusEnum = pgEnum("outbox_status", [
