@@ -62,6 +62,7 @@ describe("workflow stage claims (postgres integration)", () => {
 
   afterAll(async () => {
     try {
+      await sql`delete from workflow_runs where tenant_id in (${tenantId}::uuid, ${otherTenantId}::uuid)`;
       await sql`delete from applications where tenant_id in (${tenantId}::uuid, ${otherTenantId}::uuid)`;
       await sql`delete from users where id = ${userId}::uuid`;
       await sql`delete from tenants where id in (${tenantId}::uuid, ${otherTenantId}::uuid)`;
@@ -89,7 +90,7 @@ describe("workflow stage claims (postgres integration)", () => {
       employmentType: "Full-time",
       stage,
       workflowStage: stage,
-      status: "generating",
+      status: "resume",
       nextAction: "Continue",
       researchConfidence: 0,
       evidenceCoverage: 0,
