@@ -61,6 +61,11 @@ def _raise_provider(exc: Exception) -> None:
             status_code=422,
             detail={"code": "GUARDRAIL_VIOLATION", "message": str(exc)},
         ) from exc
+    if isinstance(exc, ValueError) and str(exc).startswith("REFINEMENT_NOT_APPLICABLE"):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "REFINEMENT_NOT_APPLICABLE", "message": str(exc)},
+        ) from exc
     raise exc
 
 

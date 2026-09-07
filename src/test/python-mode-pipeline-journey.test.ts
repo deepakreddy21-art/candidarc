@@ -247,9 +247,16 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
     expect(Math.max(...nums)).toBeGreaterThanOrEqual(4);
 
     const notes = versions.map((v) => v.notes ?? "").join(" ");
-    // Mock generator may surface refinement via notes; at minimum pipeline completed with Python backend.
     expect(final?.payload?.executionBackend ?? "python").toBeTruthy();
     expect(notes.length).toBeGreaterThan(0);
+
+    const current = versions.find((v) => v.publicId === resume?.currentVersionPublicId) ?? versions.at(-1);
+    const visible = JSON.stringify(current?.sections ?? [])
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+    expect(visible).toContain("python ownership focus");
+    // Visible refinement must change content vs a non-emphasized baseline marker absence of kubernetes alternate
+    expect(visible).not.toContain("kubernetes ownership focus");
 
     await queue.stop();
   }, 150_000);

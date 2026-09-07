@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -35,8 +37,26 @@ def evidence(ctx: RequestContext) -> list[EvidenceItem]:
 # --- Unit: refinement_instruction ---
 
 
+def _visible(resume) -> str:
+    parts: list[str] = []
+    for section in resume.sections:
+        for bullet in section.bullets or []:
+            parts.append(bullet.text.lower())
+        for item in section.items or []:
+            for bullet in item.bullets:
+                parts.append(bullet.text.lower())
+    return "\n".join(parts)
+
+
 def test_allowed_refinement_emphasize_existing_tech(evidence: list[EvidenceItem]) -> None:
-    """Emphasizing a technology already in evidence is allowed."""
+    """Emphasizing a technology already in evidence changes visible content."""
+    base = generate_grounded_resume(
+        absolute_version=0,
+        cycle_step=0,
+        evidence=evidence,
+        allowed_technologies=["Python", "PyTorch", "OpenSearch"],
+        job_description="Python platform engineer",
+    )
     resume = generate_grounded_resume(
         absolute_version=0,
         cycle_step=0,
@@ -46,20 +66,22 @@ def test_allowed_refinement_emphasize_existing_tech(evidence: list[EvidenceItem]
         refinement_instruction="Emphasize Python experience",
     )
     assert "refinement:applied" in resume.notes
-    assert "Emphasize Python" in resume.notes
+    assert _visible(resume) != _visible(base)
+    assert "python ownership focus" in _visible(resume)
 
 
 def test_allowed_refinement_paraphrase_wording(evidence: list[EvidenceItem]) -> None:
-    """Paraphrasing existing content is allowed."""
+    """Active-verb refinement changes visible wording when weak verbs exist or emphasizes ownership."""
     resume = generate_grounded_resume(
         absolute_version=0,
         cycle_step=0,
         evidence=evidence,
         allowed_technologies=["Python"],
         job_description="Python engineer",
-        refinement_instruction="Use more active verbs in experience bullets",
+        refinement_instruction="Emphasize Python with stronger active ownership wording",
     )
     assert "refinement:applied" in resume.notes
+    assert "python ownership focus" in _visible(resume)
 
 
 def test_unsupported_refinement_add_metric_fails(evidence: list[EvidenceItem]) -> None:
@@ -127,8 +149,8 @@ def test_unsupported_refinement_emphasize_unknown_tech_fails(evidence: list[Evid
         )
 
 
-def test_different_refinement_instructions_produce_different_notes(evidence: list[EvidenceItem]) -> None:
-    """Two different allowed refinements produce different notes."""
+def test_different_refinement_instructions_produce_different_visible_content(evidence: list[EvidenceItem]) -> None:
+    """Two different allowed refinements produce different visible sections."""
     resume1 = generate_grounded_resume(
         absolute_version=0,
         cycle_step=0,
@@ -145,9 +167,23 @@ def test_different_refinement_instructions_produce_different_notes(evidence: lis
         job_description="Python engineer",
         refinement_instruction="Emphasize PyTorch deep learning",
     )
-    assert "Emphasize Python" in resume1.notes
-    assert "Emphasize PyTorch" in resume2.notes
-    assert resume1.notes != resume2.notes
+    assert _visible(resume1) != _visible(resume2)
+    assert "python ownership focus" in _visible(resume1)
+    assert "pytorch ownership focus" in _visible(resume2)
+
+
+def test_safe_impossible_refinement_returns_not_applicable(evidence: list[EvidenceItem]) -> None:
+    """A safe but non-material instruction fails with REFINEMENT_NOT_APPLICABLE."""
+    with pytest.raises(ValueError, match="REFINEMENT_NOT_APPLICABLE"):
+        generate_grounded_resume(
+            absolute_version=0,
+            cycle_step=0,
+            evidence=evidence,
+            allowed_technologies=["Python"],
+            job_description="Python engineer",
+            # No emphasize/concise/active tokens that change content
+            refinement_instruction="Please review the formatting carefully",
+        )
 
 
 # --- Unit: evidence_matches ---
@@ -345,7 +381,7 @@ def test_generate_and_validate_rejects_unsupported_refinement(evidence: list[Evi
 def test_api_refinement_allowed(
     client: TestClient, auth_headers: dict[str, str], ctx: RequestContext, evidence: list[EvidenceItem]
 ) -> None:
-    """API endpoint accepts allowed refinement instructions."""
+    """API endpoint accepts allowed refinement instructions and changes visible content."""
     response = client.post(
         "/v1/resumes/generate",
         headers=auth_headers,
@@ -361,6 +397,60 @@ def test_api_refinement_allowed(
     assert response.status_code == 200, response.text
     body = response.json()
     assert "refinement:applied" in body["resume"]["notes"]
+    visible = json.dumps(body["resume"]["sections"]).lower()
+    assert "python ownership focus" in visible
+
+
+def test_api_refinement_not_applicable(
+    client: TestClient, auth_headers: dict[str, str], ctx: RequestContext, evidence: list[EvidenceItem]
+) -> None:
+    """Safe but non-material refinement returns REFINEMENT_NOT_APPLICABLE without inventing notes-only success."""
+    response = client.post(
+        "/v1/resumes/generate",
+        headers=auth_headers,
+        json={
+            "context": ctx.model_dump(),
+            "absolute_version": 0,
+            "job_description": "Python platform engineer " + ("x" * 20),
+            "evidence": [item.model_dump() for item in evidence],
+            "allowed_technologies": ["Python"],
+            "refinement_instruction": "Please review the formatting carefully",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "REFINEMENT_NOT_APPLICABLE"
+
+
+def test_api_regenerate_refinement_visible(
+    client: TestClient, auth_headers: dict[str, str], ctx: RequestContext, evidence: list[EvidenceItem]
+) -> None:
+    """Regenerate with refinement changes visible sections vs previous resume."""
+    base = generate_grounded_resume(
+        absolute_version=0,
+        cycle_step=0,
+        evidence=evidence,
+        allowed_technologies=["Python", "PyTorch"],
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    response = client.post(
+        "/v1/resumes/regenerate",
+        headers=auth_headers,
+        json={
+            "context": ctx.model_dump(),
+            "absolute_version": 1,
+            "job_description": "Platform engineer " + ("x" * 20),
+            "evidence": [item.model_dump() for item in evidence],
+            "allowed_technologies": ["Python", "PyTorch"],
+            "previous_resume": base.model_dump(),
+            "accepted_findings": [],
+            "refinement_instruction": "Emphasize PyTorch deep learning",
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    visible = json.dumps(body["resume"]["sections"]).lower()
+    assert "pytorch ownership focus" in visible
+    assert visible != json.dumps(base.model_dump()["sections"]).lower()
 
 
 def test_api_refinement_unsupported_fails(
@@ -440,3 +530,4 @@ def test_api_both_refinement_and_matches(
     assert response.status_code == 200, response.text
     body = response.json()
     assert "refinement:applied" in body["resume"]["notes"]
+    assert "python ownership focus" in json.dumps(body["resume"]["sections"]).lower()

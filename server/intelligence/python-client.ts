@@ -111,6 +111,14 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
       details,
     );
   }
+  if (code === "REFINEMENT_NOT_APPLICABLE") {
+    return new AppError(
+      "REFINEMENT_NOT_APPLICABLE",
+      "That refinement could not change the resume without inventing unsupported claims.",
+      422,
+      details,
+    );
+  }
   if (code === "GUARDRAIL_VIOLATION") {
     return new AppError(
       "GUARDRAIL_VIOLATION",
@@ -420,77 +428,7 @@ function mapQaStatus(status: string): "pass" | "fail" | "warning" | "pending" {
   return "pass";
 }
 
-/** Sanitized shadow comparison — counts/scores/latency only, no resume text. */
-export function compareResumeShapes(
-  tsResume: { sections?: Array<Record<string, unknown>>; score?: number },
-  pyResume: { sections?: Array<Record<string, unknown>>; score?: number },
-  meta?: {
-    tsLatencyMs?: number;
-    pyLatencyMs?: number;
-    tsUnsupportedClaims?: number;
-    pyUnsupportedClaims?: number;
-    tsEvidenceValidity?: number;
-    pyEvidenceValidity?: number;
-  },
-) {
-  const tsSections = tsResume.sections ?? [];
-  const pySections = pyResume.sections ?? [];
-  const countBullets = (sections: Array<Record<string, unknown>>) =>
-    sections.reduce((sum, section) => {
-      const bullets = Array.isArray(section.bullets) ? section.bullets.length : 0;
-      const items = Array.isArray(section.items) ? section.items : [];
-      const itemBullets = items.reduce((inner, item) => {
-        const rec = item as Record<string, unknown>;
-        return inner + (Array.isArray(rec.bullets) ? rec.bullets.length : 0);
-      }, 0);
-      return sum + bullets + itemBullets;
-    }, 0);
-  const countUnsupported = (sections: Array<Record<string, unknown>>) =>
-    sections.reduce((sum, section) => {
-      const bullets = Array.isArray(section.bullets) ? section.bullets : [];
-      const items = Array.isArray(section.items) ? section.items : [];
-      const fromBullets = bullets.filter((b) => {
-        const rec = b as Record<string, unknown>;
-        return rec.claimRisk === "high" || rec.claim_risk === "high" || rec.unsupported === true;
-      }).length;
-      const fromItems = items.reduce((inner, item) => {
-        const rec = item as Record<string, unknown>;
-        const itemBullets = Array.isArray(rec.bullets) ? rec.bullets : [];
-        return (
-          inner +
-          itemBullets.filter((b) => {
-            const bullet = b as Record<string, unknown>;
-            return bullet.claimRisk === "high" || bullet.claim_risk === "high" || bullet.unsupported === true;
-          }).length
-        );
-      }, 0);
-      return sum + fromBullets + fromItems;
-    }, 0);
-
-  const tsUnsupported = meta?.tsUnsupportedClaims ?? countUnsupported(tsSections);
-  const pyUnsupported = meta?.pyUnsupportedClaims ?? countUnsupported(pySections);
-  return {
-    sectionCountDiff: Math.abs(tsSections.length - pySections.length),
-    bulletCountDiff: Math.abs(countBullets(tsSections) - countBullets(pySections)),
-    tsSectionCount: tsSections.length,
-    pySectionCount: pySections.length,
-    tsBulletCount: countBullets(tsSections),
-    pyBulletCount: countBullets(pySections),
-    scoreDiff:
-      tsResume.score != null && pyResume.score != null ? Math.abs(Number(tsResume.score) - Number(pyResume.score)) : null,
-    tsScore: tsResume.score ?? null,
-    pyScore: pyResume.score ?? null,
-    unsupportedClaimsDiff: Math.abs(tsUnsupported - pyUnsupported),
-    evidenceValidityDiff:
-      meta?.tsEvidenceValidity != null && meta?.pyEvidenceValidity != null
-        ? Math.abs(meta.tsEvidenceValidity - meta.pyEvidenceValidity)
-        : null,
-    latencyDiffMs:
-      meta?.tsLatencyMs != null && meta?.pyLatencyMs != null ? Math.abs(meta.tsLatencyMs - meta.pyLatencyMs) : null,
-  };
-}
-
-/** Deterministic shadow sampling — stable for the same seed. */
+/** Deterministic shadow sampling — stable for the same seed (deprecated; pipeline never samples). */
 export function shouldSampleShadow(
   seed: string,
   samplePercent = getEnv().SHADOW_SAMPLE_PERCENT,
@@ -503,18 +441,6 @@ export function shouldSampleShadow(
 }
 
 /**
- * @deprecated Allowlist parsing is no longer used. All tenants use Python.
- */
-function parseTenantAllowlist(raw: string): Set<string> {
-  return new Set(
-    raw
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-  );
-}
-
-/**
  * Backend resolution for resume intelligence.
  * Python is the ONLY supported backend. Always returns "python".
  * The tenantId parameter is kept for API compatibility but is ignored.
@@ -523,6 +449,7 @@ export function resolveIntelligenceBackendForTenant(_opts: {
   tenantId: string;
 }): IntelligenceBackendMode {
   // Python is the only backend. No fallback, no allowlist, no kill switch.
+  void _opts;
   return "python";
 }
 
