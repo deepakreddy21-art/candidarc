@@ -73,5 +73,14 @@ describe("architecture: Python-only resume intelligence", () => {
     // Final QA should have bounded repair logic
     expect(pipelineSource).toContain("finalQaRepairAttempted");
     expect(pipelineSource).toContain("Bounded repair");
+    expect(pipelineSource).toContain("V4R");
+    expect(pipelineSource).toContain("final-qa-repair");
+  });
+
+  it("does not import TypeScript resume generation providers", () => {
+    expect(pipelineSource).not.toMatch(/from\s+["'].*ai\/(openai|anthropic|mock)-provider["']/);
+    expect(pipelineSource).not.toContain("MockGenerationProvider");
+    expect(pipelineSource).not.toContain("OpenAIProvider");
+    expect(pipelineSource).not.toContain("AnthropicProvider");
   });
 });
