@@ -227,7 +227,6 @@ describe("resume generation crash recovery", () => {
       idempotencyKey: `idem_crash_${Date.now()}`,
       payload: { customerFacing: true, autoAdvanceAudits: true, executionBackend: "python" },
       createdAt: nowIso(),
-      updatedAt: nowIso(),
     });
     const queue = new InProcessQueueAdapter();
     const engine = new DbWorkflowEngine(repos.workflows, queue);

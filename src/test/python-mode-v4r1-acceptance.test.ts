@@ -7,6 +7,9 @@
  * - CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair on FastAPI
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { createEmptyMemoryStore, MemoryRepositories, newId, nowIso } from "../../server/database/repositories";
 import { DbWorkflowEngine } from "../../server/workflows/engine";
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
@@ -18,10 +21,15 @@ import {
   getPythonIntelligenceClient,
   resetPythonIntelligenceClient,
 } from "../../server/intelligence/python-client";
+import type { AuthContext } from "../../server/auth/guards";
+import { CustomerGenerateService } from "../../server/modules/resumes/customer-generate";
+import { LocalFilesystemStorage } from "../../server/storage/local";
+import { renderPdfAndDocx } from "../../server/resumes/document-renderer";
 
 const TENANT = "ten_v4r1_e2e";
 const OTHER_TENANT = "ten_v4r1_other";
 const USER = "user_v4r1_e2e";
+const PEER = "user_v4r1_peer";
 const BASE = process.env.PYTHON_BACKEND_URL;
 const TOKEN = process.env.PYTHON_BACKEND_TOKEN || "dev-python-backend-token-change-me";
 const FORCE = process.env.CANDIDARC_MOCK_FINAL_QA_FORCE;
@@ -31,6 +39,8 @@ const describeHttp = BASE && FORCE === "fail_until_repair" ? describe : describe
 describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
   let providerSpy: ReturnType<typeof vi.spyOn>;
   let regenerateCount = 0;
+  let storageDir: string;
+  let storage: LocalFilesystemStorage;
 
   beforeAll(async () => {
     const health = await fetch(`${BASE}/health/live`);
@@ -42,6 +52,8 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     resetDbCache();
     resetPythonIntelligenceClient();
     regenerateCount = 0;
+    storageDir = mkdtempSync(join(tmpdir(), "candidarc-v4r1-"));
+    storage = new LocalFilesystemStorage(storageDir);
     vi.stubEnv("APP_MODE", "demo");
     vi.stubEnv("AI_MODE", "mock");
     vi.stubEnv("CANDIDARC_DATA_MODE", "memory");
@@ -65,9 +77,14 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     resetPythonIntelligenceClient();
     resetEnvCache();
     resetDbCache();
+    try {
+      rmSync(storageDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   });
 
-  it("completes failed Final QA repair journey with distinct usage and blocked downloads", async () => {
+  it("completes failed Final QA repair journey with PDF/DOCX auth and usage proof", async () => {
     const store = createEmptyMemoryStore();
     const repos = new MemoryRepositories(store);
     store.tenants.set(TENANT, {
@@ -93,11 +110,26 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
       role: "owner",
       createdAt: nowIso(),
     });
+    store.memberships.push({
+      id: newId("tm"),
+      tenantId: TENANT,
+      userId: PEER,
+      role: "member",
+      createdAt: nowIso(),
+    });
     await repos.users.create({
       id: USER,
       publicId: "usr_v4r1_e2e",
       email: "v4r1-e2e@example.com",
       name: "V4R1 E2E",
+      passwordHash: "x",
+      emailVerified: true,
+    });
+    await repos.users.create({
+      id: PEER,
+      publicId: "usr_v4r1_peer",
+      email: "v4r1-peer@example.com",
+      name: "V4R1 Peer",
       passwordHash: "x",
       emailVerified: true,
     });
@@ -210,6 +242,31 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     }
     await queue.start();
 
+    const service = new CustomerGenerateService(repos, engine, storage);
+    const owner = await repos.users.findById(USER);
+    const peer = await repos.users.findById(PEER);
+    const ctx: AuthContext = {
+      requestId: newId("req"),
+      user: { id: owner!.id, publicId: owner!.publicId, email: owner!.email, name: owner!.name },
+      memberships: [{ tenantId: TENANT, tenantPublicId: "tenp_v4r1_e2e", role: "owner" }],
+      activeTenantId: TENANT,
+      repos: { applications: repos.applications, evidence: repos.evidence },
+    };
+    const peerCtx: AuthContext = {
+      requestId: newId("req"),
+      user: { id: peer!.id, publicId: peer!.publicId, email: peer!.email, name: peer!.name },
+      memberships: [{ tenantId: TENANT, tenantPublicId: "tenp_v4r1_e2e", role: "member" }],
+      activeTenantId: TENANT,
+      repos: { applications: repos.applications, evidence: repos.evidence },
+    };
+    const otherTenantCtx: AuthContext = {
+      requestId: newId("req"),
+      user: { id: owner!.id, publicId: owner!.publicId, email: owner!.email, name: owner!.name },
+      memberships: [{ tenantId: OTHER_TENANT, tenantPublicId: "tenp_v4r1_other", role: "owner" }],
+      activeTenantId: OTHER_TENANT,
+      repos: { applications: repos.applications, evidence: repos.evidence },
+    };
+
     const run = await engine.start({
       tenantId: TENANT,
       applicationId: app.id,
@@ -219,15 +276,33 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
       payload: { customerFacing: true, autoAdvanceAudits: true },
     });
 
+    // Deny downloads before FINAL_READY (assert at least once mid-journey).
+    let deniedBeforeReady = false;
     const deadline = Date.now() + 180_000;
     while (Date.now() < deadline) {
       const status = await engine.getStatus(TENANT, run.publicId);
+      if (
+        !deniedBeforeReady &&
+        status &&
+        status.stage !== "FINAL_READY" &&
+        status.stage !== "FINAL_QA_FAILED"
+      ) {
+        await repos.applications.update(TENANT, app.publicId, {
+          workflowStage: status.stage,
+          stage: status.stage,
+        });
+        await expect(service.getDownload(ctx, run.publicId, "pdf")).rejects.toMatchObject({
+          code: "DOCUMENT_NOT_READY",
+        });
+        deniedBeforeReady = true;
+      }
       if (status?.stage === "FINAL_READY" || status?.status === "completed") break;
       if (status?.stage === "FINAL_QA_FAILED" || status?.status === "failed") {
         throw new Error(`failed early: ${status.stage} ${JSON.stringify(status.payload)}`);
       }
       await new Promise((r) => setTimeout(r, 80));
     }
+    expect(deniedBeforeReady).toBe(true);
 
     const final = await engine.getStatus(TENANT, run.publicId);
     expect(final?.stage).toBe("FINAL_READY");
@@ -243,6 +318,8 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     expect(JSON.stringify(v4!.sections)).not.toBe(JSON.stringify(repair!.sections));
     expect(JSON.stringify(repair!.sections).toLowerCase()).not.toContain("ownership focus");
     expect(JSON.stringify(repair!.sections).toLowerCase()).not.toContain("[python emphasis]");
+    // Original failed emphasis condition is corrected in V4R1 visible content.
+    expect(JSON.stringify(repair!.sections).toLowerCase()).toMatch(/python/);
 
     const usageRows = [...store.usageLedger.values()].filter((row) => row.tenantId === TENANT);
     const genKeys = usageRows
@@ -253,11 +330,76 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     expect(genKeys.some((key) => key.includes("repair:v4-to-v4r1:"))).toBe(true);
     expect(qaKeys.some((key) => key.includes("final-qa:v4:"))).toBe(true);
     expect(qaKeys.some((key) => key.includes(`final-qa:v${repair!.versionNumber}:`))).toBe(true);
+    const costRows = usageRows.filter((row) => String(row.idempotencyKey).endsWith(":cost"));
+    expect(costRows.length).toBeGreaterThanOrEqual(4);
 
-    // Downloads remain blocked until FINAL_READY (already FINAL_READY) — before files exist → DOCUMENT_NOT_READY
     const liveApp = await repos.applications.getByPublicId(TENANT, app.publicId);
     expect(liveApp?.workflowStage).toBe("FINAL_READY");
     expect(liveApp?.metadata?.customerFiles).toBeUndefined();
+    // FINAL_READY but documents not rendered yet → still denied.
+    await expect(service.getDownload(ctx, run.publicId, "pdf")).rejects.toMatchObject({
+      code: "DOCUMENT_NOT_READY",
+    });
+
+    const rendered = await renderPdfAndDocx({
+      resumeVersion: repair!,
+      candidateName: "V4R1 E2E",
+      role: app.role,
+      company: app.company,
+      tenantId: TENANT,
+      applicationId: app.publicId,
+      contact: {
+        name: "V4R1 E2E",
+        email: "v4r1-e2e@example.com",
+        phone: "+1 555 0100",
+        location: "Remote",
+      },
+    });
+    const pdfKey = `generated/${USER}/${app.publicId}/${repair!.publicId}/resume.pdf`;
+    const docxKey = `generated/${USER}/${app.publicId}/${repair!.publicId}/resume.docx`;
+    await storage.putObject({
+      tenantId: TENANT,
+      key: pdfKey,
+      body: rendered.pdfBuffer,
+      contentType: "application/pdf",
+    });
+    await storage.putObject({
+      tenantId: TENANT,
+      key: docxKey,
+      body: rendered.docxBuffer,
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    await repos.applications.update(TENANT, app.publicId, {
+      status: "ready",
+      metadata: {
+        ...liveApp!.metadata,
+        customerFiles: {
+          pdfStorageKey: pdfKey,
+          docxStorageKey: docxKey,
+          pdfFileId: rendered.pdfFileId,
+          docxFileId: rendered.docxFileId,
+          pageCount: rendered.pageCount,
+        },
+        customerFinalVersions: [repair!.publicId],
+      },
+    });
+
+    const pdf = await service.getDownload(ctx, run.publicId, "pdf");
+    const docx = await service.getDownload(ctx, run.publicId, "docx");
+    expect(pdf.body.byteLength).toBeGreaterThan(200);
+    expect(docx.body.byteLength).toBeGreaterThan(200);
+    expect(pdf.body.subarray(0, 5).toString()).toBe("%PDF-");
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(docx.body);
+    const docXml = (await zip.file("word/document.xml")?.async("string")) ?? "";
+    expect(docXml.toLowerCase()).toMatch(/python|kubernetes|techcorp|platform/);
+
+    await expect(service.getDownload(peerCtx, run.publicId, "pdf")).rejects.toMatchObject({
+      code: "FORBIDDEN_OWNERSHIP",
+    });
+    await expect(service.getDownload(otherTenantCtx, run.publicId, "pdf")).rejects.toMatchObject({
+      code: "WORKFLOW_NOT_FOUND",
+    });
 
     // Cross-tenant isolation
     await expect(repos.resumes.getByApplication(OTHER_TENANT, app.publicId)).resolves.toBeNull();
@@ -266,6 +408,7 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     // Real workflow replay of Final QA does not create additional versions or provider regenerations
     const gensBefore = regenerateCount;
     const versionCount = versions.length;
+    const usageBefore = usageRows.length;
     const live = await repos.workflows.getByPublicId(TENANT, run.publicId);
     await repos.workflows.updateRun(live!.id, {
       stage: "FINAL_QA_RUNNING",
@@ -281,6 +424,12 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
     expect(regenerateCount).toBe(gensBefore);
     const after = await repos.workflows.getById(live!.id);
     expect(after?.stage).toBe("FINAL_READY");
+    const usageAfter = [...store.usageLedger.values()].filter((row) => row.tenantId === TENANT);
+    // Replay may create no new billable generation/repair rows.
+    expect(
+      usageAfter.filter((row) => row.kind === "resume_generation").map((r) => r.idempotencyKey).sort(),
+    ).toEqual([...genKeys].sort());
+    expect(usageAfter.length).toBeGreaterThanOrEqual(usageBefore);
 
     await queue.stop();
   }, 200_000);
