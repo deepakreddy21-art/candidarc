@@ -56,49 +56,21 @@ export class UsageService {
   }
 
   async commitUsage(ctx: AuthContext, idempotencyKey: string, costCents?: number | string | null) {
+    const user = requireUser(ctx);
     const tenantId = this.tenantId(ctx);
     const scopedKey = this.scopeKey(tenantId, idempotencyKey);
-    const existing = await this.usage.findByIdempotency(tenantId, scopedKey);
-    if (!existing) throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
-    if (existing.tenantId !== tenantId) {
-      throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
-    }
-    if (existing.status === "committed") return existing;
-    if (existing.status === "released") {
-      throw new AppError("USAGE_ALREADY_RELEASED", "Cannot commit a released reservation", 409);
-    }
-    const committed = await this.usage.updateStatus(tenantId, scopedKey, "committed");
-    // Null/undefined means unknown — never write a zero provider_cost as if cost were known.
-    if (costCents == null) {
-      await this.usage.append({
-        tenantId: existing.tenantId,
-        userId: existing.userId,
-        kind: "provider_cost",
-        units: "0",
-        costCents: "0",
-        workflowRunId: existing.workflowRunId,
-        idempotencyKey: `${scopedKey}:cost-unknown`,
-        status: "committed",
-        metadata: {
-          parentKey: scopedKey,
-          costStatus: "unknown",
-          billable: false,
-        },
-      });
-      return committed;
-    }
-    await this.usage.append({
-      tenantId: existing.tenantId,
-      userId: existing.userId,
-      kind: "provider_cost",
-      units: "0",
-      costCents: String(costCents),
-      workflowRunId: existing.workflowRunId,
-      idempotencyKey: `${scopedKey}:cost`,
-      status: "committed",
-      metadata: { parentKey: scopedKey, costStatus: "known", billable: true },
+
+    // Use transactional commit to ensure reservation and cost row are written atomically.
+    // This prevents leaving a committed reservation without a cost observation row.
+    const result = await this.usage.commitReservedWithCost({
+      tenantId,
+      idempotencyKey: scopedKey,
+      costCents: costCents ?? null,
+      userId: user.id,
     });
-    return committed;
+
+    logger.debug({ idempotencyKey: scopedKey, costKnown: costCents != null }, "usage committed atomically");
+    return result.reservation;
   }
 
   async releaseUsage(ctx: AuthContext, idempotencyKey: string) {

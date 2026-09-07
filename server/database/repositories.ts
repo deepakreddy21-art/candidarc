@@ -473,6 +473,25 @@ export interface UsageRepository {
   append(entry: Omit<UsageLedgerRecord, "id" | "publicId" | "createdAt"> & { id?: string; publicId?: string }): Promise<UsageLedgerRecord>;
   updateStatus(tenantId: string, idempotencyKey: string, status: UsageLedgerRecord["status"]): Promise<UsageLedgerRecord>;
   releaseReservedForWorkflowRun(tenantId: string, workflowRunId: string): Promise<number>;
+  /**
+   * Atomically commit a reserved usage entry and create a cost observation row.
+   * Uses a transaction to ensure committed status and cost row are written together.
+   *
+   * - If already committed, returns existing reservation + existing cost row (idempotent).
+   * - If released, throws an error.
+   * - If costCents is null, creates a `${key}:cost-unknown` row with billable=false.
+   * - If costCents is provided, creates a `${key}:cost` row.
+   *
+   * Never leaves a reservation committed without a corresponding cost observation row.
+   */
+  commitReservedWithCost(input: {
+    tenantId: string;
+    idempotencyKey: string; // already tenant-scoped key as stored
+    costCents: number | string | null; // null = unknown
+    userId: string;
+    workflowRunId?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{ reservation: UsageLedgerRecord; costRow: UsageLedgerRecord | null }>;
 }
 
 export interface FileRepository {
@@ -1097,6 +1116,73 @@ export class MemoryRepositories implements Repositories {
         }
         return released;
       },
+      commitReservedWithCost: (input) =>
+        withMemoryClaimLock(`usage:${input.tenantId}:${input.idempotencyKey}`, async () => {
+          // Find the reservation
+          let reservation: UsageLedgerRecord | null = null;
+          for (const u of store.usageLedger.values()) {
+            if (u.tenantId === input.tenantId && u.idempotencyKey === input.idempotencyKey) {
+              reservation = u;
+              break;
+            }
+          }
+          if (!reservation) {
+            throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
+          }
+          if (reservation.tenantId !== input.tenantId) {
+            throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
+          }
+
+          // Check for existing cost row (for idempotency)
+          const costKey = input.costCents == null
+            ? `${input.idempotencyKey}:cost-unknown`
+            : `${input.idempotencyKey}:cost`;
+          let existingCostRow: UsageLedgerRecord | null = null;
+          for (const u of store.usageLedger.values()) {
+            if (u.tenantId === input.tenantId && u.idempotencyKey === costKey) {
+              existingCostRow = u;
+              break;
+            }
+          }
+
+          // If already committed, return existing reservation + cost row (idempotent)
+          if (reservation.status === "committed") {
+            return { reservation, costRow: existingCostRow };
+          }
+
+          // If released, throw
+          if (reservation.status === "released") {
+            throw new AppError("USAGE_ALREADY_RELEASED", "Cannot commit a released reservation", 409);
+          }
+
+          // Update status to committed
+          const updatedReservation: UsageLedgerRecord = { ...reservation, status: "committed" };
+          store.usageLedger.set(reservation.id, updatedReservation);
+
+          // Create cost row if it doesn't exist
+          if (!existingCostRow) {
+            const costRecord: UsageLedgerRecord = {
+              id: newId("ul"),
+              publicId: newPublicId("ulp"),
+              tenantId: input.tenantId,
+              userId: input.userId,
+              kind: "provider_cost",
+              units: "0",
+              costCents: input.costCents == null ? "0" : String(input.costCents),
+              workflowRunId: input.workflowRunId,
+              idempotencyKey: costKey,
+              status: "committed",
+              metadata: input.costCents == null
+                ? { parentKey: input.idempotencyKey, costStatus: "unknown", billable: false, ...(input.metadata ?? {}) }
+                : { parentKey: input.idempotencyKey, costStatus: "known", billable: true, ...(input.metadata ?? {}) },
+              createdAt: nowIso(),
+            };
+            store.usageLedger.set(costRecord.id, costRecord);
+            existingCostRow = costRecord;
+          }
+
+          return { reservation: updatedReservation, costRow: existingCostRow };
+        }),
     };
 
     this.files = {

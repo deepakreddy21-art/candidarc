@@ -1351,6 +1351,116 @@ function createUsageRepository(db: Db): Repositories["usage"] {
         .returning();
       return rows.length;
     },
+    /**
+     * Atomically commit a reserved usage entry and create a cost observation row.
+     * Uses a transaction with SELECT FOR UPDATE to ensure atomicity.
+     *
+     * Postgres semantics:
+     * - SELECT reservation FOR UPDATE where tenant_id + idempotency_key
+     * - Verify exists and tenant matches
+     * - If already committed, return existing reservation + existing cost row (idempotent)
+     * - If released, throw
+     * - UPDATE status to committed
+     * - If costCents != null: INSERT provider_cost row with key `${key}:cost` ON CONFLICT DO NOTHING, then select it
+     * - If costCents == null: INSERT `${key}:cost-unknown` with costStatus unknown, billable false, ON CONFLICT DO NOTHING
+     * - Never leaves committed without a cost or cost-unknown observation row in the same transaction
+     *
+     * Note: If crash occurs mid-transaction, Postgres rolls back the entire transaction,
+     * so we never leave a committed reservation without a cost observation row.
+     */
+    commitReservedWithCost: async (input) => {
+      return db.transaction(async (tx) => {
+        // 1. SELECT reservation FOR UPDATE
+        const reservationRows = await tx
+          .select()
+          .from(s.usageLedger)
+          .where(
+            and(eq(s.usageLedger.tenantId, input.tenantId), eq(s.usageLedger.idempotencyKey, input.idempotencyKey)),
+          )
+          .for("update")
+          .limit(1);
+
+        const reservation = reservationRows[0];
+
+        // 2. Verify exists and tenant matches
+        if (!reservation) {
+          throw new AppError("USAGE_NOT_FOUND", "Usage reservation not found", 404);
+        }
+        if (reservation.tenantId !== input.tenantId) {
+          throw new AppError("USAGE_FORBIDDEN", "Cannot commit another tenant's usage", 403);
+        }
+
+        // Determine cost key based on whether cost is known
+        const costKey =
+          input.costCents == null ? `${input.idempotencyKey}:cost-unknown` : `${input.idempotencyKey}:cost`;
+
+        // 3. If already committed, return existing reservation + existing cost row (idempotent)
+        if (reservation.status === "committed") {
+          const existingCostRow = (
+            await tx
+              .select()
+              .from(s.usageLedger)
+              .where(and(eq(s.usageLedger.tenantId, input.tenantId), eq(s.usageLedger.idempotencyKey, costKey)))
+              .limit(1)
+          )[0];
+          return {
+            reservation: mapUsage(reservation),
+            costRow: existingCostRow ? mapUsage(existingCostRow) : null,
+          };
+        }
+
+        // 4. If released, throw
+        if (reservation.status === "released") {
+          throw new AppError("USAGE_ALREADY_RELEASED", "Cannot commit a released reservation", 409);
+        }
+
+        // 5. UPDATE status to committed
+        const [updatedReservation] = await tx
+          .update(s.usageLedger)
+          .set({ status: "committed" })
+          .where(eq(s.usageLedger.id, reservation.id))
+          .returning();
+
+        // 6-7. INSERT cost row ON CONFLICT DO NOTHING, then select it
+        const costMetadata =
+          input.costCents == null
+            ? { parentKey: input.idempotencyKey, costStatus: "unknown", billable: false, ...(input.metadata ?? {}) }
+            : { parentKey: input.idempotencyKey, costStatus: "known", billable: true, ...(input.metadata ?? {}) };
+
+        await tx
+          .insert(s.usageLedger)
+          .values({
+            publicId: newId("ulp"),
+            tenantId: input.tenantId,
+            userId: input.userId,
+            kind: "provider_cost",
+            units: "0",
+            costCents: input.costCents == null ? "0" : String(input.costCents),
+            workflowRunId: input.workflowRunId,
+            idempotencyKey: costKey,
+            status: "committed",
+            metadata: costMetadata,
+          })
+          .onConflictDoNothing({
+            target: [s.usageLedger.tenantId, s.usageLedger.idempotencyKey],
+          });
+
+        // Select the cost row (either just inserted or existing)
+        const costRow = (
+          await tx
+            .select()
+            .from(s.usageLedger)
+            .where(and(eq(s.usageLedger.tenantId, input.tenantId), eq(s.usageLedger.idempotencyKey, costKey)))
+            .limit(1)
+        )[0];
+
+        // 8. Transaction commits atomically — never leaves committed without cost row
+        return {
+          reservation: mapUsage(updatedReservation!),
+          costRow: costRow ? mapUsage(costRow) : null,
+        };
+      });
+    },
   };
 }
 
