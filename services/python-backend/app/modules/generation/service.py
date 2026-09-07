@@ -15,8 +15,14 @@ from app.domain.schemas import (
     ResumeDocument,
     UserConfirmation,
 )
+from app.core.errors import FINAL_QA_REPAIR_UNREPAIRABLE, ProviderError
 from app.modules.evidence.service import normalize_evidence
-from app.modules.guardrails.service import build_grounded_resume, validate_resume_claims
+from app.modules.guardrails.service import (
+    build_grounded_resume,
+    technologies_from_confirmations,
+    validate_resume_claims,
+)
+from app.modules.quality.service import verify_repair_fixed_checks
 from app.modules.scoring.service import score_resume
 
 # Disallowed free-form refinement patterns — fabrication / unsupported claims.
@@ -466,13 +472,18 @@ def generate_grounded_resume(
         refinement_applied = True
 
     if final_qa_repair is not None:
+        # Collect technologies from evidence AND affirmative scoped confirmations
         evidence_techs = {t.lower() for item in evidence for t in item.technologies}
+        confirmation_techs = technologies_from_confirmations(user_confirmations, evidence)
+        all_allowed_techs = evidence_techs | confirmation_techs
+
         for target in final_qa_repair.grounded_targets:
-            if target.lower() not in evidence_techs and not any(
-                target.lower() in et or et in target.lower() for et in evidence_techs
+            target_lower = target.lower()
+            if target_lower not in all_allowed_techs and not any(
+                target_lower in et or et in target_lower for et in all_allowed_techs
             ):
                 raise ValueError(
-                    f"GUARDRAIL_VIOLATION:Repair target '{target}' not found in evidence"
+                    f"GUARDRAIL_VIOLATION:Repair target '{target}' not found in evidence or confirmations"
                 )
         approved = set(final_qa_repair.approved_evidence_ids)
         known_ids = {item.id for item in evidence}
@@ -531,6 +542,19 @@ def generate_grounded_resume(
                 raise ValueError(
                     "REFINEMENT_NOT_APPLICABLE:Safe Final-QA repair produced no material visible change"
                 )
+            # Verify repair actually fixed the failed checks — fail closed if unrepairable
+            repair_fixed, check_results = verify_repair_fixed_checks(
+                updated,
+                evidence,
+                final_qa_repair.failed_checks,
+                grounded_targets=final_qa_repair.grounded_targets,
+            )
+            if not repair_fixed:
+                failed_labels = [c["label"] for c in check_results if c["status"] == "fail"]
+                raise ProviderError(
+                    FINAL_QA_REPAIR_UNREPAIRABLE,
+                    f"Repair could not fix checks: {', '.join(failed_labels)}",
+                )
             final_notes = updated.notes or base_notes
         elif refinement_instruction:
             before_refine = updated
@@ -584,6 +608,19 @@ def generate_grounded_resume(
         if _visible_sections_fingerprint(resume) == _visible_sections_fingerprint(before):
             raise ValueError(
                 "REFINEMENT_NOT_APPLICABLE:Safe Final-QA repair produced no material visible change"
+            )
+        # Verify repair actually fixed the failed checks — fail closed if unrepairable
+        repair_fixed, check_results = verify_repair_fixed_checks(
+            resume,
+            evidence,
+            final_qa_repair.failed_checks,
+            grounded_targets=final_qa_repair.grounded_targets,
+        )
+        if not repair_fixed:
+            failed_labels = [c["label"] for c in check_results if c["status"] == "fail"]
+            raise ProviderError(
+                FINAL_QA_REPAIR_UNREPAIRABLE,
+                f"Repair could not fix checks: {', '.join(failed_labels)}",
             )
         final_notes = resume.notes or base_notes
     elif refinement_instruction:

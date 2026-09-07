@@ -157,12 +157,13 @@ class MockProvider:
         resume: ResumeDocument,
         evidence: list[EvidenceItem],
         deterministic_checks: list[Any] | None = None,
+        grounded_targets: list[str] | None = None,
         **_: Any,
     ) -> tuple[FinalQaResponse, int, ProviderUsage]:
         import os
 
         started = time.perf_counter()
-        checks = quality.run_deterministic_checks(resume, evidence)
+        checks = quality.run_deterministic_checks(resume, evidence, grounded_targets=grounded_targets)
         if deterministic_checks:
             for item in deterministic_checks:
                 if hasattr(item, "model_dump"):
@@ -178,17 +179,38 @@ class MockProvider:
                     {"label": data["label"], "status": status, "detail": data.get("detail", "")}
                 )
 
-        # Deterministic test hook: fail once until a structured repair has been applied.
+        # Deterministic test hook: fail until primary tech actually appears in summary/skills lead.
         # Only active when CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair (demo/test).
+        # This now checks REAL content, not just notes markers.
         force = os.environ.get("CANDIDARC_MOCK_FINAL_QA_FORCE", "").strip().lower()
         if force == "fail_until_repair":
-            repaired = "final-qa-repair:applied" in (resume.notes or "").lower()
-            if not repaired:
+            # Derive primary tech from grounded_targets or evidence
+            primary_tech: str | None = None
+            if grounded_targets:
+                primary_tech = grounded_targets[0].lower()
+            else:
+                evidence_techs = [t.lower() for item in evidence for t in item.technologies]
+                if evidence_techs:
+                    primary_tech = evidence_techs[0]
+
+            # Check if primary tech appears in summary or skills lead
+            condition_fixed = False
+            if primary_tech:
+                for section in resume.sections:
+                    if section.type in {"summary", "skills"}:
+                        if section.bullets:
+                            lead_text = section.bullets[0].text.lower()[:80]
+                            lead_techs = [t.lower() for t in section.bullets[0].technologies]
+                            if primary_tech in lead_text or primary_tech in lead_techs:
+                                condition_fixed = True
+                                break
+
+            if not condition_fixed:
                 checks.append(
                     {
                         "label": "Primary technology emphasis",
                         "status": "fail",
-                        "detail": "Lead with grounded primary technology from evidence",
+                        "detail": f"Lead with grounded primary technology from evidence ({primary_tech or 'none'})",
                     }
                 )
 

@@ -495,6 +495,59 @@ def evidence_backed_confirmations(confirmations: list[UserConfirmation] | None) 
     return [c for c in (confirmations or []) if c.can_create_first_person_claim()]
 
 
+def confirmations_with_provenance(confirmations: list[UserConfirmation] | None) -> list[UserConfirmation]:
+    """Confirmations that provide provenance (yes + evidence_description OR related_evidence_ids)."""
+    return [c for c in (confirmations or []) if c.has_provenance()]
+
+
+def validate_confirmation_scope(
+    confirmations: list[UserConfirmation] | None,
+    *,
+    tenant_id: str | None = None,
+    owner_user_id: str | None = None,
+) -> list[str]:
+    """Validate confirmation tenant/owner isolation. Returns violation codes."""
+    violations: list[str] = []
+    if tenant_id is None:
+        return violations
+    for conf in confirmations or []:
+        # Only check confirmations that have provenance fields set
+        if conf.tenant_id is not None and conf.tenant_id != tenant_id:
+            violations.append("CONFIRMATION_CROSS_TENANT")
+        if owner_user_id is not None and conf.owner_user_id is not None:
+            if conf.owner_user_id != owner_user_id:
+                violations.append("CONFIRMATION_CROSS_OWNER")
+    return violations
+
+
+def technologies_from_confirmations(
+    confirmations: list[UserConfirmation] | None,
+    evidence: list[EvidenceItem] | None = None,
+) -> set[str]:
+    """Extract technologies proven by affirmative scoped confirmations.
+
+    Technologies come from:
+    1. evidence_description text (extracted via claim atoms)
+    2. related_evidence_ids (technologies from linked evidence items)
+    """
+    techs: set[str] = set()
+    evidence_by_id = {item.id: item for item in (evidence or [])}
+
+    for conf in confirmations_with_provenance(confirmations):
+        # Technologies from evidence description text
+        if conf.evidence_description:
+            atoms = extract_claim_atoms(conf.evidence_description)
+            techs.update(atoms.technologies)
+
+        # Technologies from related evidence items
+        for eid in conf.related_evidence_ids:
+            if eid in evidence_by_id:
+                item = evidence_by_id[eid]
+                techs.update(_norm_tech(t) for t in item.technologies)
+
+    return {_norm_tech(t) for t in techs if t}
+
+
 def confirmation_without_evidence(confirmations: list[UserConfirmation] | None) -> list[UserConfirmation]:
     """Yes confirmations lacking evidence_description — must NOT become experience."""
     out: list[UserConfirmation] = []
@@ -555,10 +608,21 @@ def validate_resume_claims(
 
     JD, resume text from untrusted inputs, and company research are untrusted —
     they must not introduce unsupported hard facts or ATS manipulation.
+
+    Confirmation provenance: affirmative confirmations with evidence_description OR
+    related_evidence_ids provide provenance for technologies. Confirmations from
+    foreign tenant/owner are rejected.
     """
     violations: list[str] = []
     evidence_ids = {item.id for item in evidence}
     evidence_by_id = {item.id: item for item in evidence}
+
+    # Validate confirmation tenant/owner isolation
+    violations.extend(validate_confirmation_scope(
+        user_confirmations,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    ))
     # Every affirmative, described confirmation gets a dedicated synthetic item.
     # It is never appended to any other bullet's corpus.
     for idx, conf in enumerate(evidence_backed_confirmations(user_confirmations)):
@@ -582,6 +646,8 @@ def validate_resume_claims(
             )
     synthetic_evidence = [item for eid, item in evidence_by_id.items() if eid not in {e.id for e in evidence}]
     allowed = collect_allowed_technologies(evidence + synthetic_evidence, allowed_technologies)
+    # Add technologies proven by affirmative scoped confirmations
+    allowed.update(technologies_from_confirmations(user_confirmations, evidence))
     research_techs = {_norm_tech(t) for t in (research_technologies or [])}
     for finding in research_findings or []:
         research_techs.update(extract_claim_atoms(finding.summary).technologies)

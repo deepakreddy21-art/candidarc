@@ -297,8 +297,16 @@ class UserConfirmation(StrictModel):
 
     Only confirmations with a non-empty evidence_description may create first-person
     experience claims. Bare yes without evidence is ignored (never added as experience).
+
+    Provenance fields (id, tenant_id, owner_user_id) enable scoped validation:
+    - Confirmations from foreign tenants/owners are rejected during claim validation.
+    - Affirmative confirmations with evidence_description OR related_evidence_ids
+      may provide provenance for technologies in grounded_targets during repair.
     """
 
+    id: StrId | None = Field(default=None, description="Unique confirmation identifier for provenance")
+    tenant_id: StrId | None = Field(default=None, description="Tenant scope for isolation checks")
+    owner_user_id: StrId | None = Field(default=None, description="Owner user scope for isolation checks")
     topic: StrShort
     confirmed: bool
     evidence_description: str | None = Field(default=None, max_length=4_000)
@@ -312,6 +320,13 @@ class UserConfirmation(StrictModel):
             return False
         desc = (self.evidence_description or "").strip()
         return bool(desc)
+
+    def has_provenance(self) -> bool:
+        """True if this confirmation provides provenance via evidence or related IDs."""
+        if not self.confirmed:
+            return False
+        desc = (self.evidence_description or "").strip()
+        return bool(desc) or bool(self.related_evidence_ids)
 
 
 class ClaimSourcePolicy(StrictModel):

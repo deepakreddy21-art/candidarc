@@ -63,6 +63,7 @@ class OpenAIProvider:
         started = time.perf_counter()
         # Structured repair and free-form refinement share the deterministic grounded contract
         # used by MockProvider so live providers cannot invent during these paths.
+        # HONEST LABELING: Report as "deterministic" provider with zero tokens — never fake OpenAI.
         if kwargs.get("final_qa_repair") is not None or kwargs.get("refinement_instruction"):
             from app.modules.generation import service as generation
 
@@ -94,9 +95,11 @@ class OpenAIProvider:
             if violations:
                 raise ProviderError(GUARDRAIL_VIOLATION, f"GUARDRAIL_VIOLATION:{','.join(violations)}")
             latency = int((time.perf_counter() - started) * 1000)
+            # Honest provider: deterministic internal repair reports "deterministic" provider
+            # with zero tokens and zero cost — NEVER label local transform as OpenAI.
             usage = ProviderUsage(
-                provider=self.name,
-                model=self.model,
+                provider="deterministic",
+                model="internal",
                 prompt_version=RESUME_GENERATION.prompt_version,
                 rubric_version=SCORE_RUBRIC_VERSION,
                 input_tokens=0,
