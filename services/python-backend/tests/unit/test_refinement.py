@@ -42,14 +42,30 @@ def _visible(resume) -> str:
     for section in resume.sections:
         for bullet in section.bullets or []:
             parts.append(bullet.text.lower())
+            parts.append(" ".join(t.lower() for t in bullet.technologies))
         for item in section.items or []:
             for bullet in item.bullets:
                 parts.append(bullet.text.lower())
+                parts.append(" ".join(t.lower() for t in bullet.technologies))
+        if section.content:
+            parts.append(section.content.lower())
     return "\n".join(parts)
 
 
+def _skills_lead(resume) -> str:
+    for section in resume.sections:
+        if section.type != "skills":
+            continue
+        for bullet in section.bullets or []:
+            if bullet.technologies:
+                return str(bullet.technologies[0]).lower()
+            if bullet.text:
+                return bullet.text.split("·")[0].strip().lower()
+    return ""
+
+
 def test_allowed_refinement_emphasize_existing_tech(evidence: list[EvidenceItem]) -> None:
-    """Emphasizing a technology already in evidence changes visible content."""
+    """Emphasizing a technology already in evidence changes visible content professionally."""
     base = generate_grounded_resume(
         absolute_version=0,
         cycle_step=0,
@@ -67,21 +83,24 @@ def test_allowed_refinement_emphasize_existing_tech(evidence: list[EvidenceItem]
     )
     assert "refinement:applied" in resume.notes
     assert _visible(resume) != _visible(base)
-    assert "python ownership focus" in _visible(resume)
+    assert "ownership focus" not in _visible(resume)
+    assert "[" not in _visible(resume) or "emphasis]" not in _visible(resume)
+    assert _skills_lead(resume) == "python"
 
 
 def test_allowed_refinement_paraphrase_wording(evidence: list[EvidenceItem]) -> None:
-    """Active-verb refinement changes visible wording when weak verbs exist or emphasizes ownership."""
+    """Concise/clearer wording can change visible text without ownership markers."""
     resume = generate_grounded_resume(
         absolute_version=0,
         cycle_step=0,
         evidence=evidence,
         allowed_technologies=["Python"],
         job_description="Python engineer",
-        refinement_instruction="Emphasize Python with stronger active ownership wording",
+        refinement_instruction="Emphasize Python with clearer concise wording",
     )
     assert "refinement:applied" in resume.notes
-    assert "python ownership focus" in _visible(resume)
+    assert "ownership focus" not in _visible(resume)
+    assert _skills_lead(resume) == "python"
 
 
 def test_unsupported_refinement_add_metric_fails(evidence: list[EvidenceItem]) -> None:
@@ -168,8 +187,10 @@ def test_different_refinement_instructions_produce_different_visible_content(evi
         refinement_instruction="Emphasize PyTorch deep learning",
     )
     assert _visible(resume1) != _visible(resume2)
-    assert "python ownership focus" in _visible(resume1)
-    assert "pytorch ownership focus" in _visible(resume2)
+    assert _skills_lead(resume1) == "python"
+    assert _skills_lead(resume2) == "pytorch"
+    assert "ownership focus" not in _visible(resume1)
+    assert "ownership focus" not in _visible(resume2)
 
 
 def test_safe_impossible_refinement_returns_not_applicable(evidence: list[EvidenceItem]) -> None:
@@ -398,7 +419,11 @@ def test_api_refinement_allowed(
     body = response.json()
     assert "refinement:applied" in body["resume"]["notes"]
     visible = json.dumps(body["resume"]["sections"]).lower()
-    assert "python ownership focus" in visible
+    assert "ownership focus" not in visible
+    skills = next(s for s in body["resume"]["sections"] if s["type"] == "skills")
+    lead = (skills.get("bullets") or [{}])[0]
+    techs = [t.lower() for t in (lead.get("technologies") or [])]
+    assert techs and techs[0] == "python"
 
 
 def test_api_refinement_not_applicable(
@@ -449,7 +474,11 @@ def test_api_regenerate_refinement_visible(
     assert response.status_code == 200, response.text
     body = response.json()
     visible = json.dumps(body["resume"]["sections"]).lower()
-    assert "pytorch ownership focus" in visible
+    assert "ownership focus" not in visible
+    skills = next(s for s in body["resume"]["sections"] if s["type"] == "skills")
+    lead = (skills.get("bullets") or [{}])[0]
+    techs = [t.lower() for t in (lead.get("technologies") or [])]
+    assert techs and techs[0] == "pytorch"
     assert visible != json.dumps(base.model_dump()["sections"]).lower()
 
 
@@ -530,4 +559,9 @@ def test_api_both_refinement_and_matches(
     assert response.status_code == 200, response.text
     body = response.json()
     assert "refinement:applied" in body["resume"]["notes"]
-    assert "python ownership focus" in json.dumps(body["resume"]["sections"]).lower()
+    visible = json.dumps(body["resume"]["sections"]).lower()
+    assert "ownership focus" not in visible
+    skills = next(s for s in body["resume"]["sections"] if s["type"] == "skills")
+    lead = (skills.get("bullets") or [{}])[0]
+    techs = [t.lower() for t in (lead.get("technologies") or [])]
+    assert techs and techs[0] == "python"

@@ -838,6 +838,112 @@
         "title": "FinalQaCheck",
         "type": "object"
       },
+      "FinalQaFailedCheck": {
+        "additionalProperties": false,
+        "description": "One failed Final-QA check carried into a structured repair directive.",
+        "properties": {
+          "detail": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Detail",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "warn",
+              "fail",
+              "warning",
+              "pending"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "status"
+        ],
+        "title": "FinalQaFailedCheck",
+        "type": "object"
+      },
+      "FinalQaRepairDirective": {
+        "additionalProperties": false,
+        "description": "Internal Final-QA repair contract \u2014 distinct from free-form user refinement.\n\nFree-form `refinement_instruction` remains user-facing. Repair must never be\nsmuggled through that string (regex false-positives on inventing/emphasize).",
+        "properties": {
+          "approved_evidence_ids": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Approved Evidence Ids",
+            "type": "array"
+          },
+          "attempt": {
+            "default": 1,
+            "maximum": 1.0,
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "failed_checks": {
+            "items": {
+              "$ref": "#/components/schemas/FinalQaFailedCheck"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Failed Checks",
+            "type": "array"
+          },
+          "grounded_targets": {
+            "description": "Evidence-grounded technologies/responsibilities to prioritize",
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Grounded Targets",
+            "type": "array"
+          },
+          "repair_type": {
+            "const": "final_qa_repair",
+            "default": "final_qa_repair",
+            "title": "Repair Type",
+            "type": "string"
+          },
+          "source_version": {
+            "minimum": 0.0,
+            "title": "Source Version",
+            "type": "integer"
+          },
+          "source_version_label": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Version Label"
+          }
+        },
+        "required": [
+          "source_version",
+          "failed_checks"
+        ],
+        "title": "FinalQaRepairDirective",
+        "type": "object"
+      },
       "FinalQaRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1904,6 +2010,16 @@
             "maxItems": 200,
             "title": "Evidence Matches",
             "type": "array"
+          },
+          "final_qa_repair": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinalQaRepairDirective"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "job_description": {
             "maxLength": 100000,

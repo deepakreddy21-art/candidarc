@@ -430,6 +430,8 @@ export interface ResumeRepository {
   createResume(resume: Omit<ResumeRecord, "createdAt" | "updatedAt" | "deletedAt">): Promise<ResumeRecord>;
   appendVersion(version: Omit<ResumeVersionRecord, "createdAt"> & { createdAt?: string }): Promise<ResumeVersionRecord>;
   setCurrentVersion(tenantId: string, resumePublicId: string, versionPublicId: string): Promise<ResumeRecord>;
+  /** Atomically allocate the next numeric version for a resume (concurrency-safe). */
+  allocateNextVersionNumber?(tenantId: string, resumePublicId: string): Promise<number>;
 }
 
 export interface AuditRepository {
@@ -867,18 +869,43 @@ export class MemoryRepositories implements Repositories {
         return record;
       },
       async appendVersion(version) {
-        const existing = [...store.resumeVersions.values()].find(
-          (v) => v.tenantId === version.tenantId && v.idempotencyKey === version.idempotencyKey,
-        );
-        if (existing) return existing;
-        const record: ResumeVersionRecord = {
-          ...version,
-          scoreBreakdown: structuredClone(version.scoreBreakdown),
-          sections: structuredClone(version.sections),
-          createdAt: version.createdAt ?? nowIso(),
-        };
-        store.resumeVersions.set(record.id, record);
-        return record;
+        return withMemoryClaimLock(`resume-version:${version.resumeId}`, () => {
+          const existing = [...store.resumeVersions.values()].find(
+            (v) => v.tenantId === version.tenantId && v.idempotencyKey === version.idempotencyKey,
+          );
+          if (existing) return existing;
+          const collision = [...store.resumeVersions.values()].find(
+            (v) => v.resumeId === version.resumeId && v.versionNumber === version.versionNumber,
+          );
+          if (collision) {
+            // Idempotent reuse only when same idempotency key; otherwise allocate next free number
+            if (collision.idempotencyKey === version.idempotencyKey) return collision;
+            throw new AppError(
+              "RESUME_VERSION_CONFLICT",
+              `Resume version ${version.versionNumber} already exists`,
+              409,
+            );
+          }
+          const record: ResumeVersionRecord = {
+            ...version,
+            scoreBreakdown: structuredClone(version.scoreBreakdown),
+            sections: structuredClone(version.sections),
+            createdAt: version.createdAt ?? nowIso(),
+          };
+          store.resumeVersions.set(record.id, record);
+          return record;
+        });
+      },
+      async allocateNextVersionNumber(tenantId, resumePublicId) {
+        const resume = [...store.resumes.values()].find((r) => r.tenantId === tenantId && r.publicId === resumePublicId);
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+        // Share the appendVersion lock so allocate+append stay serialized under concurrency.
+        return withMemoryClaimLock(`resume-version:${resume.id}`, () => {
+          const nums = [...store.resumeVersions.values()]
+            .filter((v) => v.resumeId === resume.id)
+            .map((v) => v.versionNumber);
+          return (nums.length ? Math.max(...nums) : -1) + 1;
+        });
       },
       async setCurrentVersion(tenantId, resumePublicId, versionPublicId) {
         const resume = [...store.resumes.values()].find((r) => r.tenantId === tenantId && r.publicId === resumePublicId);

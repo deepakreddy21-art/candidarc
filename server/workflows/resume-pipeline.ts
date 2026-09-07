@@ -208,8 +208,10 @@ export class ResumePipeline {
     }
   }
 
-  private async reserve(run: WorkflowRunRecord, kind: string, units: number) {
-    const key = `${run.tenantId}:usage:${run.idempotencyKey}:${run.stage}:${kind}`;
+  private async reserve(run: WorkflowRunRecord, kind: string, units: number, operationId: string) {
+    // Distinct paid operations must not collide: include a stable operation identity.
+    // Retries of the same operationId remain idempotent via the usage ledger unique key.
+    const key = `${run.tenantId}:usage:${run.idempotencyKey}:${operationId}:${kind}`;
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind,
@@ -218,7 +220,7 @@ export class ResumePipeline {
       workflowRunId: run.id,
       idempotencyKey: key,
       status: "reserved",
-      metadata: { stage: run.stage },
+      metadata: { stage: run.stage, operationId },
     });
     return key;
   }
@@ -460,7 +462,7 @@ export class ResumePipeline {
       return;
     }
 
-    const usageKey = await this.reserve(run, "research", 1);
+    const usageKey = await this.reserve(run, "research", 1, "research:synthesize");
     await this.ensureExecutionBackendPersisted(run);
     const jobDescription = typeof application.metadata?.jobDescription === "string"
       ? application.metadata.jobDescription
@@ -682,7 +684,7 @@ export class ResumePipeline {
   }
 
   private async runEvidenceMatching(run: WorkflowRunRecord) {
-    const usageKey = await this.reserve(run, "research", 1);
+    const usageKey = await this.reserve(run, "research", 1, "match:evidence");
     await this.ensureExecutionBackendPersisted(run);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
@@ -804,9 +806,7 @@ export class ResumePipeline {
 
   private async runResumeGeneration(run: WorkflowRunRecord, versionNumber: number, triggeredBy: string) {
     const cycleBase = typeof run.payload.cycleBase === "number" ? run.payload.cycleBase : 0;
-    const isFinalQaRepair =
-      run.payload?.finalQaRepairAttempted === true &&
-      typeof run.payload.finalQaRepairVersionNumber === "number";
+    const isFinalQaRepair = run.payload?.finalQaRepairAttempted === true;
     const repairAttempt =
       typeof run.payload.finalQaRepairAttempt === "number" ? run.payload.finalQaRepairAttempt : 1;
     const repairSourceVersion =
@@ -815,14 +815,11 @@ export class ResumePipeline {
         : null;
     const repairChecksHash =
       typeof run.payload.finalQaRepairChecksHash === "string" ? run.payload.finalQaRepairChecksHash : "na";
-    const storedVersionNumber = isFinalQaRepair
-      ? Number(run.payload.finalQaRepairVersionNumber)
-      : cycleBase + versionNumber;
-    const versionLabel = isFinalQaRepair ? `V4R${repairAttempt}` : `V${storedVersionNumber}`;
+    const versionLabel = isFinalQaRepair ? `V4R${repairAttempt}` : `V${cycleBase + versionNumber}`;
     const effectiveTriggeredBy = isFinalQaRepair ? "final-qa-repair" : triggeredBy;
     const idempotencyKey = isFinalQaRepair
-      ? `resume:${run.applicationPublicId}:repair:v${storedVersionNumber}:from${repairSourceVersion}:a${repairAttempt}:${repairChecksHash}:${run.idempotencyKey}`
-      : `resume:${run.applicationPublicId}:v${storedVersionNumber}:${run.idempotencyKey}`;
+      ? `resume:${run.applicationPublicId}:repair:from${repairSourceVersion}:a${repairAttempt}:${repairChecksHash}:${run.idempotencyKey}`
+      : `resume:${run.applicationPublicId}:v${cycleBase + versionNumber}:${run.idempotencyKey}`;
     const existingVersion = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
     if (existingVersion) {
       const readyStage = `V${versionNumber}_READY` as WorkflowStage;
@@ -830,7 +827,7 @@ export class ResumePipeline {
         message: isFinalQaRepair
           ? `${versionLabel} already exists (idempotent repair)`
           : `V${versionNumber} already exists (idempotent)`,
-        outputVersion: String(storedVersionNumber),
+        outputVersion: String(existingVersion.versionNumber),
       });
       const nextRunning = [
         "HR_AUDIT_1_RUNNING",
@@ -849,7 +846,10 @@ export class ResumePipeline {
       return;
     }
 
-    const usageKey = await this.reserve(run, "resume_generation", 1);
+    const generationOperationId = isFinalQaRepair
+      ? `repair:v${repairSourceVersion}-to-v4r${repairAttempt}:attempt-${repairAttempt}:${repairChecksHash}`
+      : `generate:v${cycleBase + versionNumber}`;
+    const usageKey = await this.reserve(run, "resume_generation", 1, generationOperationId);
     const { application, evidence } = await this.listScopedEvidence(run);
     const payloadRefinement =
       typeof run.payload.refinementInstruction === "string" && run.payload.refinementInstruction.trim().length > 0
@@ -865,7 +865,7 @@ export class ResumePipeline {
     const resolvedRefinementInstruction =
       payloadRefinement ??
       ((versionNumber === 0 || versionNumber === 4) && !isFinalQaRepair ? metadataRefinement : null);
-    const hasRefinementInstruction = Boolean(resolvedRefinementInstruction);
+    const hasRefinementInstruction = Boolean(resolvedRefinementInstruction) || isFinalQaRepair;
     if (!evidence.length && versionNumber === 0 && !isFinalQaRepair) {
       throw new AppError(
         "PROFILE_EVIDENCE_REQUIRED",
@@ -876,6 +876,18 @@ export class ResumePipeline {
     const research = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     const currentResume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
     const previousVersions = currentResume ? await this.deps.resumes.listVersions(run.tenantId, currentResume.publicId) : [];
+    let storedVersionNumber = cycleBase + versionNumber;
+    if (isFinalQaRepair) {
+      if (!currentResume) {
+        throw new AppError("RESUME_NOT_FOUND", "Resume required for Final QA repair", 422);
+      }
+      storedVersionNumber = this.deps.resumes.allocateNextVersionNumber
+        ? await this.deps.resumes.allocateNextVersionNumber(run.tenantId, currentResume.publicId)
+        : Math.max(...previousVersions.map((v) => v.versionNumber), 0) + 1;
+      await this.deps.workflows.updateRun(run.id, {
+        payload: { ...run.payload, finalQaRepairVersionNumber: storedVersionNumber },
+      });
+    }
     // Final-QA repair must start from the failed latest V4 — never fall back to V3.
     const previousVersion = isFinalQaRepair
       ? previousVersions.find((version) => version.versionNumber === repairSourceVersion) ??
@@ -987,7 +999,31 @@ export class ResumePipeline {
         rejectedFindings: rejectedFindings as unknown as Array<Record<string, unknown>>,
         researchFindings,
         mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
-        refinementInstruction: resolvedRefinementInstruction,
+        refinementInstruction: isFinalQaRepair ? null : resolvedRefinementInstruction,
+        finalQaRepair: isFinalQaRepair
+          ? ((run.payload.finalQaRepairDirective as {
+              repairType: "final_qa_repair";
+              sourceVersion: number;
+              sourceVersionLabel?: string | null;
+              attempt: number;
+              failedChecks: Array<{ label: string; status: string; detail?: string }>;
+              approvedEvidenceIds?: string[];
+              groundedTargets?: string[];
+            } | undefined) ?? {
+              repairType: "final_qa_repair" as const,
+              sourceVersion: Number(repairSourceVersion),
+              sourceVersionLabel:
+                typeof run.payload.finalQaRepairSourceLabel === "string"
+                  ? String(run.payload.finalQaRepairSourceLabel)
+                  : `V${repairSourceVersion}`,
+              attempt: repairAttempt,
+              failedChecks: Array.isArray(run.payload.finalQaFailedChecks)
+                ? (run.payload.finalQaFailedChecks as Array<{ label: string; status: string; detail?: string }>)
+                : [],
+              approvedEvidenceIds: evidence.map((item) => item.publicId),
+              groundedTargets: evidenceTechnologies.slice(0, 8),
+            })
+          : null,
         jobRequirements,
         evidenceMatches,
         userConfirmations,
@@ -1015,8 +1051,43 @@ export class ResumePipeline {
           latencyMs: py.latencyMs,
         };
       } catch (error) {
-        logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
-        throw mapPythonBackendErrorToAppError(error);
+        const mapped = mapPythonBackendErrorToAppError(error);
+        // Metadata re-emphasis on V4 is best-effort: if the visible resume already
+        // satisfies the instruction, continue without inventing further changes.
+        const metadataOnlyRetry =
+          mapped.code === "REFINEMENT_NOT_APPLICABLE" &&
+          !payloadRefinement &&
+          Boolean(metadataRefinement) &&
+          !isFinalQaRepair &&
+          versionNumber > 0;
+        if (!metadataOnlyRetry) {
+          logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
+          throw mapped;
+        }
+        logger.info(
+          { applicationPublicId: run.applicationPublicId, versionNumber },
+          "metadata refinement already satisfied — regenerating without refinement",
+        );
+        const py = await client.regenerateResume({
+          ...generateInput,
+          refinementInstruction: null,
+        });
+        result = {
+          data: resumeSchema.parse(py.resume),
+          rawText: "",
+          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+          prompt: {
+            id: "resume-regeneration",
+            version: py.promptVersion || "python@v1",
+            rubricVersion: "candidarc-rubric@v1",
+          },
+          usage: {
+            inputTokens: py.usage.inputTokens,
+            outputTokens: py.usage.outputTokens,
+            estimatedCostCents: py.usage.estimatedCostCents,
+          },
+          latencyMs: py.latencyMs,
+        };
       }
     }
     await this.recordProviderUsage(run, usageKey, result);
@@ -1048,7 +1119,7 @@ export class ResumePipeline {
       });
     }
 
-    const version = await this.deps.resumes.appendVersion({
+    const versionPayload = () => ({
       id: newId("rv"),
       publicId: newId(`rvv${storedVersionNumber}`),
       tenantId: run.tenantId,
@@ -1066,6 +1137,54 @@ export class ResumePipeline {
       idempotencyKey,
       promptVersion: result.prompt.version,
     });
+
+    let version;
+    try {
+      version = await this.deps.resumes.appendVersion(versionPayload());
+    } catch (error) {
+      if (!isFinalQaRepair || !(error instanceof AppError) || error.code !== "RESUME_VERSION_CONFLICT") {
+        throw error;
+      }
+      // Concurrent repair safety: unique (resume_id, version_number) may race after allocate.
+      // Reuse by idempotency key, or reallocate and retry insert without a second provider call.
+      const existing = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
+      if (existing) {
+        version = existing;
+        storedVersionNumber = existing.versionNumber;
+      } else {
+        version = undefined;
+        for (let retry = 0; retry < 5; retry++) {
+          if (this.deps.resumes.allocateNextVersionNumber) {
+            storedVersionNumber = await this.deps.resumes.allocateNextVersionNumber(
+              run.tenantId,
+              resume.publicId,
+            );
+          } else {
+            const latestNums = (await this.deps.resumes.listVersions(run.tenantId, resume.publicId)).map(
+              (item) => item.versionNumber,
+            );
+            storedVersionNumber = (latestNums.length ? Math.max(...latestNums) : -1) + 1;
+          }
+          try {
+            version = await this.deps.resumes.appendVersion(versionPayload());
+            break;
+          } catch (retryError) {
+            if (!(retryError instanceof AppError) || retryError.code !== "RESUME_VERSION_CONFLICT") {
+              throw retryError;
+            }
+            const raced = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
+            if (raced) {
+              version = raced;
+              storedVersionNumber = raced.versionNumber;
+              break;
+            }
+          }
+        }
+        if (!version) {
+          throw new AppError("RESUME_VERSION_CONFLICT", "Unable to allocate Final QA repair version", 409);
+        }
+      }
+    }
 
     await this.deps.resumes.setCurrentVersion(run.tenantId, resume.publicId, version.publicId);
     await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
@@ -1128,7 +1247,7 @@ export class ResumePipeline {
       producesVersion,
     });
 
-    const usageKey = await this.reserve(run, "audit", 1);
+    const usageKey = await this.reserve(run, "audit", 1, `audit:${promptId}:v${reviewsVersion}`);
     const application = await this.deps.applications.getByPublicId(run.tenantId, run.applicationPublicId);
     const { evidence } = await this.listScopedEvidence(run);
     const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
@@ -1422,7 +1541,8 @@ export class ResumePipeline {
     }
 
     // AI Final QA supplement - Python is the only backend
-    const usageKey = await this.reserve(run, "final_review", 1);
+    const finalQaOperationId = `final-qa:v${latest.versionNumber}`;
+    const usageKey = await this.reserve(run, "final_review", 1, finalQaOperationId);
     await this.ensureExecutionBackendPersisted(run);
     const finalQaIdempotencyKey = `final-qa:${run.applicationPublicId}:v${latest.versionNumber}:${run.idempotencyKey}`;
     let supplement: FinalQaSupplementResult;
@@ -1534,11 +1654,19 @@ export class ResumePipeline {
         .map((check) => `${check.label}: ${check.detail}`)
         .join("; ");
       const checksHash = hashFinalQaChecks(supplement.data.checks);
-      const repairVersionNumber = Math.max(...versions.map((v) => v.versionNumber), latest.versionNumber) + 1;
-      const refinementInstruction =
-        `Final-QA repair from V${latest.versionNumber} (${latest.versionLabel}). ` +
-        `Address these failed checks without inventing facts: ${failedCheckSummary}. ` +
-        `Emphasize grounded technologies already in evidence and keep claim provenance.`;
+      const finalQaRepairDirective = {
+        repairType: "final_qa_repair" as const,
+        sourceVersion: latest.versionNumber,
+        sourceVersionLabel: latest.versionLabel,
+        attempt: 1,
+        failedChecks: failedChecks.map((check) => ({
+          label: check.label,
+          status: check.status,
+          detail: check.detail,
+        })),
+        approvedEvidenceIds: evidence.map((item) => item.publicId),
+        groundedTargets: knownTechnologies.slice(0, 8),
+      };
 
       const repairPayload = withoutStageClaims({
         ...run.payload,
@@ -1546,18 +1674,22 @@ export class ResumePipeline {
         finalQaRepairAttempt: 1,
         finalQaRepairSourceVersion: latest.versionNumber,
         finalQaRepairSourcePublicId: latest.publicId,
-        finalQaRepairVersionNumber: repairVersionNumber,
+        finalQaRepairSourceLabel: latest.versionLabel,
         finalQaRepairChecksHash: checksHash,
         finalQaRepairReason: failedCheckSummary,
         finalQaFailedChecks: supplement.data.checks,
-        refinementInstruction,
+        finalQaRepairDirective,
+        // Version number allocated under lock at generation time
+        finalQaRepairVersionNumber: undefined,
+        // Never smuggle repair through free-form refinement_instruction
+        refinementInstruction: undefined,
       });
 
       await this.deps.workflows.updateRun(run.id, { payload: repairPayload });
 
       await this.deps.engine.transition(run.id, "V4_GENERATING", {
         status: "running",
-        message: `Bounded repair: generating ${`V4R1`} (stored v${repairVersionNumber}) from failed V${latest.versionNumber}`,
+        message: `Bounded repair: generating V4R1 from failed V${latest.versionNumber}`,
         patch: { payload: repairPayload },
       });
       await this.deps.applications.update(run.tenantId, run.applicationPublicId, {

@@ -359,6 +359,34 @@ class ProviderUsage(StrictModel):
     retry_count: int = Field(default=0, ge=0, le=20)
 
 
+class FinalQaFailedCheck(StrictModel):
+    """One failed Final-QA check carried into a structured repair directive."""
+
+    label: StrShort
+    status: QaStatus
+    detail: str = Field(default="", max_length=4_000)
+
+
+class FinalQaRepairDirective(StrictModel):
+    """Internal Final-QA repair contract — distinct from free-form user refinement.
+
+    Free-form `refinement_instruction` remains user-facing. Repair must never be
+    smuggled through that string (regex false-positives on inventing/emphasize).
+    """
+
+    repair_type: Literal["final_qa_repair"] = "final_qa_repair"
+    source_version: int = Field(ge=0)
+    source_version_label: str | None = Field(default=None, max_length=64)
+    attempt: int = Field(default=1, ge=1, le=1)
+    failed_checks: list[FinalQaFailedCheck] = Field(min_length=1, max_length=100)
+    approved_evidence_ids: list[StrId] = Field(default_factory=list, max_length=100)
+    grounded_targets: list[Annotated[str, Field(max_length=128)]] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Evidence-grounded technologies/responsibilities to prioritize",
+    )
+
+
 class ResumeGenerateRequest(StrictModel):
     context: RequestContext
     absolute_version: int | None = Field(default=None, ge=0)
@@ -373,6 +401,7 @@ class ResumeGenerateRequest(StrictModel):
     research_findings: list[ResearchFinding] = Field(default_factory=list, max_length=100)
     mistake_memory: list[MistakeMemoryRule] = Field(default_factory=list, max_length=100)
     refinement_instruction: str | None = Field(default=None, max_length=4_000)
+    final_qa_repair: FinalQaRepairDirective | None = None
     job_requirements: list[Annotated[str, Field(max_length=2_000)]] = Field(default_factory=list, max_length=200)
     evidence_matches: list[EvidenceMatchRow] = Field(default_factory=list, max_length=200)
     user_confirmations: list[UserConfirmation] = Field(default_factory=list, max_length=100)
@@ -389,6 +418,8 @@ class ResumeGenerateRequest(StrictModel):
         object.__setattr__(self, "version_number", absolute)
         if self.cycle_step is None:
             object.__setattr__(self, "cycle_step", absolute % 5)
+        if self.final_qa_repair is not None and self.refinement_instruction:
+            raise ValueError("final_qa_repair and refinement_instruction are mutually exclusive")
         return self
 
 

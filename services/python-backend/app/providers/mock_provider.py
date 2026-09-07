@@ -54,6 +54,7 @@ class MockProvider:
         user_confirmations: list[UserConfirmation] | None = None,
         refinement_instruction: str | None = None,
         evidence_matches: list[EvidenceMatchRow] | None = None,
+        final_qa_repair: Any | None = None,
         **_: Any,
     ) -> tuple[ResumeDocument, int, ProviderUsage]:
         started = time.perf_counter()
@@ -75,6 +76,7 @@ class MockProvider:
             research_findings=research_findings,
             user_confirmations=user_confirmations,
             refinement_instruction=refinement_instruction,
+            final_qa_repair=final_qa_repair,
             evidence_matches=evidence_matches,
         )
         violations = validate_resume_claims(
@@ -157,6 +159,8 @@ class MockProvider:
         deterministic_checks: list[Any] | None = None,
         **_: Any,
     ) -> tuple[FinalQaResponse, int, ProviderUsage]:
+        import os
+
         started = time.perf_counter()
         checks = quality.run_deterministic_checks(resume, evidence)
         if deterministic_checks:
@@ -173,6 +177,21 @@ class MockProvider:
                 checks.append(
                     {"label": data["label"], "status": status, "detail": data.get("detail", "")}
                 )
+
+        # Deterministic test hook: fail once until a structured repair has been applied.
+        # Only active when CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair (demo/test).
+        force = os.environ.get("CANDIDARC_MOCK_FINAL_QA_FORCE", "").strip().lower()
+        if force == "fail_until_repair":
+            repaired = "final-qa-repair:applied" in (resume.notes or "").lower()
+            if not repaired:
+                checks.append(
+                    {
+                        "label": "Primary technology emphasis",
+                        "status": "fail",
+                        "detail": "Lead with grounded primary technology from evidence",
+                    }
+                )
+
         typed = [FinalQaCheck(label=c["label"], status=c["status"], detail=c["detail"]) for c in checks]
         passed = all(c.status in {"pass", "pending", "warn", "warning"} for c in typed)
         latency = int((time.perf_counter() - started) * 1000)

@@ -8,6 +8,7 @@ from app.domain.schemas import (
     AuditFinding,
     EvidenceItem,
     EvidenceMatchRow,
+    FinalQaRepairDirective,
     MistakeMemoryRule,
     ResearchFinding,
     ResumeBullet,
@@ -18,18 +19,29 @@ from app.modules.evidence.service import normalize_evidence
 from app.modules.guardrails.service import build_grounded_resume, validate_resume_claims
 from app.modules.scoring.service import score_resume
 
-# Disallowed refinement patterns — requests for fabrication or unsupported claims
+# Disallowed free-form refinement patterns — fabrication / unsupported claims.
+# "without inventing" is handled by requiring word-boundary invent as a verb of fabrication,
+# but Final-QA repair must use structured final_qa_repair (never this free-form path).
 DISALLOWED_REFINEMENT_PATTERNS = (
-    r"\badd\s+\d+\s*%",  # add a percentage
-    r"\badd\s+metric",  # add a metric
-    r"\binvent",  # invent anything
-    r"\bfabricate",  # fabricate
-    r"\bcreate\s+(?:new\s+)?(?:experience|job|employer|role)",  # create new experience
-    r"\badd\s+(?:new\s+)?(?:experience|job|employer|role)",  # add new experience
-    r"\bmake\s+up",  # make up
-    r"\blie\b",  # lie
-    r"\bexaggerate",  # exaggerate
-    r"\binflate",  # inflate metrics
+    r"\badd\s+\d+\s*%",
+    r"\badd\s+metric",
+    r"\binvent(?:ing|ed|s)?\b(?!\s+facts\b)",  # invent / inventing claims — not "without inventing facts" alone
+    r"(?<!without\s)\binventing\b",
+    r"\bfabricate",
+    r"\bcreate\s+(?:new\s+)?(?:experience|job|employer|role)",
+    r"\badd\s+(?:new\s+)?(?:experience|job|employer|role)",
+    r"\bmake\s+up",
+    r"\blie\b",
+    r"\bexaggerate",
+    r"\binflate",
+)
+
+# Safe synonym swaps that preserve semantic scope (no ownership inflation).
+_SAFE_WORDING_MAP = (
+    (re.compile(r"\bhelped\s+with\b", re.I), "supported"),
+    (re.compile(r"\bassisted\s+with\b", re.I), "supported"),
+    (re.compile(r"\butilized\b", re.I), "used"),
+    (re.compile(r"\bleveraged\b", re.I), "used"),
 )
 
 
@@ -43,37 +55,42 @@ def _is_refinement_allowed(
     instruction: str,
     evidence: list[EvidenceItem],
 ) -> tuple[bool, str]:
-    """Check if a refinement instruction is allowed based on guardrails.
-
-    Allowed refinements:
-    - Emphasize a technology already in cited evidence
-    - Paraphrase existing grounded content
-    - Adjust wording while keeping evidence citations
-
-    Disallowed refinements:
-    - Add new metrics/percentages not in evidence
-    - Create new employers/experiences
-    - Fabricate claims
-    """
+    """Check if a free-form refinement instruction is allowed."""
     lower = instruction.lower()
 
-    # Check for explicitly disallowed patterns
     for pattern in DISALLOWED_REFINEMENT_PATTERNS:
         if re.search(pattern, lower, re.IGNORECASE):
             return False, f"Refinement requests unsupported operation: {pattern}"
 
-    # Collect all technologies from evidence
+    # Explicit fabrication phrasing still blocked even when "inventing facts" appears negatively
+    if re.search(r"\b(?:please\s+)?invent\b", lower) and "without invent" not in lower:
+        return False, "Refinement requests unsupported operation: invent"
+
     evidence_techs = {tech.lower() for item in evidence for tech in item.technologies}
 
-    # If instruction asks to emphasize a technology, ensure it's in evidence
-    emphasize_match = re.search(r"\bemphasiz(?:e|ing)\s+(\w+)", lower)
+    emphasize_match = re.search(r"\bemphasiz(?:e|ing)\s+([a-z0-9][\w+#.]*)", lower)
     if emphasize_match:
         tech = emphasize_match.group(1).lower()
-        # Allow if tech is in evidence or is a generic term
-        if tech not in evidence_techs and tech not in {"skills", "experience", "impact", "results", "achievements"}:
-            # Check if it's a partial match
-            if not any(tech in et or et in tech for et in evidence_techs):
-                return False, f"Cannot emphasize technology '{tech}' not found in evidence"
+        # Skip generic filler words that are not technologies
+        if tech in {
+            "skills",
+            "experience",
+            "impact",
+            "results",
+            "achievements",
+            "reliability",
+            "grounded",
+            "existing",
+            "supported",
+            "relevant",
+            "proven",
+            "the",
+            "a",
+            "an",
+        }:
+            return True, "OK"
+        if tech not in evidence_techs and not any(tech in et or et in tech for et in evidence_techs):
+            return False, f"Cannot emphasize technology '{tech}' not found in evidence"
 
     return True, "OK"
 
@@ -82,15 +99,10 @@ def _order_evidence_by_matches(
     evidence: list[EvidenceItem],
     evidence_matches: list[EvidenceMatchRow] | None,
 ) -> list[EvidenceItem]:
-    """Reorder evidence to prioritize higher-relevance matched evidence IDs.
-
-    Evidence with strong matches and "use" resume_usage comes first.
-    """
+    """Reorder evidence to prioritize higher-relevance matched evidence IDs."""
     if not evidence_matches:
         return evidence
 
-    # Build a score map: evidence_id -> priority score
-    # Higher score = higher priority
     score_map: dict[str, float] = {}
     for row in evidence_matches:
         strength_score = {"strong": 3.0, "partial": 1.5, "none": 0.0}.get(row.evidence_strength, 0.0)
@@ -100,7 +112,6 @@ def _order_evidence_by_matches(
         for eid in row.evidence_ids:
             score_map[eid] = max(score_map.get(eid, 0.0), row_score)
 
-    # Sort evidence by score (descending), then by original order
     evidence_with_idx = [(item, idx) for idx, item in enumerate(evidence)]
     evidence_with_idx.sort(key=lambda x: (-score_map.get(x[0].id, 0.0), x[1]))
     return [item for item, _ in evidence_with_idx]
@@ -131,22 +142,16 @@ def _visible_sections_fingerprint(resume: ResumeDocument) -> str:
             parts.append((item.heading or "").lower())
             for bullet in item.bullets:
                 parts.append(re.sub(r"\s+", " ", bullet.text).strip().lower())
+                parts.append("|".join(t.lower() for t in bullet.technologies))
+        if section.content:
+            parts.append(re.sub(r"\s+", " ", section.content).strip().lower())
     return "\n".join(parts)
 
 
-_WEAK_VERB_MAP = (
-    (re.compile(r"\bhelped\b", re.I), "supported"),
-    (re.compile(r"\bworked on\b", re.I), "delivered"),
-    (re.compile(r"\bwas responsible for\b", re.I), "owned"),
-    (re.compile(r"\bdid\b", re.I), "executed"),
-    (re.compile(r"\bmade\b", re.I), "built"),
-)
-
-
-def _extract_emphasis_token(instruction: str, evidence_techs: set[str] | None = None) -> str | None:
+def _extract_emphasis_token(instruction: str, evidence_techs: set[str]) -> str | None:
     lower = instruction.lower()
     match = re.search(
-        r"\bemphasiz(?:e|ing)\s+([a-z0-9][\w+#.]*(?:\s+[a-z0-9][\w+#.]+){0,3})",
+        r"\bemphasiz(?:e|ing)\s+((?:[a-z0-9][\w+#.]*)(?:\s+[a-z0-9][\w+#.]*){0,3})",
         lower,
     )
     if not match:
@@ -154,14 +159,42 @@ def _extract_emphasis_token(instruction: str, evidence_techs: set[str] | None = 
     if not match:
         return None
     raw = match.group(1).strip()
-    techs = evidence_techs or set()
-    # Prefer an evidence technology mentioned in the emphasis phrase
-    for tech in sorted(techs, key=len, reverse=True):
+    for tech in sorted(evidence_techs, key=len, reverse=True):
         if tech and tech in raw:
             return tech
-    token = re.sub(r"\b(platform|ownership|reliability|skills?|experience|focus)\b", " ", raw)
+    token = re.sub(r"\b(platform|ownership|reliability|skills?|experience|focus|grounded)\b", " ", raw)
     token = re.sub(r"\s+", " ", token).strip()
-    return token or raw.split()[0]
+    if not token:
+        return None
+    first = token.split()[0]
+    if first in {"grounded", "existing", "supported", "relevant", "proven"}:
+        return None
+    return first
+
+
+def _dedupe_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _shorten_verbose(text: str) -> str:
+    updated = _dedupe_whitespace(text)
+    if len(updated) <= 160:
+        return updated
+    # Drop parenthetical asides and redundant "in order to"
+    updated = re.sub(r"\s*\([^)]*\)", "", updated)
+    updated = re.sub(r"\bin order to\b", "to", updated, flags=re.I)
+    updated = _dedupe_whitespace(updated)
+    parts = re.split(r"(?<=[.!;])\s+", updated)
+    if len(parts) > 1 and len(parts[0]) >= 40:
+        return parts[0][:220]
+    return updated[:220]
+
+
+def _safe_wording(text: str) -> str:
+    updated = text
+    for pattern, replacement in _SAFE_WORDING_MAP:
+        updated = pattern.sub(replacement, updated)
+    return updated
 
 
 def apply_visible_refinement(
@@ -169,35 +202,28 @@ def apply_visible_refinement(
     instruction: str,
     evidence: list[EvidenceItem],
 ) -> ResumeDocument:
-    """Apply a safe refinement that must change visible resume content.
+    """Apply a safe refinement that must change visible professional resume content.
 
-    Supported intents:
-    - emphasize a grounded technology / responsibility
-    - reorder skills/bullets by relevance to that emphasis
-    - concise wording
-    - stronger active verbs without changing factual meaning
+    No customer-facing test markers. No ownership inflation without evidence.
     """
     lower = instruction.lower()
     evidence_techs = {t.lower() for item in evidence for t in item.technologies}
     emphasis = _extract_emphasis_token(instruction, evidence_techs)
-    want_concise = bool(re.search(r"\b(concise|tighten|shorten|brief)\b", lower))
-    want_active = bool(re.search(r"\b(active|stronger\s+verb|ownership)\b", lower)) or bool(emphasis)
+    want_concise = bool(re.search(r"\b(concise|tighten|shorten|brief|remove\s+repetition)\b", lower))
+    want_wording = bool(re.search(r"\b(paraphrase|reword|clearer|wording)\b", lower)) or want_concise
 
     if emphasis and emphasis not in evidence_techs and not any(emphasis in t or t in emphasis for t in evidence_techs):
-        # Generic emphasis words are allowed without tech membership
         if emphasis not in {"skills", "experience", "impact", "results", "achievements", "reliability"}:
             raise ValueError(f"GUARDRAIL_VIOLATION:Cannot emphasize '{emphasis}' not found in evidence")
 
     def rewrite_text(text: str) -> str:
         updated = text
-        if want_active:
-            for pattern, replacement in _WEAK_VERB_MAP:
-                updated = pattern.sub(replacement, updated)
-        if want_concise and len(updated) > 160:
-            updated = re.sub(r"\s+", " ", updated).strip()
-            # Prefer first sentence / clause
-            parts = re.split(r"(?<=[.!;])\s+", updated)
-            updated = parts[0][:220] if parts else updated[:220]
+        if want_wording or want_concise:
+            updated = _safe_wording(updated)
+        if want_concise:
+            updated = _shorten_verbose(updated)
+        # Remove duplicated consecutive phrases
+        updated = re.sub(r"\b(\w+(?:\s+\w+){0,3})\s+\1\b", r"\1", updated, flags=re.I)
         return updated[:3900]
 
     def bullet_score(bullet: ResumeBullet) -> float:
@@ -213,18 +239,9 @@ def apply_visible_refinement(
             rewritten = [b.model_copy(update={"text": rewrite_text(b.text)}) for b in section.bullets]
             if emphasis and section.type in {"summary", "skills", "experience"}:
                 rewritten = sorted(rewritten, key=lambda b: (-bullet_score(b), rewritten.index(b)))
-                if section.type == "summary" and rewritten:
-                    lead = rewritten[0]
-                    marker = f"{emphasis.title()} ownership focus:"
-                    if not lead.text.lower().startswith(marker.lower()):
-                        lead = lead.model_copy(update={"text": f"{marker} {lead.text}"[:3900]})
-                        rewritten[0] = lead
                 if section.type == "skills" and rewritten:
                     skill_bullet = rewritten[0]
-                    techs = list(skill_bullet.technologies) or [
-                        t for t in evidence_techs
-                    ]
-                    # Preserve original casing from bullet technologies when possible
+                    techs = list(skill_bullet.technologies) or list(evidence_techs)
                     prioritized = sorted(
                         techs,
                         key=lambda t: (0 if emphasis in str(t).lower() else 1, str(t).lower()),
@@ -237,12 +254,6 @@ def apply_visible_refinement(
                             }
                         )
                         rewritten[0] = skill_bullet
-                if section.type == "experience" and rewritten and emphasis:
-                    # Move emphasized bullets first (already sorted) and tag the lead bullet once
-                    lead = rewritten[0]
-                    tag = f"[{emphasis.title()} emphasis]"
-                    if tag.lower() not in lead.text.lower() and bullet_score(lead) > 0:
-                        rewritten[0] = lead.model_copy(update={"text": f"{tag} {lead.text}"[:3900]})
             new_bullets = rewritten
 
         new_items = None
@@ -257,11 +268,97 @@ def apply_visible_refinement(
         content = section.content
         if content:
             content = rewrite_text(content)
-            if emphasis and emphasis not in content.lower() and section.type == "summary":
-                content = f"{emphasis.title()} ownership focus: {content}"[:3900]
         sections.append(section.model_copy(update={"bullets": new_bullets, "items": new_items, "content": content}))
 
     return resume.model_copy(update={"sections": sections})
+
+
+def apply_final_qa_repair(
+    resume: ResumeDocument,
+    repair: FinalQaRepairDirective,
+    evidence: list[EvidenceItem],
+) -> ResumeDocument:
+    """Apply a structured Final-QA repair without free-form refinement parsing.
+
+    Prioritizes approved evidence and grounded technology targets already in evidence.
+    """
+    evidence_by_id = {item.id: item for item in evidence}
+    approved = [evidence_by_id[eid] for eid in repair.approved_evidence_ids if eid in evidence_by_id]
+    evidence_techs = {t.lower() for item in evidence for t in item.technologies}
+    targets = [t.lower() for t in repair.grounded_targets if t.lower() in evidence_techs]
+    if not targets:
+        # Derive from approved evidence technologies
+        for item in approved or evidence:
+            for tech in item.technologies:
+                if tech.lower() not in targets:
+                    targets.append(tech.lower())
+                if len(targets) >= 3:
+                    break
+            if len(targets) >= 3:
+                break
+
+    primary = targets[0] if targets else None
+    approved_ids = set(repair.approved_evidence_ids)
+
+    def score_bullet(bullet: ResumeBullet) -> float:
+        score = 0.0
+        blob = f"{bullet.text} {' '.join(bullet.technologies)}".lower()
+        if primary and primary in blob:
+            score += 10.0
+        if approved_ids and approved_ids.intersection(bullet.evidence_ids):
+            score += 5.0
+        for idx, tech in enumerate(targets):
+            if tech in blob:
+                score += max(0.0, 3.0 - idx)
+        return score
+
+    sections = []
+    for section in resume.sections:
+        new_bullets = None
+        if section.bullets is not None:
+            rewritten = list(section.bullets)
+            if section.type in {"summary", "skills", "experience"}:
+                rewritten = sorted(rewritten, key=lambda b: (-score_bullet(b), rewritten.index(b)))
+                if section.type == "skills" and rewritten and primary:
+                    skill = rewritten[0]
+                    techs = list(skill.technologies) or [t for t in evidence_techs]
+                    prioritized = sorted(
+                        techs,
+                        key=lambda t: (0 if primary in str(t).lower() else 1, str(t).lower()),
+                    )
+                    if prioritized:
+                        rewritten[0] = skill.model_copy(
+                            update={
+                                "technologies": [str(t) for t in prioritized],
+                                "text": " · ".join(str(t) for t in prioritized),
+                            }
+                        )
+                if section.type == "summary" and rewritten and primary:
+                    lead = rewritten[0]
+                    # Professional lead: put the grounded tech in natural wording without markers
+                    if primary not in lead.text.lower()[:80] and score_bullet(lead) > 0:
+                        lead = lead.model_copy(
+                            update={"text": f"{primary.title()} platform work: {lead.text}"[:3900]}
+                        )
+                        rewritten[0] = lead
+            new_bullets = rewritten
+
+        new_items = None
+        if section.items is not None:
+            new_items = []
+            for resume_item in section.items:
+                item_bullets = sorted(
+                    resume_item.bullets,
+                    key=lambda b: (-score_bullet(b), resume_item.bullets.index(b)),
+                )
+                new_items.append(resume_item.model_copy(update={"bullets": item_bullets}))
+
+        sections.append(section.model_copy(update={"bullets": new_bullets, "items": new_items}))
+
+    notes = resume.notes or ""
+    if "final-qa-repair:applied" not in notes:
+        notes = f"{notes} | final-qa-repair:applied:a{repair.attempt}".strip(" |")
+    return resume.model_copy(update={"sections": sections, "notes": notes})
 
 
 def _apply_finding_text(text: str, finding: AuditFinding) -> str:
@@ -269,15 +366,6 @@ def _apply_finding_text(text: str, finding: AuditFinding) -> str:
     if finding.before_text and finding.before_text in text:
         return text.replace(finding.before_text, replacement, 1)
     return replacement
-
-
-def _iter_bullets(resume: ResumeDocument) -> list[ResumeBullet]:
-    bullets: list[ResumeBullet] = []
-    for section in resume.sections:
-        bullets.extend(section.bullets or [])
-        for item in section.items or []:
-            bullets.extend(item.bullets)
-    return bullets
 
 
 def apply_accepted_findings(
@@ -316,7 +404,6 @@ def apply_accepted_findings(
                 for finding in actionable:
                     if applies(finding, bullet, section.type):
                         text = _apply_finding_text(text, finding)
-                # Respect mistake memory: do not reintroduce banned phrases
                 if any(banned in text.lower() for banned in banned_phrases):
                     text = bullet.text
                 new_bullets.append(bullet.model_copy(update={"text": text[:3900]}))
@@ -362,21 +449,15 @@ def generate_grounded_resume(
     research_findings: list[ResearchFinding] | None = None,
     user_confirmations: list[UserConfirmation] | None = None,
     refinement_instruction: str | None = None,
+    final_qa_repair: FinalQaRepairDirective | None = None,
     evidence_matches: list[EvidenceMatchRow] | None = None,
 ) -> ResumeDocument:
-    """Generate or regenerate a resume.
+    """Generate or regenerate a resume."""
+    _ = rejected_findings
 
-    - Rejected findings are ignored.
-    - Accepted/edited findings are applied onto previous_resume when present.
-    - If no actionable findings on regenerate, content is kept and score recalculated.
-    - Scores are always calculated from content (never SCORE_BY_VERSION).
-    - Job/research never become first-person claims; bare confirmations never become experience.
-    - refinement_instruction: Optional user instruction for emphasis/paraphrase (guardrail-checked).
-    - evidence_matches: Optional pre-computed match rows to prioritize evidence ordering.
-    """
-    _ = rejected_findings  # explicitly ignored
+    if final_qa_repair is not None and refinement_instruction:
+        raise ValueError("GUARDRAIL_VIOLATION:final_qa_repair and refinement_instruction are mutually exclusive")
 
-    # Validate refinement instruction if provided — fail closed on unsupported requests
     refinement_applied = False
     if refinement_instruction:
         allowed, reason = _is_refinement_allowed(refinement_instruction, evidence)
@@ -384,7 +465,23 @@ def generate_grounded_resume(
             raise ValueError(f"GUARDRAIL_VIOLATION:{reason}")
         refinement_applied = True
 
-    # Reorder evidence based on match relevance (higher scores first)
+    if final_qa_repair is not None:
+        evidence_techs = {t.lower() for item in evidence for t in item.technologies}
+        for target in final_qa_repair.grounded_targets:
+            if target.lower() not in evidence_techs and not any(
+                target.lower() in et or et in target.lower() for et in evidence_techs
+            ):
+                raise ValueError(
+                    f"GUARDRAIL_VIOLATION:Repair target '{target}' not found in evidence"
+                )
+        approved = set(final_qa_repair.approved_evidence_ids)
+        known_ids = {item.id for item in evidence}
+        unknown = approved - known_ids
+        if unknown:
+            raise ValueError(
+                f"GUARDRAIL_VIOLATION:Repair approved_evidence_ids not in evidence: {sorted(unknown)[:5]}"
+            )
+
     ordered_evidence = _order_evidence_by_matches(evidence, evidence_matches)
     normalized = normalize_evidence(ordered_evidence)
     actionable = [f for f in (accepted_findings or []) if f.status in {None, "accepted", "edited", "open"}]
@@ -394,8 +491,7 @@ def generate_grounded_resume(
     if previous_resume is not None:
         if actionable:
             updated = apply_accepted_findings(previous_resume, actionable, mistake_memory=mistake_memory)
-        elif refinement_instruction:
-            # Rebuild from evidence so refinement/evidence_matches can change visible content.
+        elif refinement_instruction or final_qa_repair is not None:
             updated = build_grounded_resume(
                 absolute_version=absolute_version,
                 cycle_step=cycle_step,
@@ -410,19 +506,47 @@ def generate_grounded_resume(
         else:
             updated = previous_resume
 
-        if refinement_instruction:
+        if final_qa_repair is not None:
+            before = updated
+            # Prefer repairing from the failed previous resume when present
+            source = previous_resume if previous_resume is not None else updated
+            updated = apply_final_qa_repair(source, final_qa_repair, evidence)
+            if _visible_sections_fingerprint(updated) == _visible_sections_fingerprint(before) and (
+                _visible_sections_fingerprint(updated) == _visible_sections_fingerprint(source)
+            ):
+                # Still try from rebuilt content
+                rebuilt = build_grounded_resume(
+                    absolute_version=absolute_version,
+                    cycle_step=cycle_step,
+                    evidence=normalized,
+                    allowed_technologies=allowed_technologies,
+                    notes=base_notes,
+                    job_description=job_description,
+                    job_requirements=job_requirements,
+                    research_findings=research_findings,
+                    user_confirmations=user_confirmations,
+                )
+                updated = apply_final_qa_repair(rebuilt, final_qa_repair, evidence)
+            if _visible_sections_fingerprint(updated) == _visible_sections_fingerprint(source):
+                raise ValueError(
+                    "REFINEMENT_NOT_APPLICABLE:Safe Final-QA repair produced no material visible change"
+                )
+            final_notes = updated.notes or base_notes
+        elif refinement_instruction:
             before_refine = updated
             updated = apply_visible_refinement(updated, refinement_instruction, evidence)
             if _visible_sections_fingerprint(updated) == _visible_sections_fingerprint(before_refine):
                 raise ValueError(
                     "REFINEMENT_NOT_APPLICABLE:Safe refinement produced no material visible change"
                 )
+            final_notes = _apply_refinement_to_notes(
+                updated.notes or notes or base_notes,
+                refinement_instruction,
+                refinement_applied,
+            )
+        else:
+            final_notes = updated.notes or notes or base_notes
 
-        final_notes = _apply_refinement_to_notes(
-            updated.notes or notes or base_notes,
-            refinement_instruction,
-            refinement_applied,
-        )
         scored = score_resume(
             sections=updated.sections,
             evidence=normalized,
@@ -454,18 +578,29 @@ def generate_grounded_resume(
         research_findings=research_findings,
         user_confirmations=user_confirmations,
     )
-    if refinement_instruction:
+    if final_qa_repair is not None:
+        before = resume
+        resume = apply_final_qa_repair(resume, final_qa_repair, evidence)
+        if _visible_sections_fingerprint(resume) == _visible_sections_fingerprint(before):
+            raise ValueError(
+                "REFINEMENT_NOT_APPLICABLE:Safe Final-QA repair produced no material visible change"
+            )
+        final_notes = resume.notes or base_notes
+    elif refinement_instruction:
         before = resume
         resume = apply_visible_refinement(resume, refinement_instruction, evidence)
         if _visible_sections_fingerprint(resume) == _visible_sections_fingerprint(before):
             raise ValueError(
                 "REFINEMENT_NOT_APPLICABLE:Safe refinement produced no material visible change"
             )
-    final_notes = _apply_refinement_to_notes(
-        resume.notes or base_notes,
-        refinement_instruction,
-        refinement_applied,
-    )
+        final_notes = _apply_refinement_to_notes(
+            resume.notes or base_notes,
+            refinement_instruction,
+            refinement_applied,
+        )
+    else:
+        final_notes = resume.notes or base_notes
+
     scored = score_resume(
         sections=resume.sections,
         evidence=normalized,
@@ -475,6 +610,9 @@ def generate_grounded_resume(
     )
     return resume.model_copy(
         update={
+            "absolute_version": absolute_version,
+            "cycle_step": cycle_step,
+            "version_number": absolute_version,
             "score": scored.score,
             "score_breakdown": scored.breakdown,
             "score_rubric_version": scored.rubric_version,
@@ -499,10 +637,11 @@ def generate_and_validate(
     mistake_memory: list[MistakeMemoryRule] | None = None,
     research_findings: list[ResearchFinding] | None = None,
     user_confirmations: list[UserConfirmation] | None = None,
+    refinement_instruction: str | None = None,
+    final_qa_repair: FinalQaRepairDirective | None = None,
+    evidence_matches: list[EvidenceMatchRow] | None = None,
     tenant_id: str | None = None,
     owner_user_id: str | None = None,
-    refinement_instruction: str | None = None,
-    evidence_matches: list[EvidenceMatchRow] | None = None,
 ) -> tuple[ResumeDocument, list[str]]:
     resume = generate_grounded_resume(
         absolute_version=absolute_version,
@@ -519,6 +658,7 @@ def generate_and_validate(
         research_findings=research_findings,
         user_confirmations=user_confirmations,
         refinement_instruction=refinement_instruction,
+        final_qa_repair=final_qa_repair,
         evidence_matches=evidence_matches,
     )
     violations = validate_resume_claims(

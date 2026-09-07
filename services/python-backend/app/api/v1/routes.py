@@ -325,6 +325,7 @@ async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> Re
             user_confirmations=body.user_confirmations,
             refinement_instruction=body.refinement_instruction,
             evidence_matches=body.evidence_matches,
+            final_qa_repair=body.final_qa_repair,
         )
     except Exception as exc:
         _raise_provider(exc)

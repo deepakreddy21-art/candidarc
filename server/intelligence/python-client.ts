@@ -590,6 +590,16 @@ export function mapPythonJobParseToExtraction(py: {
   };
 }
 
+export type FinalQaRepairDirective = {
+  repairType: "final_qa_repair";
+  sourceVersion: number;
+  sourceVersionLabel?: string | null;
+  attempt: number;
+  failedChecks: Array<{ label: string; status: string; detail?: string }>;
+  approvedEvidenceIds?: string[];
+  groundedTargets?: string[];
+};
+
 export type GenerateResumeInput = {
   context: RequestContext;
   absoluteVersion: number;
@@ -603,6 +613,7 @@ export type GenerateResumeInput = {
   researchFindings?: Array<Record<string, unknown>>;
   mistakeMemory?: Array<Record<string, unknown>>;
   refinementInstruction?: string | null;
+  finalQaRepair?: FinalQaRepairDirective | null;
   jobRequirements?: string[];
   evidenceMatches?: Array<Record<string, unknown>>;
   userConfirmations?: Array<Record<string, unknown>>;
@@ -660,7 +671,22 @@ function buildGenerateBody(input: GenerateResumeInput) {
     rejected_findings: (input.rejectedFindings ?? []).map((finding) => toSnakeFinding(finding)),
     research_findings: (input.researchFindings ?? []).map((finding) => toSnakeResearchFinding(finding)),
     mistake_memory: (input.mistakeMemory ?? []).map((rule) => toSnakeMistakeMemory(rule)),
-    refinement_instruction: input.refinementInstruction ?? null,
+    refinement_instruction: input.finalQaRepair ? null : (input.refinementInstruction ?? null),
+    final_qa_repair: input.finalQaRepair
+      ? {
+          repair_type: "final_qa_repair" as const,
+          source_version: input.finalQaRepair.sourceVersion,
+          source_version_label: input.finalQaRepair.sourceVersionLabel ?? null,
+          attempt: input.finalQaRepair.attempt,
+          failed_checks: input.finalQaRepair.failedChecks.map((check) => ({
+            label: check.label,
+            status: check.status,
+            detail: check.detail ?? "",
+          })),
+          approved_evidence_ids: input.finalQaRepair.approvedEvidenceIds ?? [],
+          grounded_targets: input.finalQaRepair.groundedTargets ?? [],
+        }
+      : null,
     job_requirements: input.jobRequirements ?? [],
     evidence_matches: (input.evidenceMatches ?? []).map((row) => toSnakeEvidenceMatch(row)),
     user_confirmations: (input.userConfirmations ?? []).map((item) => ({
