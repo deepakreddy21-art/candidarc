@@ -5,6 +5,7 @@ import {
   mapPythonResumeToTs,
   pythonResumeSchema,
   toSnakeEvidence,
+  toSnakeEvidenceMatch,
   toSnakeFinding,
 } from "../../server/intelligence/python-client";
 
@@ -84,18 +85,45 @@ describe("python intelligence client mapping", () => {
     expect(finding.severity).toBe("suggestion");
 
     const usage = mapProviderUsage({
-        provider: "mock",
-        model: "mock-generation-v1",
-        prompt_version: "resume-generation@python-v2",
-        latency_ms: 12,
-        input_tokens: 120,
-        output_tokens: 80,
-        estimated_cost_cents: null,
-        retry_count: 0,
-      });
+      provider: "mock",
+      model: "mock-generation-v1",
+      prompt_version: "resume-generation@python-v2",
+      latency_ms: 12,
+      input_tokens: 120,
+      output_tokens: 80,
+      estimated_cost_cents: null,
+      retry_count: 0,
+    });
     expect(usage.inputTokens).toBe(120);
     expect(usage.outputTokens).toBe(80);
     expect(usage.estimatedCostCents).toBeNull();
     expect(usage.costUnknown).toBe(true);
+  });
+
+  it("round-trips TypeScript evidence match enums into Python EvidenceMatchRow values", () => {
+    expect(
+      toSnakeEvidenceMatch({
+        requirement: "Python",
+        importance: "required",
+        evidenceIds: ["ev-1"],
+        evidenceStrength: "medium",
+        resumeUsage: "partial",
+      }),
+    ).toEqual({
+      requirement: "Python",
+      importance: "required",
+      evidence_ids: ["ev-1"],
+      evidence_strength: "partial",
+      resume_usage: "consider",
+      coverage_gap: null,
+    });
+    expect(
+      toSnakeEvidenceMatch({
+        requirement: "K8s",
+        evidence_strength: "strong",
+        resume_usage: "use",
+        evidence_ids: ["ev-2"],
+      }),
+    ).toMatchObject({ evidence_strength: "strong", resume_usage: "use" });
   });
 });

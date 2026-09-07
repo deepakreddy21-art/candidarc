@@ -339,20 +339,34 @@ def _structured_supports(item: EvidenceItem) -> list[StructuredSupport]:
 
 
 def _append_metric_semantic_violations(text: str, cited: list[EvidenceItem], violations: list[str]) -> None:
+    """Require semantic overlap for metric value+unit pairs.
+
+    A single numeric mention can pick up multiple noisy labels from nearby vocabulary
+    (e.g. "reliability" vs "deployment time"). Pass when any claim label for that
+    value/unit intersects evidence labels; fail only when meanings are disjoint.
+    """
     claims = _metric_supports(text)
-    evidence_support = [support for item in cited for support in _structured_supports(item) if support.claimKind == "metric"]
+    evidence_support = [
+        support for item in cited for support in _structured_supports(item) if support.claimKind == "metric"
+    ]
+    grouped: dict[tuple[str | None, str | None], list[StructuredSupport]] = {}
     for claim in claims:
-        same_value = [support for support in evidence_support if support.value == claim.value]
+        grouped.setdefault((claim.value, claim.unit), []).append(claim)
+
+    for (value, unit), claim_group in grouped.items():
+        same_value = [support for support in evidence_support if support.value == value]
         if not same_value:
             continue  # Existing atom checks report the unsupported numeric value.
-        unit_matches = [support for support in same_value if support.unit == claim.unit]
+        unit_matches = [support for support in same_value if support.unit == unit]
         if not unit_matches:
             violations.append("UNSUPPORTED_METRIC_UNIT")
             continue
-        if claim.metricLabel is None:
+        claim_labels = {support.metricLabel for support in claim_group if support.metricLabel}
+        evidence_labels = {support.metricLabel for support in unit_matches if support.metricLabel}
+        if not claim_labels:
             violations.append("UNSUPPORTED_METRIC_MEANING")
             continue
-        if not any(support.metricLabel == claim.metricLabel for support in unit_matches):
+        if not evidence_labels or claim_labels.isdisjoint(evidence_labels):
             violations.append("UNSUPPORTED_METRIC_MEANING")
 
 

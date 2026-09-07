@@ -174,7 +174,7 @@ class MockProvider:
                     {"label": data["label"], "status": status, "detail": data.get("detail", "")}
                 )
         typed = [FinalQaCheck(label=c["label"], status=c["status"], detail=c["detail"]) for c in checks]
-        passed = all(c.status in {"pass", "pending"} for c in typed)
+        passed = all(c.status in {"pass", "pending", "warn", "warning"} for c in typed)
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
             provider=self.name,

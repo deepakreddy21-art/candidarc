@@ -74,7 +74,8 @@ export class DemoResearchSourceAdapter implements ResearchSourceAdapter {
     }
     if (excerpt) {
       sources.push({
-        url: `fixture://job-description/${sourceId(context.company + context.role)}`,
+        // https URL required by Python ResearchSource HttpUrl schema (no fixture://)
+        url: `https://fixtures.candidarc.local/job-description/${sourceId(context.company + context.role)}`,
         title: `${context.company} role requirements (provided text)`,
         accessedAt,
         type: "job-description",

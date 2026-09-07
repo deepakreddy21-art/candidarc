@@ -126,6 +126,33 @@ describe("IDEMPOTENCY_IN_PROGRESS circuit and mapping", () => {
     expect(mapped.status).toBe(409);
     expect(mapped.retryable).toBe(true);
   });
+
+  it("maps VALIDATION_ERROR to contract mismatch, not unsupported claims", () => {
+    const mapped = mapPythonBackendErrorToAppError(
+      new PythonBackendError({
+        status: 422,
+        code: "VALIDATION_ERROR",
+        sanitizedMessage: "Request validation failed",
+        details: [{ loc: ["body", "sources", 0, "url"] }],
+        retryable: false,
+      }),
+    );
+    expect(mapped.code).toBe("PYTHON_CONTRACT_MISMATCH");
+    expect(mapped.message).not.toMatch(/unsupported or unverifiable claims/i);
+  });
+
+  it("maps GUARDRAIL_VIOLATION distinctly from validation", () => {
+    const mapped = mapPythonBackendErrorToAppError(
+      new PythonBackendError({
+        status: 422,
+        code: "GUARDRAIL_VIOLATION",
+        sanitizedMessage: "GUARDRAIL_VIOLATION:unsupported",
+        retryable: false,
+      }),
+    );
+    expect(mapped.code).toBe("GUARDRAIL_VIOLATION");
+    expect(mapped.message).toMatch(/unsupported or unverifiable claims/i);
+  });
 });
 
 describe("tenant-scoped usage ledger", () => {

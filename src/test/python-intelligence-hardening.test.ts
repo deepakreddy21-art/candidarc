@@ -49,6 +49,26 @@ describe("python intelligence production hardening", () => {
     expect(client.getCircuitState()).toBe("closed");
   });
 
+  it("parses top-level VALIDATION_ERROR envelopes from FastAPI", async () => {
+    const client = new PythonIntelligenceClient("http://python.test", "token", 5_000);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(422, {
+          code: "VALIDATION_ERROR",
+          message: "Request validation failed",
+          details: [{ type: "url_parsing" }],
+        }),
+      ),
+    );
+    await expect(probe(client)).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      status: 422,
+      retryable: false,
+    });
+    expect(client.getCircuitState()).toBe("closed");
+  });
+
   it("five 503s open the circuit", async () => {
     const client = new PythonIntelligenceClient("http://python.test", "token", 5_000);
     vi.stubGlobal(

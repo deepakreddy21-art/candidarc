@@ -103,10 +103,27 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
   if (code === "PROVIDER_OUTPUT_INVALID") {
     return new AppError("PROVIDER_OUTPUT_INVALID", "Provider returned invalid output", 422, details);
   }
-  if (code === "GUARDRAIL_VIOLATION" || status === 422) {
+  if (code === "VALIDATION_ERROR" || code === "REQUEST_VALIDATION" || code === "CONTRACT_MISMATCH") {
+    return new AppError(
+      "PYTHON_CONTRACT_MISMATCH",
+      "Resume intelligence request did not match the service contract. Please retry or contact support.",
+      422,
+      details,
+    );
+  }
+  if (code === "GUARDRAIL_VIOLATION") {
     return new AppError(
       "GUARDRAIL_VIOLATION",
       "This request included unsupported or unverifiable claims. Please revise and try again.",
+      422,
+      details,
+    );
+  }
+  if (status === 422) {
+    // Unknown 422: do not mislabel deployment/contract failures as unsupported claims.
+    return new AppError(
+      "PYTHON_CONTRACT_MISMATCH",
+      "Resume intelligence rejected the request. Please retry or contact support.",
       422,
       details,
     );
@@ -665,6 +682,43 @@ export type GenerateResumeInput = {
   idempotencyKey?: string;
 };
 
+/** Map TypeScript (or already-Python) evidence match rows into Python EvidenceMatchRow enums. */
+export function toSnakeEvidenceMatch(row: Record<string, unknown>) {
+  const strengthRaw = String(row.evidenceStrength ?? row.evidence_strength ?? "none").toLowerCase();
+  const usageRaw = String(row.resumeUsage ?? row.resume_usage ?? "use").toLowerCase();
+  const strengthMap: Record<string, "strong" | "partial" | "none"> = {
+    strong: "strong",
+    high: "strong",
+    partial: "partial",
+    medium: "partial",
+    none: "none",
+    low: "none",
+  };
+  const usageMap: Record<string, "use" | "consider" | "skip"> = {
+    use: "use",
+    used: "use",
+    consider: "consider",
+    partial: "consider",
+    skip: "skip",
+    unused: "skip",
+  };
+  const importanceRaw = String(row.importance ?? "required").toLowerCase();
+  const importance =
+    importanceRaw === "preferred"
+      ? ("preferred" as const)
+      : importanceRaw === "responsibility"
+        ? ("responsibility" as const)
+        : ("required" as const);
+  return {
+    requirement: String(row.requirement ?? ""),
+    importance,
+    evidence_ids: (row.evidenceIds ?? row.evidence_ids ?? []) as string[],
+    evidence_strength: strengthMap[strengthRaw] ?? "none",
+    resume_usage: usageMap[usageRaw] ?? "use",
+    coverage_gap: (row.coverageGap ?? row.coverage_gap ?? null) as string | null,
+  };
+}
+
 function buildGenerateBody(input: GenerateResumeInput) {
   return {
     context: toSnakeContext(input.context),
@@ -681,14 +735,7 @@ function buildGenerateBody(input: GenerateResumeInput) {
     mistake_memory: (input.mistakeMemory ?? []).map((rule) => toSnakeMistakeMemory(rule)),
     refinement_instruction: input.refinementInstruction ?? null,
     job_requirements: input.jobRequirements ?? [],
-    evidence_matches: (input.evidenceMatches ?? []).map((row) => ({
-      requirement: String(row.requirement ?? ""),
-      importance: row.importance ?? "required",
-      evidence_ids: (row.evidenceIds ?? row.evidence_ids ?? []) as string[],
-      evidence_strength: row.evidenceStrength ?? row.evidence_strength ?? "none",
-      resume_usage: row.resumeUsage ?? row.resume_usage ?? "use",
-      coverage_gap: (row.coverageGap ?? row.coverage_gap ?? null) as string | null,
-    })),
+    evidence_matches: (input.evidenceMatches ?? []).map((row) => toSnakeEvidenceMatch(row)),
     user_confirmations: (input.userConfirmations ?? []).map((item) => ({
       topic: String(item.topic ?? item.technology ?? ""),
       confirmed: Boolean(item.confirmed ?? item.answer === "yes"),
@@ -1058,18 +1105,24 @@ export class PythonIntelligenceClient {
       }
 
       if (!response.ok) {
-        const detail = (json.detail ?? {}) as {
+        // FastAPI HTTPException nests under `detail`; validation handler returns top-level code/message.
+        const nested =
+          json.detail && typeof json.detail === "object" && !Array.isArray(json.detail)
+            ? (json.detail as Record<string, unknown>)
+            : null;
+        const envelope = (nested ?? json) as {
           code?: string;
           message?: string;
+          details?: unknown;
           [key: string]: unknown;
         };
         const code =
-          typeof detail.code === "string" && detail.code
-            ? detail.code
+          typeof envelope.code === "string" && envelope.code
+            ? envelope.code
             : `PYTHON_BACKEND_${response.status}`;
         const sanitizedMessage =
-          typeof detail.message === "string" && detail.message
-            ? detail.message.slice(0, 200)
+          typeof envelope.message === "string" && envelope.message
+            ? envelope.message.slice(0, 200)
             : `Python backend error ${response.status}`;
         // In-progress is workflow-retryable but proves the backend is reachable — never trips the circuit.
         const inProgress = code === "IDEMPOTENCY_IN_PROGRESS";
@@ -1077,7 +1130,7 @@ export class PythonIntelligenceClient {
           status: response.status,
           code,
           sanitizedMessage,
-          details: detail,
+          details: envelope.details ?? envelope,
           retryable: inProgress || isRetryableStatus(response.status),
         });
         if (pyError.retryable && !inProgress) {

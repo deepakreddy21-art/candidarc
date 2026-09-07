@@ -788,7 +788,8 @@ export class ResumePipeline {
   private async runResumeGeneration(run: WorkflowRunRecord, versionNumber: number, triggeredBy: string) {
     const cycleBase = typeof run.payload.cycleBase === "number" ? run.payload.cycleBase : 0;
     const storedVersionNumber = cycleBase + versionNumber;
-    const idempotencyKey = `resume:${run.applicationPublicId}:v${storedVersionNumber}:${run.idempotencyKey}`;
+    const repairSuffix = run.payload?.finalQaRepairAttempted === true ? ":final-qa-repair" : "";
+    const idempotencyKey = `resume:${run.applicationPublicId}:v${storedVersionNumber}${repairSuffix}:${run.idempotencyKey}`;
     const existingVersion = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
     if (existingVersion) {
       const readyStage = `V${versionNumber}_READY` as WorkflowStage;
