@@ -17,7 +17,8 @@ WHERE evidence.source_type = 'user_confirmation'
 UPDATE evidence_items AS evidence
 SET attestation_application_id = matched.application_id
 FROM (
-  SELECT evidence_item_id, min(application_id) AS application_id
+  SELECT evidence_item_id,
+         (array_agg(application_id ORDER BY application_id))[1] AS application_id
   FROM evidence_application_matches
   WHERE deleted_at IS NULL AND excluded = false
   GROUP BY evidence_item_id
@@ -32,14 +33,14 @@ UPDATE evidence_items
 SET normalized_technology = lower(btrim(
   COALESCE(
     NULLIF(split_part(payload->>'techConfirmationKey', ':', 3), ''),
-    NULLIF(technologies->>0, '')
+    NULLIF((technologies -> 0) #>> '{}', '')
   )
 ))
 WHERE source_type = 'user_confirmation'
   AND normalized_technology IS NULL
   AND (
     NULLIF(split_part(payload->>'techConfirmationKey', ':', 3), '') IS NOT NULL
-    OR NULLIF(technologies->>0, '') IS NOT NULL
+    OR NULLIF((technologies -> 0) #>> '{}', '') IS NOT NULL
   );
 
 -- Keep only the latest active legacy answer for each lifecycle identity.
