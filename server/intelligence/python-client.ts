@@ -690,8 +690,18 @@ function buildGenerateBody(input: GenerateResumeInput) {
     job_requirements: input.jobRequirements ?? [],
     evidence_matches: (input.evidenceMatches ?? []).map((row) => toSnakeEvidenceMatch(row)),
     user_confirmations: (input.userConfirmations ?? []).map((item) => ({
+      // Provenance fields for tenant/owner isolation
+      id: (item.id ?? null) as string | null,
+      tenant_id: (item.tenantId ?? item.tenant_id ?? null) as string | null,
+      owner_user_id: (item.ownerUserId ?? item.owner_user_id ?? null) as string | null,
       topic: String(item.topic ?? item.technology ?? ""),
-      confirmed: Boolean(item.confirmed ?? item.answer === "yes"),
+      // Correct confirmed semantics: yes_professional/yes_project are affirmative, not just answer==="yes"
+      confirmed: Boolean(
+        item.confirmed ??
+          (item.answer === "yes_professional" ||
+            item.answer === "yes_project" ||
+            item.answer === "yes"),
+      ),
       evidence_description: (item.evidenceDescription ?? item.evidence_description ?? null) as string | null,
       source_kind: item.sourceKind ?? item.source_kind ?? "user_confirmation",
       related_evidence_ids: (item.relatedEvidenceIds ?? item.related_evidence_ids ?? []) as string[],

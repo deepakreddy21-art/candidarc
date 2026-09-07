@@ -2529,7 +2529,7 @@
       },
       "UserConfirmation": {
         "additionalProperties": false,
-        "description": "Typed user confirmation for generate/regenerate.\n\nOnly confirmations with a non-empty evidence_description may create first-person\nexperience claims. Bare yes without evidence is ignored (never added as experience).",
+        "description": "Typed user confirmation for generate/regenerate.\n\nOnly confirmations with a non-empty evidence_description may create first-person\nexperience claims. Bare yes without evidence is ignored (never added as experience).\n\nProvenance fields (id, tenant_id, owner_user_id) enable scoped validation:\n- Confirmations from foreign tenants/owners are rejected during claim validation.\n- Affirmative confirmations with evidence_description OR related_evidence_ids\n  may provide provenance for technologies in grounded_targets during repair.",
         "properties": {
           "confirmed": {
             "title": "Confirmed",
@@ -2546,6 +2546,34 @@
               }
             ],
             "title": "Evidence Description"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Unique confirmation identifier for provenance",
+            "title": "Id"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Owner user scope for isolation checks",
+            "title": "Owner User Id"
           },
           "related_evidence_ids": {
             "items": {
@@ -2568,6 +2596,20 @@
             "title": "Source Kind",
             "type": "string"
           },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tenant scope for isolation checks",
+            "title": "Tenant Id"
+          },
           "topic": {
             "maxLength": 512,
             "minLength": 1,
@@ -2584,13 +2626,6 @@
       },
       "ValidationError": {
         "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
           "loc": {
             "items": {
               "anyOf": [
@@ -2693,6 +2728,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Metrics Endpoint Metrics Get",
                   "type": "object"
                 }
