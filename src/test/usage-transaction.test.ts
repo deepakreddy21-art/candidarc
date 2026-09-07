@@ -305,6 +305,88 @@ describe("commitReservedWithCost (memory)", () => {
   });
 });
 
+describe("provider-operation usage identity", () => {
+  let store: ReturnType<typeof createEmptyMemoryStore>;
+  let repos: MemoryRepositories;
+
+  beforeEach(() => {
+    resetEnvCache();
+    store = createEmptyMemoryStore();
+    repos = new MemoryRepositories(store);
+  });
+
+  afterEach(() => {
+    resetEnvCache();
+  });
+
+  async function reserveAndCommit(key: string, kind: string, costCents: number | null) {
+    await repos.usage.append({
+      tenantId: "tenant-a",
+      userId: "user-1",
+      kind,
+      units: "1",
+      costCents: "0",
+      idempotencyKey: key,
+      status: "reserved",
+      metadata: { operationId: key },
+    });
+    return repos.usage.commitReservedWithCost({
+      tenantId: "tenant-a",
+      idempotencyKey: key,
+      costCents,
+      userId: "user-1",
+    });
+  }
+
+  it("keeps V4 generate, V4R1 repair, and both Final QA calls on distinct ledger keys", async () => {
+    const wf = "wf-idem-1";
+    const generateV4 = `tenant-a:usage:${wf}:generate:v4:resume_generation`;
+    const repairV4R1 = `tenant-a:usage:${wf}:repair:v4-to-v4r1:attempt-1:abc:resume_generation`;
+    const finalQaV4 = `tenant-a:usage:${wf}:final-qa:v4:final_review`;
+    const finalQaV5 = `tenant-a:usage:${wf}:final-qa:v5:final_review`;
+
+    await reserveAndCommit(generateV4, "resume_generation", 11);
+    await reserveAndCommit(repairV4R1, "resume_generation", 12);
+    await reserveAndCommit(finalQaV4, "final_review", 3);
+    await reserveAndCommit(finalQaV5, "final_review", 4);
+
+    // Replay each operation — no duplicate cost rows
+    await Promise.all([
+      repos.usage.commitReservedWithCost({
+        tenantId: "tenant-a",
+        idempotencyKey: generateV4,
+        costCents: 11,
+        userId: "user-1",
+      }),
+      repos.usage.commitReservedWithCost({
+        tenantId: "tenant-a",
+        idempotencyKey: repairV4R1,
+        costCents: 12,
+        userId: "user-1",
+      }),
+      repos.usage.commitReservedWithCost({
+        tenantId: "tenant-a",
+        idempotencyKey: finalQaV4,
+        costCents: 3,
+        userId: "user-1",
+      }),
+      repos.usage.commitReservedWithCost({
+        tenantId: "tenant-a",
+        idempotencyKey: finalQaV5,
+        costCents: 4,
+        userId: "user-1",
+      }),
+    ]);
+
+    const rows = [...store.usageLedger.values()].filter((row) => row.tenantId === "tenant-a");
+    const reservations = rows.filter((row) => row.kind !== "provider_cost");
+    const costs = rows.filter((row) => row.kind === "provider_cost");
+    expect(reservations).toHaveLength(4);
+    expect(costs).toHaveLength(4);
+    expect(new Set(reservations.map((row) => row.idempotencyKey)).size).toBe(4);
+  });
+});
+
 describe("tenant-prefixed key isolation", () => {
   it("tenant-prefixed keys ensure isolation even with global unique index", async () => {
     const store = createEmptyMemoryStore();

@@ -36,12 +36,13 @@ async function main() {
     "src/test/usage-transaction.test.ts",
   ]);
   await run("python-mode (real FastAPI HTTP journey)", win ? "npm.cmd" : "npm", ["run", "test:python-mode"]);
-  await run("python unit (refinement+idempotency+ranker)", "node", [
+  await run("python unit (refinement+repair+idempotency+ranker)", "node", [
     "scripts/python.mjs",
     "-m",
     "pytest",
     "-q",
     "tests/unit/test_refinement.py",
+    "tests/unit/test_final_qa_repair.py",
     "tests/unit/test_idempotency.py",
     "tests/unit/test_ranker_heuristic.py",
     "tests/unit/test_semantic_claims.py",

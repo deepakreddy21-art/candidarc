@@ -258,4 +258,64 @@ describe("commitReservedWithCost (postgres integration)", () => {
       `);
     }
   });
+
+  it("provider-operation keys distinguish generate/repair/final-qa and stay tenant-isolated", async () => {
+    const wf = newId("wf");
+    const generateV4 = `${tenantA}:usage:${wf}:generate:v4:resume_generation`;
+    const repair = `${tenantA}:usage:${wf}:repair:v4-to-v4r1:attempt-1:deadbeef:resume_generation`;
+    const qaV4 = `${tenantA}:usage:${wf}:final-qa:v4:final_review`;
+    const qaV5 = `${tenantA}:usage:${wf}:final-qa:v5:final_review`;
+
+    for (const [key, kind, cost] of [
+      [generateV4, "resume_generation", 11],
+      [repair, "resume_generation", 12],
+      [qaV4, "final_review", 3],
+      [qaV5, "final_review", 4],
+    ] as const) {
+      await repos.usage.append({
+        tenantId: tenantA,
+        userId: userA,
+        kind,
+        units: "1",
+        costCents: "0",
+        idempotencyKey: key,
+        status: "reserved",
+        metadata: {},
+      });
+      await repos.usage.commitReservedWithCost({
+        tenantId: tenantA,
+        idempotencyKey: key,
+        costCents: cost,
+        userId: userA,
+      });
+    }
+
+    // Concurrent replay of all four — still exactly one cost each
+    await Promise.all(
+      [generateV4, repair, qaV4, qaV5].flatMap((key) => [
+        repos.usage.commitReservedWithCost({ tenantId: tenantA, idempotencyKey: key, costCents: 1, userId: userA }),
+        repos.usage.commitReservedWithCost({ tenantId: tenantA, idempotencyKey: key, costCents: 1, userId: userA }),
+      ]),
+    );
+
+    const [{ count }] = await sql<{ count: string }[]>`
+      select count(*)::text as count from usage_ledger
+      where tenant_id = ${tenantA}::uuid
+        and kind = 'provider_cost'
+        and idempotency_key in (
+          ${`${generateV4}:cost`}, ${`${repair}:cost`}, ${`${qaV4}:cost`}, ${`${qaV5}:cost`}
+        )
+    `;
+    expect(count).toBe("4");
+
+    // Cross-tenant reuse of the same logical operation key cannot mutate tenant A
+    await expect(
+      repos.usage.commitReservedWithCost({
+        tenantId: tenantB,
+        idempotencyKey: generateV4,
+        costCents: 99,
+        userId: userB,
+      }),
+    ).rejects.toMatchObject({ code: "USAGE_NOT_FOUND" });
+  });
 });

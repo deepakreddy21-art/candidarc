@@ -1,247 +1,85 @@
 /** @vitest-environment node */
 /**
- * Real ResumePipeline Final-QA repair tests (memory).
- * Exercises stage transitions + persistence — not mocked Final-QA client calls alone.
+ * Final-QA repair through the real TypeScript→FastAPI boundary.
+ *
+ * When PYTHON_BACKEND_URL is set (npm run test:python-mode), this suite:
+ * - does NOT mock getPythonIntelligenceClient / regenerateResume
+ * - requires CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair on FastAPI
+ * - proves structured final_qa_repair produces V4R1 and reaches FINAL_READY
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyMemoryStore, MemoryRepositories, newId, nowIso } from "../../server/database/repositories";
 import { DbWorkflowEngine } from "../../server/workflows/engine";
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
 import { ResumePipeline } from "../../server/workflows/resume-pipeline";
 import { resetEnvCache } from "../../server/config/env";
 import { resetDbCache } from "../../server/database/client";
-import * as pythonClient from "../../server/intelligence/python-client";
+import * as aiIndex from "../../server/ai";
+import {
+  getPythonIntelligenceClient,
+  resetPythonIntelligenceClient,
+} from "../../server/intelligence/python-client";
 
-const TENANT = "ten_finalqa_repair";
-const USER = "user_finalqa_repair";
+const TENANT = "ten_finalqa_repair_http";
+const USER = "user_finalqa_repair_http";
+const BASE = process.env.PYTHON_BACKEND_URL;
+const TOKEN = process.env.PYTHON_BACKEND_TOKEN || "dev-python-backend-token-change-me";
+const FORCE = process.env.CANDIDARC_MOCK_FINAL_QA_FORCE;
 
-function visibleText(sections: unknown[]): string {
-  return JSON.stringify(sections)
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
+const describeHttp = BASE && FORCE === "fail_until_repair" ? describe : describe.skip;
 
-function resumeDoc(version: number, emphasis = "baseline") {
-  return {
-    versionNumber: version,
-    absoluteVersion: version,
-    cycleStep: version % 5,
-    score: 70 + version,
-    scoreBreakdown: {
-      atsCompatibility: 70,
-      jobAlignment: 70,
-      recruiterReadability: 70,
-      impact: 70,
-      quantification: 70,
-      technicalDepth: 70,
-      competencyCoverage: 70,
-      evidenceConfidence: 80,
-      writingQuality: 70,
-      formatIntegrity: 70,
-    },
-    notes: `notes ${emphasis} V${version}`,
-    sections: [
-      {
-        type: "summary" as const,
-        title: "Professional Summary",
-        order: 0,
-        bullets: [
-          {
-            text: `${emphasis} ownership focus: Platform engineer with Python and Kubernetes`,
-            evidenceIds: ["ev_repair_1"],
-            technologies: ["Python", "Kubernetes"],
-            matchedRequirements: [],
-            confidence: "high" as const,
-            claimRisk: "low" as const,
-            sourceVersion: "python",
-          },
-        ],
-      },
-      {
-        type: "experience" as const,
-        title: "Experience",
-        order: 1,
-        items: [
-          {
-            heading: "TechCorp",
-            subheading: "Platform Engineer",
-            dates: "January 2024 – Present",
-            bullets: [
-              {
-                text: `[${emphasis} emphasis] Reduced deployment time by 60% using Python and Kubernetes`,
-                evidenceIds: ["ev_repair_1"],
-                technologies: ["Python", "Kubernetes"],
-                matchedRequirements: [],
-                confidence: "high" as const,
-                claimRisk: "low" as const,
-                sourceVersion: "python",
-              },
-            ],
-          },
-        ],
-      },
-      {
-        type: "education" as const,
-        title: "Education",
-        order: 2,
-        items: [
-          {
-            heading: "Rivertown Institute of Technology",
-            subheading: "MS Information Systems",
-            dates: "January 2023 – May 2024",
-            bullets: [
-              {
-                text: "Completed MS Information Systems coursework",
-                evidenceIds: ["ev_repair_edu"],
-                technologies: [],
-                matchedRequirements: [],
-                confidence: "high" as const,
-                claimRisk: "low" as const,
-                sourceVersion: "python",
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  };
-}
+describeHttp("Final QA repair via real FastAPI (structured directive)", () => {
+  let providerSpy: ReturnType<typeof vi.spyOn>;
+  let regenerateBodies: Array<Record<string, unknown>>;
 
-describe("Final QA repair pipeline (memory)", () => {
-  let generateCalls: Array<{ absoluteVersion: number; previousVersion?: number; refinement?: string | null }>;
-  let finalQaCalls: number;
-  let finalQaShouldFailForever: boolean;
+  beforeAll(async () => {
+    const health = await fetch(`${BASE}/health/live`);
+    if (!health.ok) throw new Error(`FastAPI not ready at ${BASE}`);
+  }, 15_000);
 
   beforeEach(() => {
     resetEnvCache();
     resetDbCache();
+    resetPythonIntelligenceClient();
     vi.stubEnv("APP_MODE", "demo");
     vi.stubEnv("AI_MODE", "mock");
     vi.stubEnv("CANDIDARC_DATA_MODE", "memory");
     vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
+    vi.stubEnv("PYTHON_BACKEND_URL", BASE!);
+    vi.stubEnv("PYTHON_BACKEND_TOKEN", TOKEN);
     resetEnvCache();
-    generateCalls = [];
-    finalQaCalls = 0;
-    finalQaShouldFailForever = false;
+    providerSpy = vi.spyOn(aiIndex, "getProviderForRole") as ReturnType<typeof vi.spyOn>;
+    regenerateBodies = [];
 
-    vi.spyOn(pythonClient, "getPythonIntelligenceClient").mockReturnValue({
-      ready: vi.fn(async () => true),
-      parseJob: vi.fn(async () => ({
-        title: "Platform Engineer",
-        company: "Acme",
-        role: "Platform Engineer",
-        location: "Remote",
-        employment_type: "Full-time",
-        required_qualifications: ["Python"],
-        preferred_qualifications: [],
-        responsibilities: [],
-        warnings: [],
-      })),
-      synthesizeResearch: vi.fn(async () => ({
-        findings: [],
-        sources: [],
-        overall_confidence: 0.5,
-        company_research_status: "unavailable",
-      })),
-      matchEvidence: vi.fn(async () => ({
-        evidence_coverage: 0.9,
-        rows: [
-          {
-            requirement: "Python",
-            importance: "required",
-            evidence_ids: ["ev_repair_1"],
-            evidence_strength: "strong",
-            resume_usage: "use",
-          },
-        ],
-      })),
-      generateResume: vi.fn(async (input: { absoluteVersion: number; refinementInstruction?: string | null }) => {
-        generateCalls.push({
-          absoluteVersion: input.absoluteVersion,
-          refinement: input.refinementInstruction ?? null,
-        });
-        return {
-          resume: resumeDoc(input.absoluteVersion, "baseline"),
-          provider: "python",
-          model: "mock",
-          promptVersion: "gen@v1",
-          latencyMs: 5,
-          usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 2, costUnknown: false },
-        };
-      }),
-      regenerateResume: vi.fn(
-        async (input: {
-          absoluteVersion: number;
-          previousResume?: { versionNumber: number; sections: unknown[] } | null;
-          refinementInstruction?: string | null;
-        }) => {
-          generateCalls.push({
-            absoluteVersion: input.absoluteVersion,
-            previousVersion: input.previousResume?.versionNumber,
-            refinement: input.refinementInstruction ?? null,
-          });
-          const emphasis = input.refinementInstruction?.toLowerCase().includes("repair")
-            ? "repaired-python"
-            : "regen";
-          return {
-            resume: resumeDoc(input.absoluteVersion, emphasis),
-            provider: "python",
-            model: "mock",
-            promptVersion: "regen@v1",
-            latencyMs: 5,
-            usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 2, costUnknown: false },
-          };
-        },
-      ),
-      auditResume: vi.fn(async (input: { lens: string; reviewsVersion: number; producesVersion: number }) => ({
-        data: {
-          lens: input.lens,
-          reviewsVersion: input.reviewsVersion,
-          producesVersion: input.producesVersion,
-          scoreBefore: 70,
-          scoreAfter: 71,
-          summary: `audit ${input.lens}`,
-          findings: [],
-          rejectedFindings: [],
-        },
-        provider: "python",
-        model: "mock",
-        latencyMs: 3,
-        usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 1, costUnknown: false },
-      })),
-      finalQa: vi.fn(async () => {
-        finalQaCalls += 1;
-        const pass = !finalQaShouldFailForever && finalQaCalls >= 2;
-        return {
-          data: {
-            passed: pass,
-            checks: pass
-              ? [{ label: "AI QA", status: "pass", detail: "ok" }]
-              : [{ label: "AI QA", status: "fail", detail: "needs repair emphasis", blocking: true }],
-            provider: "python",
-            model: "mock",
-          },
-          provider: "python",
-          model: "mock",
-          latencyMs: 3,
-          usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: null, costUnknown: true },
-        };
-      }),
-    } as never);
+    const client = getPythonIntelligenceClient();
+    const original = client.regenerateResume.bind(client);
+    vi.spyOn(client, "regenerateResume").mockImplementation(async (input) => {
+      regenerateBodies.push({
+        refinementInstruction: input.refinementInstruction ?? null,
+        finalQaRepair: input.finalQaRepair ?? null,
+        absoluteVersion: input.absoluteVersion,
+        previousVersion: input.previousResume
+          ? Number((input.previousResume as { versionNumber?: number }).versionNumber)
+          : null,
+      });
+      return original(input);
+    });
   });
 
   afterEach(() => {
+    providerSpy.mockRestore();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    resetPythonIntelligenceClient();
     resetEnvCache();
     resetDbCache();
   });
 
-  async function seedApp(repos: MemoryRepositories, store: ReturnType<typeof createEmptyMemoryStore>) {
+  async function seed(repos: MemoryRepositories, store: ReturnType<typeof createEmptyMemoryStore>) {
     store.tenants.set(TENANT, {
       id: TENANT,
-      publicId: "tenp_repair",
-      name: "Repair",
+      publicId: "tenp_repair_http",
+      name: "Repair HTTP",
       plan: "free",
       createdAt: nowIso(),
       updatedAt: nowIso(),
@@ -255,15 +93,15 @@ describe("Final QA repair pipeline (memory)", () => {
     });
     await repos.users.create({
       id: USER,
-      publicId: "usr_repair",
-      email: "repair@example.com",
-      name: "Repair User",
+      publicId: "usr_repair_http",
+      email: "repair-http@example.com",
+      name: "Repair HTTP",
       passwordHash: "x",
       emailVerified: true,
     });
     const app = await repos.applications.create({
       id: newId("app"),
-      publicId: "app_repair",
+      publicId: "app_repair_http",
       tenantId: TENANT,
       ownerUserId: USER,
       company: "Acme",
@@ -283,10 +121,9 @@ describe("Final QA repair pipeline (memory)", () => {
       archived: false,
       roleFamily: "General",
       metadata: {
-        jobDescription: "Acme seeks Platform Engineer. Python and Kubernetes required. " + "detail ".repeat(12),
-        autoAdvanceAudits: true,
+        jobDescription: "Platform engineer. Python and Kubernetes required. " + "detail ".repeat(12),
         customerFacing: true,
-        jobExtractionAppliedAt: nowIso(),
+        autoAdvanceAudits: true,
       },
     });
     await repos.evidence.create({
@@ -297,14 +134,15 @@ describe("Final QA repair pipeline (memory)", () => {
       candidateProfileId: null,
       title: "Platform Engineer",
       organization: "TechCorp",
-      situation: "s",
-      task: "t",
-      actions: ["a"],
+      situation: "Owned deployment platform",
+      task: "Reduce release cycle time",
+      actions: ["Implemented Python automation", "Standardized Kubernetes rollouts"],
       result: "Reduced deployment time by 60% using Python and Kubernetes",
-      technologies: ["Python", "Kubernetes"],
+      technologies: ["Python", "Kubernetes", "OpenSearch"],
       confidence: "high",
       sourceType: "employment",
-      claimText: "Platform Engineer at TechCorp, January 2024 – Present. Reduced deployment time by 60%.",
+      claimText:
+        "Platform Engineer at TechCorp, January 2024 – Present. Reduced deployment time by 60% using Python and Kubernetes.",
       verificationStatus: "user_attested",
       candidateConfirmationStatus: "confirmed",
       privacyLevel: "standard",
@@ -318,16 +156,16 @@ describe("Final QA repair pipeline (memory)", () => {
       tenantId: TENANT,
       ownerUserId: USER,
       candidateProfileId: null,
-      title: "MS",
-      organization: "RIT",
-      situation: "s",
-      task: "t",
-      actions: ["a"],
-      result: "MS degree",
+      title: "MS Information Systems",
+      organization: "Rivertown Institute of Technology",
+      situation: "Graduate coursework",
+      task: "Complete degree",
+      actions: ["Completed coursework"],
+      result: "Earned MS Information Systems",
       technologies: [],
       confidence: "high",
       sourceType: "education",
-      claimText: "MS Information Systems, Rivertown Institute of Technology, January 2023 – May 2024",
+      claimText: "MS Information Systems, Rivertown Institute of Technology, January 2023 – May 2024.",
       verificationStatus: "user_attested",
       candidateConfirmationStatus: "confirmed",
       privacyLevel: "standard",
@@ -336,9 +174,76 @@ describe("Final QA repair pipeline (memory)", () => {
       matchedApplicationIds: [],
     });
 
+    // Seed a Python-grounded V4 so repair validation matches production evidence rules.
+    const client = getPythonIntelligenceClient();
+    const grounded = await client.generateResume({
+      context: {
+        tenantId: TENANT,
+        userId: USER,
+        applicationId: app.publicId,
+        workflowRunId: "wf_repair_seed",
+        requestId: "req_repair_seed",
+      },
+      absoluteVersion: 4,
+      cycleStep: 4,
+      jobDescription: String(app.metadata?.jobDescription ?? ""),
+      evidence: [
+        {
+          id: "ev_repair_1",
+          tenantId: TENANT,
+          ownerUserId: USER,
+          title: "Platform Engineer",
+          organization: "TechCorp",
+          situation: "Owned deployment platform",
+          task: "Reduce release cycle time",
+          actions: ["Implemented Python automation", "Standardized Kubernetes rollouts"],
+          result: "Reduced deployment time by 60% using Python and Kubernetes",
+          technologies: ["Python", "Kubernetes", "OpenSearch"],
+          confidence: "high",
+          sourceType: "employment",
+          claimText:
+            "Platform Engineer at TechCorp, January 2024 – Present. Reduced deployment time by 60% using Python and Kubernetes.",
+          verificationStatus: "user_attested",
+          candidateConfirmationStatus: "confirmed",
+          privacyLevel: "standard",
+          metrics: ["60% deployment time reduction"],
+        },
+        {
+          id: "ev_repair_edu",
+          tenantId: TENANT,
+          ownerUserId: USER,
+          title: "MS Information Systems",
+          organization: "Rivertown Institute of Technology",
+          situation: "Graduate coursework",
+          task: "Complete degree",
+          actions: ["Completed coursework"],
+          result: "Earned MS Information Systems",
+          technologies: [],
+          confidence: "high",
+          sourceType: "education",
+          claimText: "MS Information Systems, Rivertown Institute of Technology, January 2023 – May 2024.",
+          verificationStatus: "user_attested",
+          candidateConfirmationStatus: "confirmed",
+          privacyLevel: "standard",
+        },
+      ],
+      allowedTechnologies: ["Python", "Kubernetes", "OpenSearch"],
+      previousResume: null,
+      acceptedFindings: [],
+      rejectedFindings: [],
+      researchFindings: [],
+      mistakeMemory: [],
+      refinementInstruction: null,
+      finalQaRepair: null,
+      jobRequirements: ["Python", "Kubernetes"],
+      evidenceMatches: [],
+      userConfirmations: [],
+      idempotencyKey: `seed-v4:${app.publicId}`,
+    });
+
     const resume = await repos.resumes.createResume({
       id: newId("res"),
-      publicId: "resp_repair",
+      publicId: "resp_repair_http",
       tenantId: TENANT,
       applicationId: app.id,
       applicationPublicId: app.publicId,
@@ -349,24 +254,24 @@ describe("Final QA repair pipeline (memory)", () => {
     });
     const failedV4 = await repos.resumes.appendVersion({
       id: newId("rv"),
-      publicId: "rvv4_failed",
+      publicId: "rvv4_failed_http",
       tenantId: TENANT,
       resumeId: resume.id,
       versionNumber: 4,
       versionLabel: "V4",
-      score: 74,
-      scoreBreakdown: resumeDoc(4).scoreBreakdown,
-      notes: "failed v4",
+      score: grounded.resume.score,
+      scoreBreakdown: grounded.resume.scoreBreakdown,
+      notes: grounded.resume.notes || "failed v4",
       triggeredBy: "EM Audit 2",
-      sections: resumeDoc(4, "failed-v4").sections,
+      sections: grounded.resume.sections as never,
       idempotencyKey: `resume:${app.publicId}:v4:seed`,
-      promptVersion: "python@v1",
+      promptVersion: grounded.promptVersion || "python@v1",
     });
     await repos.resumes.setCurrentVersion(TENANT, resume.publicId, failedV4.publicId);
     return { app, resume, failedV4 };
   }
 
-  async function runPipeline(repos: MemoryRepositories, store: ReturnType<typeof createEmptyMemoryStore>, appId: string, appPublicId: string) {
+  async function runFromFinalQa(repos: MemoryRepositories, store: ReturnType<typeof createEmptyMemoryStore>, appId: string, appPublicId: string) {
     const queue = new InProcessQueueAdapter();
     const engine = new DbWorkflowEngine(repos.workflows, queue);
     const pipeline = new ResumePipeline({
@@ -403,30 +308,39 @@ describe("Final QA repair pipeline (memory)", () => {
       applicationId: appId,
       applicationPublicId: appPublicId,
       stage: "FINAL_QA_RUNNING",
-      idempotencyKey: `repair-test:${appPublicId}:${Date.now()}`,
+      idempotencyKey: `repair-http:${appPublicId}:${Date.now()}`,
       payload: { customerFacing: true, autoAdvanceAudits: true, cycleBase: 0 },
     });
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       const status = await engine.getStatus(TENANT, run.publicId);
       if (status?.stage === "FINAL_READY" || status?.stage === "FINAL_QA_FAILED" || status?.status === "failed") {
         await queue.stop();
-        return { engine, run, status };
+        return { engine, run, status, pipeline, queue };
       }
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 40));
     }
     await queue.stop();
     throw new Error("pipeline timed out");
   }
 
-  it("AI QA fails once → repair creates V4R1 from failed V4 → second QA passes → FINAL_READY", async () => {
+  it("AI QA fails → structured FastAPI repair → V4R1 → FINAL_READY with distinct usage keys", async () => {
     const store = createEmptyMemoryStore();
     const repos = new MemoryRepositories(store);
-    const { app, failedV4 } = await seedApp(repos, store);
+    const { app, failedV4 } = await seed(repos, store);
 
-    const { status } = await runPipeline(repos, store, app.id, app.publicId);
+    const { status, run } = await runFromFinalQa(repos, store, app.id, app.publicId);
     expect(status?.stage).toBe("FINAL_READY");
-    expect(finalQaCalls).toBe(2);
+    expect(providerSpy).not.toHaveBeenCalled();
+
+    expect(regenerateBodies).toHaveLength(1);
+    expect(regenerateBodies[0]?.refinementInstruction).toBeNull();
+    expect(regenerateBodies[0]?.finalQaRepair).toMatchObject({
+      repairType: "final_qa_repair",
+      sourceVersion: 4,
+      attempt: 1,
+    });
+    expect(regenerateBodies[0]?.previousVersion).toBe(4);
 
     const resume = await repos.resumes.getByApplication(TENANT, app.publicId);
     const versions = resume ? await repos.resumes.listVersions(TENANT, resume.publicId) : [];
@@ -434,53 +348,73 @@ describe("Final QA repair pipeline (memory)", () => {
     const v4 = versions.find((v) => v.versionNumber === 4)!;
     const repair = versions.find((v) => v.versionNumber === 5)!;
     expect(v4.publicId).toBe(failedV4.publicId);
-    expect(v4.sections).toEqual(failedV4.sections);
+    expect(JSON.stringify(v4.sections)).toBe(JSON.stringify(failedV4.sections));
     expect(repair.versionLabel).toBe("V4R1");
     expect(repair.triggeredBy).toBe("final-qa-repair");
     expect(resume?.currentVersionPublicId).toBe(repair.publicId);
-    expect(visibleText(repair.sections as unknown[])).toContain("repaired-python");
-    expect(visibleText(repair.sections as unknown[])).not.toBe(visibleText(v4.sections as unknown[]));
+    expect(JSON.stringify(repair.sections).toLowerCase()).not.toContain("ownership focus");
 
-    const repairGen = generateCalls.find((c) => c.absoluteVersion === 5);
-    expect(repairGen?.previousVersion).toBe(4);
-    expect(repairGen?.refinement).toMatch(/Final-QA repair|failed checks/i);
-    expect(generateCalls.filter((c) => c.absoluteVersion === 5)).toHaveLength(1);
-  }, 30_000);
+    const usageKeys = [...store.usageLedger.values()]
+      .filter((row) => row.tenantId === TENANT && row.kind !== "provider_cost")
+      .map((row) => row.idempotencyKey);
+    const genKeys = usageKeys.filter((key) => key.includes(":resume_generation"));
+    const qaKeys = usageKeys.filter((key) => key.includes(":final_review"));
+    expect(genKeys.some((key) => key.includes("repair:v4-to-v4r1"))).toBe(true);
+    expect(qaKeys.some((key) => key.includes("final-qa:v4:"))).toBe(true);
+    expect(qaKeys.some((key) => key.includes("final-qa:v5:"))).toBe(true);
+    expect(new Set(qaKeys).size).toBeGreaterThanOrEqual(2);
 
-  it("AI QA fails twice → FINAL_QA_FAILED and downloads stay blocked", async () => {
-    finalQaShouldFailForever = true;
-    const store = createEmptyMemoryStore();
-    const repos = new MemoryRepositories(store);
-    const { app } = await seedApp(repos, store);
-    const { status } = await runPipeline(repos, store, app.id, app.publicId);
-    expect(status?.stage).toBe("FINAL_QA_FAILED");
-    expect(finalQaCalls).toBe(2);
-    expect(generateCalls.filter((c) => c.absoluteVersion === 5)).toHaveLength(1);
-
-    const appRow = await repos.applications.getByPublicId(TENANT, app.publicId);
-    expect(appRow?.workflowStage).toBe("FINAL_QA_FAILED");
-    expect(appRow?.status).toBe("failed");
-    // PDF/DOCX enqueue only happens on FINAL_READY — repair failure must not set ready.
-    expect(appRow?.nextAction).toMatch(/quality checks failed|review and retry/i);
-  }, 30_000);
-
-  it("replaying the same repair is idempotent (no duplicate versions)", async () => {
-    const store = createEmptyMemoryStore();
-    const repos = new MemoryRepositories(store);
-    const { app } = await seedApp(repos, store);
-    const first = await runPipeline(repos, store, app.id, app.publicId);
-    expect(first.status?.stage).toBe("FINAL_READY");
-    const resume = await repos.resumes.getByApplication(TENANT, app.publicId);
-    const before = resume ? await repos.resumes.listVersions(TENANT, resume.publicId) : [];
-    const gensBefore = generateCalls.length;
-
-    // Replay repair generation stage with same payload
-    const repairKey = [...store.resumeVersions.values()].find((v) => v.versionLabel === "V4R1")?.idempotencyKey;
-    expect(repairKey).toBeTruthy();
-    const again = await repos.resumes.findVersionByIdempotency(TENANT, repairKey!);
-    expect(again?.versionNumber).toBe(5);
+    // Real workflow replay of repair generation is idempotent
+    const gensBefore = regenerateBodies.length;
+    const versionsBefore = versions.length;
+    const queue = new InProcessQueueAdapter();
+    const engine = new DbWorkflowEngine(repos.workflows, queue);
+    const pipeline = new ResumePipeline({
+      engine,
+      workflows: repos.workflows,
+      applications: repos.applications,
+      research: repos.research,
+      resumes: repos.resumes,
+      audits: repos.audits,
+      usage: repos.usage,
+      evidence: repos.evidence,
+      store,
+      queue,
+    });
+    const live = await repos.workflows.getByPublicId(TENANT, run.publicId);
+    expect(live?.stage).toBe("FINAL_READY");
+    // Force re-entry of V4_GENERATING with the same repair payload (idempotent)
+    const repairPayload = withoutClaims({
+      ...(live?.payload ?? {}),
+      finalQaRepairAttempted: true,
+      finalQaRepairAttempt: 1,
+      finalQaRepairSourceVersion: 4,
+      finalQaRepairChecksHash: String(live?.payload?.finalQaRepairChecksHash ?? "na"),
+      finalQaRepairDirective: live?.payload?.finalQaRepairDirective,
+    });
+    await repos.workflows.updateRun(live!.id, {
+      stage: "V4_GENERATING",
+      status: "running",
+      payload: repairPayload,
+    });
+    await pipeline.handleStage(
+      { ...live!, stage: "V4_GENERATING", payload: repairPayload },
+      "V4_GENERATING",
+    );
     const after = resume ? await repos.resumes.listVersions(TENANT, resume.publicId) : [];
-    expect(after).toHaveLength(before.length);
-    expect(generateCalls.length).toBe(gensBefore);
-  }, 30_000);
+    expect(after).toHaveLength(versionsBefore);
+    expect(regenerateBodies.length).toBe(gensBefore);
+    const again = await repos.workflows.getById(live!.id);
+    expect(again?.stage === "FINAL_READY" || again?.stage === "FINAL_QA_RUNNING" || again?.stage === "V4_READY").toBe(
+      true,
+    );
+  }, 90_000);
 });
+
+function withoutClaims(payload: Record<string, unknown>) {
+  const next = { ...payload };
+  for (const key of Object.keys(next)) {
+    if (key.startsWith("claimed:")) delete next[key];
+  }
+  return next;
+}

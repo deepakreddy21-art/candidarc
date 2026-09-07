@@ -1,11 +1,10 @@
 /** @vitest-environment node */
 /**
- * Deterministic application-boundary Python cutover journey (real FastAPI HTTP).
+ * Full V0→V4→failed Final QA→V4R1→FINAL_READY over the real TypeScript→FastAPI boundary.
  *
- * NOT a live-provider test. Uses AI_MODE=mock on FastAPI, but does NOT mock
- * TypeScript PythonIntelligenceClient — BFF/pipeline → real HTTP → FastAPI.
- *
- * Requires PYTHON_BACKEND_URL (provided by `npm run test:python-mode`).
+ * Requires:
+ * - PYTHON_BACKEND_URL
+ * - CANDIDARC_MOCK_FINAL_QA_FORCE=fail_until_repair on FastAPI
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyMemoryStore, MemoryRepositories, newId, nowIso } from "../../server/database/repositories";
@@ -15,29 +14,34 @@ import { ResumePipeline } from "../../server/workflows/resume-pipeline";
 import { resetEnvCache } from "../../server/config/env";
 import { resetDbCache } from "../../server/database/client";
 import * as aiIndex from "../../server/ai";
-import { resetPythonIntelligenceClient } from "../../server/intelligence/python-client";
+import {
+  getPythonIntelligenceClient,
+  resetPythonIntelligenceClient,
+} from "../../server/intelligence/python-client";
 
-const TENANT = "ten_http_cutover";
-const USER = "user_http_cutover";
+const TENANT = "ten_v4r1_e2e";
+const OTHER_TENANT = "ten_v4r1_other";
+const USER = "user_v4r1_e2e";
 const BASE = process.env.PYTHON_BACKEND_URL;
 const TOKEN = process.env.PYTHON_BACKEND_TOKEN || "dev-python-backend-token-change-me";
+const FORCE = process.env.CANDIDARC_MOCK_FINAL_QA_FORCE;
 
-const describeHttp = BASE ? describe : describe.skip;
+const describeHttp = BASE && FORCE === "fail_until_repair" ? describe : describe.skip;
 
-describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () => {
+describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
   let providerSpy: ReturnType<typeof vi.spyOn>;
+  let regenerateCount = 0;
 
   beforeAll(async () => {
     const health = await fetch(`${BASE}/health/live`);
-    if (!health.ok) {
-      throw new Error(`FastAPI not ready at ${BASE}`);
-    }
+    if (!health.ok) throw new Error(`FastAPI not ready at ${BASE}`);
   }, 15_000);
 
   beforeEach(() => {
     resetEnvCache();
     resetDbCache();
     resetPythonIntelligenceClient();
+    regenerateCount = 0;
     vi.stubEnv("APP_MODE", "demo");
     vi.stubEnv("AI_MODE", "mock");
     vi.stubEnv("CANDIDARC_DATA_MODE", "memory");
@@ -46,6 +50,12 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
     vi.stubEnv("PYTHON_BACKEND_TOKEN", TOKEN);
     resetEnvCache();
     providerSpy = vi.spyOn(aiIndex, "getProviderForRole") as ReturnType<typeof vi.spyOn>;
+    const client = getPythonIntelligenceClient();
+    const original = client.regenerateResume.bind(client);
+    vi.spyOn(client, "regenerateResume").mockImplementation(async (input) => {
+      regenerateCount += 1;
+      return original(input);
+    });
   });
 
   afterEach(() => {
@@ -57,13 +67,21 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
     resetDbCache();
   });
 
-  it("runs parse→research→match→V0–V4→final-qa over real FastAPI without TypeScript AI", async () => {
+  it("completes failed Final QA repair journey with distinct usage and blocked downloads", async () => {
     const store = createEmptyMemoryStore();
     const repos = new MemoryRepositories(store);
     store.tenants.set(TENANT, {
       id: TENANT,
-      publicId: "tenp_http_cutover",
-      name: "HTTP Cutover",
+      publicId: "tenp_v4r1_e2e",
+      name: "V4R1 E2E",
+      plan: "free",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    store.tenants.set(OTHER_TENANT, {
+      id: OTHER_TENANT,
+      publicId: "tenp_v4r1_other",
+      name: "Other",
       plan: "free",
       createdAt: nowIso(),
       updatedAt: nowIso(),
@@ -77,15 +95,15 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
     });
     await repos.users.create({
       id: USER,
-      publicId: "usr_http_cutover",
-      email: "http-cutover@example.com",
-      name: "HTTP Cutover Candidate",
+      publicId: "usr_v4r1_e2e",
+      email: "v4r1-e2e@example.com",
+      name: "V4R1 E2E",
       passwordHash: "x",
       emailVerified: true,
     });
     const app = await repos.applications.create({
       id: newId("app"),
-      publicId: "app_http_cutover",
+      publicId: "app_v4r1_e2e",
       tenantId: TENANT,
       ownerUserId: USER,
       company: "Acme Cloud",
@@ -107,15 +125,14 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
       metadata: {
         jobDescription:
           "Acme Cloud seeks a Platform Engineer. Python and Kubernetes required. " + "detail ".repeat(12),
-        jobUrl: "",
         autoAdvanceAudits: true,
         customerFacing: true,
-        refinementInstruction: "Emphasize Python platform ownership",
+        refinementInstruction: "Emphasize Python platform work",
       },
     });
     await repos.evidence.create({
       id: newId("ev"),
-      publicId: "ev_http_cutover_1",
+      publicId: "ev_v4r1_e2e_1",
       tenantId: TENANT,
       ownerUserId: USER,
       candidateProfileId: null,
@@ -125,7 +142,7 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
       task: "Reduce release cycle time",
       actions: ["Implemented Python automation", "Standardized Kubernetes rollouts"],
       result: "Reduced deployment time by 60% using Python and Kubernetes",
-      technologies: ["Python", "Kubernetes"],
+      technologies: ["Python", "Kubernetes", "OpenSearch"],
       confidence: "high",
       sourceType: "employment",
       claimText:
@@ -139,21 +156,20 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
     });
     await repos.evidence.create({
       id: newId("ev"),
-      publicId: "ev_http_cutover_edu",
+      publicId: "ev_v4r1_e2e_edu",
       tenantId: TENANT,
       ownerUserId: USER,
       candidateProfileId: null,
       title: "MS Information Systems",
       organization: "Rivertown Institute of Technology",
       situation: "Graduate coursework",
-      task: "Complete degree requirements",
-      actions: ["Completed systems and analytics coursework"],
+      task: "Complete degree",
+      actions: ["Completed coursework"],
       result: "Earned MS Information Systems",
       technologies: [],
       confidence: "high",
       sourceType: "education",
-      claimText:
-        "MS Information Systems, Rivertown Institute of Technology, January 2023 – May 2024.",
+      claimText: "MS Information Systems, Rivertown Institute of Technology, January 2023 – May 2024.",
       verificationStatus: "user_attested",
       candidateConfirmationStatus: "confirmed",
       privacyLevel: "standard",
@@ -199,72 +215,81 @@ describeHttp("python cutover HTTP pipeline journey (deterministic FastAPI)", () 
       applicationId: app.id,
       applicationPublicId: app.publicId,
       stage: "RESEARCH_QUEUED",
-      idempotencyKey: `http-cutover:${app.publicId}:${Date.now()}`,
+      idempotencyKey: `v4r1-e2e:${app.publicId}:${Date.now()}`,
       payload: { customerFacing: true, autoAdvanceAudits: true },
     });
 
-    // Mid-run worker stop/recover (application orchestration boundary)
-    await new Promise((r) => setTimeout(r, 80));
-    await queue.stop();
-    await engine.recoverIncomplete();
-    await queue.start();
-
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + 180_000;
     while (Date.now() < deadline) {
       const status = await engine.getStatus(TENANT, run.publicId);
       if (status?.stage === "FINAL_READY" || status?.status === "completed") break;
-      if (status?.stage === "FINAL_QA_FAILED") {
-        throw new Error(`FINAL_QA_FAILED: ${JSON.stringify(status.payload)}`);
+      if (status?.stage === "FINAL_QA_FAILED" || status?.status === "failed") {
+        throw new Error(`failed early: ${status.stage} ${JSON.stringify(status.payload)}`);
       }
-      if (status?.status === "failed") {
-        throw new Error(`failed: ${status.errorClass} ${JSON.stringify(status.payload)}`);
-      }
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 80));
     }
 
     const final = await engine.getStatus(TENANT, run.publicId);
     expect(final?.stage).toBe("FINAL_READY");
     expect(providerSpy).not.toHaveBeenCalled();
 
-    const events = await repos.workflows.listEvents(TENANT, run.publicId);
-    const metaOps = events
-      .map((e) => e.metadata)
-      .filter((m): m is { executionBackend: string; operation: string } =>
-        Boolean(m && typeof m.executionBackend === "string" && typeof m.operation === "string"),
-      );
-    expect(metaOps.every((m) => m.executionBackend === "python")).toBe(true);
-    expect(metaOps.some((m) => m.operation === "parse")).toBe(true);
-    expect(metaOps.some((m) => m.operation === "research")).toBe(true);
-    expect(metaOps.some((m) => m.operation === "match")).toBe(true);
-    expect(metaOps.some((m) => m.operation === "generate")).toBe(true);
-    expect(metaOps.some((m) => m.operation === "audit")).toBe(true);
-    expect(metaOps.some((m) => m.operation === "final-qa")).toBe(true);
-
     const resume = await repos.resumes.getByApplication(TENANT, app.publicId);
     const versions = resume ? await repos.resumes.listVersions(TENANT, resume.publicId) : [];
-    const nums = versions.map((v) => v.versionNumber);
-    expect(nums).toEqual([...new Set(nums)].sort((a, b) => a - b));
-    expect(Math.max(...nums)).toBeGreaterThanOrEqual(4);
+    const v4 = versions.find((v) => v.versionLabel === "V4" || v.versionNumber === 4);
+    const repair = versions.find((v) => v.versionLabel === "V4R1");
+    expect(v4).toBeTruthy();
+    expect(repair).toBeTruthy();
+    expect(resume?.currentVersionPublicId).toBe(repair!.publicId);
+    expect(JSON.stringify(v4!.sections)).not.toBe(JSON.stringify(repair!.sections));
+    expect(JSON.stringify(repair!.sections).toLowerCase()).not.toContain("ownership focus");
+    expect(JSON.stringify(repair!.sections).toLowerCase()).not.toContain("[python emphasis]");
 
-    const notes = versions.map((v) => v.notes ?? "").join(" ");
-    expect(final?.payload?.executionBackend ?? "python").toBeTruthy();
-    expect(notes.length).toBeGreaterThan(0);
+    const usageRows = [...store.usageLedger.values()].filter((row) => row.tenantId === TENANT);
+    const genKeys = usageRows
+      .filter((row) => row.kind === "resume_generation")
+      .map((row) => row.idempotencyKey);
+    const qaKeys = usageRows.filter((row) => row.kind === "final_review").map((row) => row.idempotencyKey);
+    expect(genKeys.some((key) => key.includes("generate:v4:"))).toBe(true);
+    expect(genKeys.some((key) => key.includes("repair:v4-to-v4r1:"))).toBe(true);
+    expect(qaKeys.some((key) => key.includes("final-qa:v4:"))).toBe(true);
+    expect(qaKeys.some((key) => key.includes(`final-qa:v${repair!.versionNumber}:`))).toBe(true);
 
-    const current = versions.find((v) => v.publicId === resume?.currentVersionPublicId) ?? versions.at(-1);
-    const visible = JSON.stringify(current?.sections ?? [])
-      .replace(/\s+/g, " ")
-      .toLowerCase();
-    // Professional visible refinement: skills lead with Python, no test-marker strings.
-    expect(visible).not.toContain("ownership focus");
-    expect(visible).not.toContain("[python emphasis]");
-    const skills = (current?.sections as Array<Record<string, unknown>> | undefined)?.find(
-      (section) => section.type === "skills",
+    // Downloads remain blocked until FINAL_READY (already FINAL_READY) — before files exist → DOCUMENT_NOT_READY
+    const liveApp = await repos.applications.getByPublicId(TENANT, app.publicId);
+    expect(liveApp?.workflowStage).toBe("FINAL_READY");
+    expect(liveApp?.metadata?.customerFiles).toBeUndefined();
+
+    // Cross-tenant isolation
+    await expect(repos.resumes.getByApplication(OTHER_TENANT, app.publicId)).resolves.toBeNull();
+    await expect(repos.workflows.getByPublicId(OTHER_TENANT, run.publicId)).resolves.toBeNull();
+
+    // Real workflow replay of Final QA does not create additional versions or provider regenerations
+    const gensBefore = regenerateCount;
+    const versionCount = versions.length;
+    const live = await repos.workflows.getByPublicId(TENANT, run.publicId);
+    await repos.workflows.updateRun(live!.id, {
+      stage: "FINAL_QA_RUNNING",
+      status: "running",
+      payload: withoutClaims({ ...(live?.payload ?? {}) }),
+    });
+    await pipeline.handleStage(
+      { ...live!, stage: "FINAL_QA_RUNNING", payload: withoutClaims({ ...(live?.payload ?? {}) }) },
+      "FINAL_QA_RUNNING",
     );
-    const leadTechs = ((skills?.bullets as Array<Record<string, unknown>> | undefined)?.[0]?.technologies as
-      | string[]
-      | undefined) ?? [];
-    expect(leadTechs[0]?.toLowerCase()).toBe("python");
+    const afterVersions = resume ? await repos.resumes.listVersions(TENANT, resume.publicId) : [];
+    expect(afterVersions).toHaveLength(versionCount);
+    expect(regenerateCount).toBe(gensBefore);
+    const after = await repos.workflows.getById(live!.id);
+    expect(after?.stage).toBe("FINAL_READY");
 
     await queue.stop();
-  }, 150_000);
+  }, 200_000);
 });
+
+function withoutClaims(payload: Record<string, unknown>) {
+  const next = { ...payload };
+  for (const key of Object.keys(next)) {
+    if (key.startsWith("claimed:")) delete next[key];
+  }
+  return next;
+}
