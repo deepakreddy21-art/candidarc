@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+﻿import { createHash } from "crypto";
 import {
   auditSchema,
   evidenceMatchSchema,
@@ -55,6 +55,52 @@ function hashFinalQaChecks(checks: Array<{ label?: string; status?: string; deta
     .join("\n");
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
+
+/** Test-only crash points for persistence-boundary fault injection. */
+export type ResumeGenFaultPoint =
+  | "after_provider"
+  | "after_append"
+  | "after_current"
+  | "before_transition";
+
+let resumeGenFaultPoint: ResumeGenFaultPoint | null = null;
+
+/** Set a one-shot crash point for resume generation persistence tests. */
+export function setResumeGenerationFaultPoint(point: ResumeGenFaultPoint | null) {
+  resumeGenFaultPoint = point;
+}
+
+function maybeInjectResumeGenFault(point: ResumeGenFaultPoint) {
+  const envPoint = process.env.CANDIDARC_FAULT_INJECT_RESUME?.trim() as ResumeGenFaultPoint | "";
+  const active = resumeGenFaultPoint ?? (envPoint || null);
+  if (active === point) {
+    // Clear one-shot in-memory hook so retries can complete.
+    if (resumeGenFaultPoint === point) resumeGenFaultPoint = null;
+    throw new AppError("FAULT_INJECTED", `Injected crash at ${point}`, 500);
+  }
+}
+
+type PendingResumeGeneration = {
+  operationKey: string;
+  usageKey: string;
+  versionLabel: string;
+  cycleStep: number;
+  isFinalQaRepair: boolean;
+  effectiveTriggeredBy: string;
+  result: {
+    data: z.infer<typeof resumeSchema>;
+    model: { provider: string; model: string };
+    prompt: { version: string };
+    usage: {
+      inputTokens: number;
+      outputTokens: number;
+      estimatedCostCents: number | null;
+      costUnknown?: boolean;
+      pricingVersion?: string;
+    };
+    latencyMs: number;
+  };
+};
 
 type ResumeGenerationResult = StructuredGenerationResult<z.infer<typeof resumeSchema>>;
 type AuditGenerationResult = StructuredGenerationResult<z.infer<typeof auditSchema>>;
@@ -114,7 +160,7 @@ function withResumeProvenance(
 
 /**
  * Application service orchestrating the vertical slice handlers.
- * Each handler is invoked by workers after queue delivery — not from HTTP.
+ * Each handler is invoked by workers after queue delivery â€” not from HTTP.
  */
 export class ResumePipeline {
   constructor(private readonly deps: ResumePipelineDeps) {}
@@ -241,7 +287,7 @@ export class ResumePipeline {
   private async commit(key: string, costCents: string | null, opts?: { tenantId?: string; billable?: boolean }) {
     const tenantId = opts?.tenantId;
     if (!tenantId) {
-      // Legacy callers must pass tenant — look up is unsafe without it.
+      // Legacy callers must pass tenant â€” look up is unsafe without it.
       throw new AppError("USAGE_TENANT_REQUIRED", "tenantId required to commit usage", 500);
     }
 
@@ -296,7 +342,7 @@ export class ResumePipeline {
         "PROVIDER_COST_UNKNOWN",
       );
     }
-    // Token row carries units only — monetary amount lives solely on provider_cost.
+    // Token row carries units only â€” monetary amount lives solely on provider_cost.
     await this.deps.usage.append({
       tenantId: run.tenantId,
       kind: "input_tokens",
@@ -394,7 +440,7 @@ export class ResumePipeline {
         }
       }
       if (jobDescription.trim()) {
-        // Python is the only backend — always use Python for job parsing
+        // Python is the only backend â€” always use Python for job parsing
         const { getPythonIntelligenceClient, mapPythonJobParseToExtraction, mapPythonBackendErrorToAppError } =
           await import("../intelligence/python-client");
         let extraction;
@@ -471,7 +517,7 @@ export class ResumePipeline {
     const researchDepth = typeof application.metadata?.researchDepth === "string"
       ? application.metadata.researchDepth
       : "standard";
-    // Public source collection stays in TypeScript — Python never fetches arbitrary URLs.
+    // Public source collection stays in TypeScript â€” Python never fetches arbitrary URLs.
     const collectedSources = await collectResearchSources({
       company: application.company,
       role: application.role,
@@ -489,7 +535,7 @@ export class ResumePipeline {
     };
     let promptVersion = "research-synthesis";
 
-    // Python is the only backend — no TypeScript fallback
+    // Python is the only backend â€” no TypeScript fallback
     const {
       getPythonIntelligenceClient,
       mapPythonResearchToTs,
@@ -704,7 +750,7 @@ export class ResumePipeline {
     };
     let promptVersion = "evidence-matching";
 
-    // Python is the only backend — no TypeScript fallback
+    // Python is the only backend â€” no TypeScript fallback
     const {
       getPythonIntelligenceClient,
       mapPythonEvidenceMatchToTs,
@@ -804,6 +850,115 @@ export class ResumePipeline {
     });
   }
 
+  /**
+   * Crash-safe finalize: set current pointer, commit usage/cost exactly once, advance workflow.
+   * Safe to call on replay when the version already exists.
+   */
+  private async finalizeResumeGenerationPersistence(input: {
+    run: WorkflowRunRecord;
+    version: { publicId: string; versionNumber: number; score: number; scoreBreakdown: Record<string, number> };
+    resumePublicId: string;
+    usageKey: string;
+    versionNumber: number;
+    versionLabel: string;
+    isFinalQaRepair: boolean;
+    result: {
+      data: { score: number; scoreBreakdown: Record<string, number> };
+      model: { provider: string; model: string };
+      prompt: { version: string };
+      usage: { inputTokens: number; outputTokens: number; estimatedCostCents: number | null };
+    };
+    skipFaultPoints?: boolean;
+  }) {
+    const {
+      run,
+      version,
+      resumePublicId,
+      usageKey,
+      versionNumber,
+      versionLabel,
+      isFinalQaRepair,
+      result,
+      skipFaultPoints,
+    } = input;
+
+    const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
+    if (!resume || resume.currentVersionPublicId !== version.publicId) {
+      await this.deps.resumes.setCurrentVersion(run.tenantId, resumePublicId, version.publicId);
+    }
+    if (!skipFaultPoints) maybeInjectResumeGenFault("after_current");
+
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
+    if (!skipFaultPoints) maybeInjectResumeGenFault("before_transition");
+
+    const latest = (await this.deps.workflows.getById(run.id)) ?? run;
+    const clearedPayload = { ...(latest.payload ?? {}) };
+    delete clearedPayload.pendingResumeGeneration;
+
+    const readyStage = `V${versionNumber}_READY` as WorkflowStage;
+    const generating = `V${versionNumber}_GENERATING` as WorkflowStage;
+    const nextRunning = [
+      "HR_AUDIT_1_RUNNING",
+      "EM_AUDIT_1_RUNNING",
+      "HR_AUDIT_2_RUNNING",
+      "EM_AUDIT_2_RUNNING",
+      "FINAL_QA_RUNNING",
+    ][versionNumber] as WorkflowStage;
+
+    // Advance generating → ready → next, or clear pending if already past these stages.
+    let current = latest;
+    if (current.stage === generating) {
+      current = await this.deps.engine.transition(run.id, readyStage, {
+        message: isFinalQaRepair ? `Resume ${versionLabel} ready` : `Resume V${versionNumber} ready`,
+        outputVersion: String(version.versionNumber),
+        patch: {
+          provider: result.model.provider,
+          model: result.model.model,
+          promptVersion: result.prompt.version,
+          tokenUsage: {
+            input: result.usage.inputTokens,
+            output: result.usage.outputTokens,
+            total: result.usage.inputTokens + result.usage.outputTokens,
+          },
+          payload: clearedPayload,
+        },
+      });
+    }
+
+    current = (await this.deps.workflows.getById(run.id)) ?? current;
+    if (current.stage === readyStage) {
+      const nextPayload = isFinalQaRepair
+        ? withoutStageClaims({ ...(current.payload ?? {}), ...clearedPayload })
+        : { ...(current.payload ?? {}), ...clearedPayload };
+      delete nextPayload.pendingResumeGeneration;
+      current = await this.deps.engine.transition(run.id, nextRunning, {
+        message: versionNumber >= 4 ? "Final QA started automatically" : "Next audit started automatically",
+        patch: { payload: nextPayload },
+      });
+    } else if (current.payload?.pendingResumeGeneration) {
+      await this.deps.workflows.updateRun(run.id, {
+        payload: clearedPayload,
+      });
+    }
+
+    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+      stage: current.stage === nextRunning || current.stage === readyStage ? current.stage : readyStage,
+      workflowStage: current.stage === nextRunning || current.stage === readyStage ? current.stage : readyStage,
+      resumeScore: result.data.score,
+      atsAlignment: result.data.scoreBreakdown.atsCompatibility,
+      resumePublicId,
+      status: versionNumber >= 4 ? "final-qa" : "auditing",
+      nextAction:
+        current.stage === nextRunning
+          ? versionNumber >= 4
+            ? "Running Final QA"
+            : "Running audit"
+          : versionNumber >= 4
+            ? "Run Final QA"
+            : "Start next audit",
+    });
+  }
+
   private async runResumeGeneration(run: WorkflowRunRecord, versionNumber: number, triggeredBy: string) {
     const cycleBase = typeof run.payload.cycleBase === "number" ? run.payload.cycleBase : 0;
     const isFinalQaRepair = run.payload?.finalQaRepairAttempted === true;
@@ -817,39 +972,79 @@ export class ResumePipeline {
       typeof run.payload.finalQaRepairChecksHash === "string" ? run.payload.finalQaRepairChecksHash : "na";
     const versionLabel = isFinalQaRepair ? `V4R${repairAttempt}` : `V${cycleBase + versionNumber}`;
     const effectiveTriggeredBy = isFinalQaRepair ? "final-qa-repair" : triggeredBy;
+    const generationOperationId = isFinalQaRepair
+      ? `repair:v${repairSourceVersion}-to-v4r${repairAttempt}:attempt-${repairAttempt}:${repairChecksHash}`
+      : `generate:v${cycleBase + versionNumber}`;
+    const operationKey = `${run.applicationPublicId}:${generationOperationId}`;
     const idempotencyKey = isFinalQaRepair
       ? `resume:${run.applicationPublicId}:repair:from${repairSourceVersion}:a${repairAttempt}:${repairChecksHash}:${run.idempotencyKey}`
       : `resume:${run.applicationPublicId}:v${cycleBase + versionNumber}:${run.idempotencyKey}`;
-    const existingVersion = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
+
+    const usageKey = `${run.tenantId}:usage:${run.idempotencyKey}:${generationOperationId}:resume_generation`;
+
+    // Replay path: version already durable â€” reconcile pointer/usage/workflow without provider call.
+    let existingVersion = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
+    if (!existingVersion) {
+      const resumeForLookup = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
+      if (resumeForLookup && this.deps.resumes.findVersionByOperationKey) {
+        existingVersion = await this.deps.resumes.findVersionByOperationKey(
+          run.tenantId,
+          resumeForLookup.publicId,
+          operationKey,
+        );
+      }
+    }
     if (existingVersion) {
-      const readyStage = `V${versionNumber}_READY` as WorkflowStage;
-      await this.deps.engine.transition(run.id, readyStage, {
-        message: isFinalQaRepair
-          ? `${versionLabel} already exists (idempotent repair)`
-          : `V${versionNumber} already exists (idempotent)`,
-        outputVersion: String(existingVersion.versionNumber),
-      });
-      const nextRunning = [
-        "HR_AUDIT_1_RUNNING",
-        "EM_AUDIT_1_RUNNING",
-        "HR_AUDIT_2_RUNNING",
-        "EM_AUDIT_2_RUNNING",
-        "FINAL_QA_RUNNING",
-      ][versionNumber] as WorkflowStage;
-      const continuePatch = isFinalQaRepair
-        ? { payload: withoutStageClaims({ ...(run.payload ?? {}), finalQaRepairAttempted: true }) }
-        : undefined;
-      await this.deps.engine.transition(run.id, nextRunning, {
-        message: "Continuing pipeline automatically",
-        ...(continuePatch ? { patch: continuePatch } : {}),
+      const resume = await this.deps.resumes.getByApplication(run.tenantId, run.applicationPublicId);
+      if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume missing on generation replay", 422);
+      const pending = run.payload?.pendingResumeGeneration as PendingResumeGeneration | undefined;
+      const providerUsage = await this.deps.usage.findByIdempotency(run.tenantId, `${usageKey}:provider-usage`);
+      const estimatedCostCents =
+        pending?.result.usage.estimatedCostCents ??
+        (typeof providerUsage?.metadata?.estimatedCostCents === "number"
+          ? providerUsage.metadata.estimatedCostCents
+          : 0);
+      await this.finalizeResumeGenerationPersistence({
+        run,
+        version: existingVersion,
+        resumePublicId: resume.publicId,
+        usageKey,
+        versionNumber,
+        versionLabel,
+        isFinalQaRepair,
+        result: {
+          data: {
+            score: existingVersion.score,
+            scoreBreakdown: existingVersion.scoreBreakdown,
+          },
+          model: {
+            provider: String(pending?.result.model.provider ?? providerUsage?.metadata?.provider ?? "python"),
+            model: String(pending?.result.model.model ?? providerUsage?.metadata?.model ?? "unknown"),
+          },
+          prompt: {
+            version: String(pending?.result.prompt.version ?? existingVersion.promptVersion ?? "python@v1"),
+          },
+          usage: {
+            inputTokens: Number(pending?.result.usage.inputTokens ?? providerUsage?.metadata?.inputTokens ?? 0),
+            outputTokens: Number(pending?.result.usage.outputTokens ?? providerUsage?.metadata?.outputTokens ?? 0),
+            estimatedCostCents,
+          },
+        },
+        skipFaultPoints: true,
       });
       return;
     }
 
-    const generationOperationId = isFinalQaRepair
-      ? `repair:v${repairSourceVersion}-to-v4r${repairAttempt}:attempt-${repairAttempt}:${repairChecksHash}`
-      : `generate:v${cycleBase + versionNumber}`;
-    const usageKey = await this.reserve(run, "resume_generation", 1, generationOperationId);
+    const pendingDraft = run.payload?.pendingResumeGeneration as PendingResumeGeneration | undefined;
+    const reusePending =
+      pendingDraft &&
+      pendingDraft.operationKey === operationKey &&
+      pendingDraft.usageKey === usageKey
+        ? pendingDraft
+        : null;
+
+    // Ensure reservation exists (idempotent on replay after provider).
+    await this.reserve(run, "resume_generation", 1, generationOperationId);
     const { application, evidence } = await this.listScopedEvidence(run);
     const payloadRefinement =
       typeof run.payload.refinementInstruction === "string" && run.payload.refinementInstruction.trim().length > 0
@@ -881,14 +1076,13 @@ export class ResumePipeline {
       if (!currentResume) {
         throw new AppError("RESUME_NOT_FOUND", "Resume required for Final QA repair", 422);
       }
-      storedVersionNumber = this.deps.resumes.allocateNextVersionNumber
-        ? await this.deps.resumes.allocateNextVersionNumber(run.tenantId, currentResume.publicId)
-        : Math.max(...previousVersions.map((v) => v.versionNumber), 0) + 1;
-      await this.deps.workflows.updateRun(run.id, {
-        payload: { ...run.payload, finalQaRepairVersionNumber: storedVersionNumber },
-      });
+      // Version number is allocated inside appendAllocatedVersion under the same lock.
+      storedVersionNumber =
+        typeof run.payload.finalQaRepairVersionNumber === "number"
+          ? run.payload.finalQaRepairVersionNumber
+          : Math.max(...previousVersions.map((v) => v.versionNumber), 0) + 1;
     }
-    // Final-QA repair must start from the failed latest V4 — never fall back to V3.
+    // Final-QA repair must start from the failed latest V4 â€” never fall back to V3.
     const previousVersion = isFinalQaRepair
       ? previousVersions.find((version) => version.versionNumber === repairSourceVersion) ??
         previousVersions.at(-1) ??
@@ -916,181 +1110,221 @@ export class ResumePipeline {
 
     await this.ensureExecutionBackendPersisted(run);
     let result: ResumeGenerationResult;
-    // Python is the only backend — no TypeScript fallback
-    await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "python");
-    const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
-    {
-      const client = getPythonIntelligenceClient();
-      const context = {
-        tenantId: run.tenantId,
-        userId: application?.ownerUserId ?? "unknown",
-        applicationId: run.applicationPublicId,
-        workflowRunId: run.publicId,
-        requestId: run.id,
+
+    if (reusePending) {
+      result = {
+        data: resumeSchema.parse(reusePending.result.data),
+        rawText: "",
+        model: reusePending.result.model,
+        prompt: {
+          id: versionNumber === 0 ? "resume-generation" : "resume-regeneration",
+          version: reusePending.result.prompt.version,
+          rubricVersion: "candidarc-rubric@v1",
+        },
+        usage: reusePending.result.usage,
+        latencyMs: reusePending.result.latencyMs,
       };
-      const evidencePayload = evidence.map((item) => ({
-        id: item.publicId,
-        tenantId: item.tenantId,
-        ownerUserId: item.ownerUserId,
-        title: item.title,
-        organization: item.organization,
-        situation: item.situation,
-        task: item.task,
-        actions: item.actions,
-        result: item.result,
-        technologies: item.technologies,
-        confidence: item.confidence,
-        sourceType: item.sourceType,
-        claimText: item.claimText,
-        employerAssociation: item.employerAssociation,
-        projectAssociation: item.projectAssociation,
-        verificationStatus: item.verificationStatus,
-        candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
-        privacyLevel: item.privacyLevel,
-        metrics: item.payload?.metrics,
-        payload: item.payload,
-      }));
-      const rejectedFindings = auditFindings.filter((finding) => finding.status === "rejected");
-      const researchFindings = Array.isArray(research?.findings)
-        ? (research.findings as Array<Record<string, unknown>>)
-        : [];
-      const jobRequirements = Array.isArray(application?.metadata?.jobRequirements)
-        ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
-        : [];
-      const evidenceMatches = Array.isArray(application?.metadata?.evidenceMatches)
-        ? (application.metadata.evidenceMatches as Array<Record<string, unknown>>)
-        : [];
-      const techQuestions = (application?.metadata?.techQuestions ?? []) as TechQuestion[];
-      const userConfirmations = techQuestions
-        .filter(
-          (question) =>
-            question.answer === "yes_professional" ||
-            question.answer === "yes_project" ||
-            question.answer === "no" ||
-            question.answer === "similar" ||
-            question.answer === "not_sure",
-        )
-        .map((question) => ({
-          topic: question.technology,
-          confirmed: question.answer === "yes_professional" || question.answer === "yes_project",
-          evidenceDescription: question.evidence?.trim() || null,
-          sourceKind: "user_confirmation",
-          relatedEvidenceIds: [],
+    } else {
+      // Python is the only backend â€” no TypeScript fallback
+      await this.recordStageBackend(run, versionNumber === 0 ? "generate" : "regenerate", "python");
+      const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
+      {
+        const client = getPythonIntelligenceClient();
+        const context = {
+          tenantId: run.tenantId,
+          userId: application?.ownerUserId ?? "unknown",
+          applicationId: run.applicationPublicId,
+          workflowRunId: run.publicId,
+          requestId: run.id,
+        };
+        const evidencePayload = evidence.map((item) => ({
+          id: item.publicId,
+          tenantId: item.tenantId,
+          ownerUserId: item.ownerUserId,
+          title: item.title,
+          organization: item.organization,
+          situation: item.situation,
+          task: item.task,
+          actions: item.actions,
+          result: item.result,
+          technologies: item.technologies,
+          confidence: item.confidence,
+          sourceType: item.sourceType,
+          claimText: item.claimText,
+          employerAssociation: item.employerAssociation,
+          projectAssociation: item.projectAssociation,
+          verificationStatus: item.verificationStatus,
+          candidateConfirmationStatus: item.candidateConfirmationStatus ?? "confirmed",
+          privacyLevel: item.privacyLevel,
+          metrics: item.payload?.metrics,
+          payload: item.payload,
         }));
-      const generateInput = {
-        context,
-        absoluteVersion: storedVersionNumber,
-        cycleStep: versionNumber,
-        jobDescription: String(application?.metadata?.jobDescription ?? ""),
-        evidence: evidencePayload,
-        allowedTechnologies: evidenceTechnologies,
-        previousResume: previousVersion
-          ? {
-              versionNumber: previousVersion.versionNumber,
-              absoluteVersion: previousVersion.versionNumber,
-              cycleStep: previousVersion.versionNumber % 5,
-              score: previousVersion.score,
-              scoreBreakdown: previousVersion.scoreBreakdown ?? {},
-              notes: previousVersion.notes ?? "",
-              sections: previousVersion.sections as Array<Record<string, unknown>>,
-            }
-          : null,
-        acceptedFindings: actionable as unknown as Array<Record<string, unknown>>,
-        rejectedFindings: rejectedFindings as unknown as Array<Record<string, unknown>>,
-        researchFindings,
-        mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
-        refinementInstruction: isFinalQaRepair ? null : resolvedRefinementInstruction,
-        finalQaRepair: isFinalQaRepair
-          ? ((run.payload.finalQaRepairDirective as {
-              repairType: "final_qa_repair";
-              sourceVersion: number;
-              sourceVersionLabel?: string | null;
-              attempt: number;
-              failedChecks: Array<{ label: string; status: string; detail?: string }>;
-              approvedEvidenceIds?: string[];
-              groundedTargets?: string[];
-            } | undefined) ?? {
-              repairType: "final_qa_repair" as const,
-              sourceVersion: Number(repairSourceVersion),
-              sourceVersionLabel:
-                typeof run.payload.finalQaRepairSourceLabel === "string"
-                  ? String(run.payload.finalQaRepairSourceLabel)
-                  : `V${repairSourceVersion}`,
-              attempt: repairAttempt,
-              failedChecks: Array.isArray(run.payload.finalQaFailedChecks)
-                ? (run.payload.finalQaFailedChecks as Array<{ label: string; status: string; detail?: string }>)
-                : [],
-              approvedEvidenceIds: evidence.map((item) => item.publicId),
-              groundedTargets: evidenceTechnologies.slice(0, 8),
-            })
-          : null,
-        jobRequirements,
-        evidenceMatches,
-        userConfirmations,
-        idempotencyKey,
-      };
-      try {
-        const py =
-          versionNumber === 0
-            ? await client.generateResume(generateInput)
-            : await client.regenerateResume(generateInput);
-        result = {
-          data: resumeSchema.parse(py.resume),
-          rawText: "",
-          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-          prompt: {
-            id: versionNumber === 0 ? "resume-generation" : "resume-regeneration",
-            version: py.promptVersion || "python@v1",
-            rubricVersion: "candidarc-rubric@v1",
-          },
-          usage: {
-            inputTokens: py.usage.inputTokens,
-            outputTokens: py.usage.outputTokens,
-            estimatedCostCents: py.usage.estimatedCostCents,
-          },
-          latencyMs: py.latencyMs,
+        const rejectedFindings = auditFindings.filter((finding) => finding.status === "rejected");
+        const researchFindings = Array.isArray(research?.findings)
+          ? (research.findings as Array<Record<string, unknown>>)
+          : [];
+        const jobRequirements = Array.isArray(application?.metadata?.jobRequirements)
+          ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+          : [];
+        const evidenceMatches = Array.isArray(application?.metadata?.evidenceMatches)
+          ? (application.metadata.evidenceMatches as Array<Record<string, unknown>>)
+          : [];
+        const techQuestions = (application?.metadata?.techQuestions ?? []) as TechQuestion[];
+        const userConfirmations = techQuestions
+          .filter(
+            (question) =>
+              question.answer === "yes_professional" ||
+              question.answer === "yes_project" ||
+              question.answer === "no" ||
+              question.answer === "similar" ||
+              question.answer === "not_sure",
+          )
+          .map((question) => ({
+            id: question.id,
+            topic: question.technology,
+            confirmed: question.answer === "yes_professional" || question.answer === "yes_project",
+            evidenceDescription: question.evidence?.trim() || null,
+            sourceKind: "user_confirmation" as const,
+            relatedEvidenceIds: [] as string[],
+            tenantId: run.tenantId,
+            ownerUserId: application?.ownerUserId ?? null,
+          }));
+        const generateInput = {
+          context,
+          absoluteVersion: storedVersionNumber,
+          cycleStep: versionNumber,
+          jobDescription: String(application?.metadata?.jobDescription ?? ""),
+          evidence: evidencePayload,
+          allowedTechnologies: evidenceTechnologies,
+          previousResume: previousVersion
+            ? {
+                versionNumber: previousVersion.versionNumber,
+                absoluteVersion: previousVersion.versionNumber,
+                cycleStep: previousVersion.versionNumber % 5,
+                score: previousVersion.score,
+                scoreBreakdown: previousVersion.scoreBreakdown ?? {},
+                notes: previousVersion.notes ?? "",
+                sections: previousVersion.sections as Array<Record<string, unknown>>,
+              }
+            : null,
+          acceptedFindings: actionable as unknown as Array<Record<string, unknown>>,
+          rejectedFindings: rejectedFindings as unknown as Array<Record<string, unknown>>,
+          researchFindings,
+          mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
+          refinementInstruction: isFinalQaRepair ? null : resolvedRefinementInstruction,
+          finalQaRepair: isFinalQaRepair
+            ? ((run.payload.finalQaRepairDirective as {
+                repairType: "final_qa_repair";
+                sourceVersion: number;
+                sourceVersionLabel?: string | null;
+                attempt: number;
+                failedChecks: Array<{ label: string; status: string; detail?: string }>;
+                approvedEvidenceIds?: string[];
+                groundedTargets?: string[];
+              } | undefined) ?? {
+                repairType: "final_qa_repair" as const,
+                sourceVersion: Number(repairSourceVersion),
+                sourceVersionLabel:
+                  typeof run.payload.finalQaRepairSourceLabel === "string"
+                    ? String(run.payload.finalQaRepairSourceLabel)
+                    : `V${repairSourceVersion}`,
+                attempt: repairAttempt,
+                failedChecks: Array.isArray(run.payload.finalQaFailedChecks)
+                  ? (run.payload.finalQaFailedChecks as Array<{ label: string; status: string; detail?: string }>)
+                  : [],
+                approvedEvidenceIds: evidence.map((item) => item.publicId),
+                groundedTargets: evidenceTechnologies.slice(0, 8),
+              })
+            : null,
+          jobRequirements,
+          evidenceMatches,
+          userConfirmations,
+          idempotencyKey,
         };
-      } catch (error) {
-        const mapped = mapPythonBackendErrorToAppError(error);
-        // Metadata re-emphasis on V4 is best-effort: if the visible resume already
-        // satisfies the instruction, continue without inventing further changes.
-        const metadataOnlyRetry =
-          mapped.code === "REFINEMENT_NOT_APPLICABLE" &&
-          !payloadRefinement &&
-          Boolean(metadataRefinement) &&
-          !isFinalQaRepair &&
-          versionNumber > 0;
-        if (!metadataOnlyRetry) {
-          logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
-          throw mapped;
+        try {
+          const py =
+            versionNumber === 0
+              ? await client.generateResume(generateInput)
+              : await client.regenerateResume(generateInput);
+          result = {
+            data: resumeSchema.parse(py.resume),
+            rawText: "",
+            model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+            prompt: {
+              id: versionNumber === 0 ? "resume-generation" : "resume-regeneration",
+              version: py.promptVersion || "python@v1",
+              rubricVersion: "candidarc-rubric@v1",
+            },
+            usage: {
+              inputTokens: py.usage.inputTokens,
+              outputTokens: py.usage.outputTokens,
+              estimatedCostCents: py.usage.estimatedCostCents,
+            },
+            latencyMs: py.latencyMs,
+          };
+        } catch (error) {
+          const mapped = mapPythonBackendErrorToAppError(error);
+          // Metadata re-emphasis on V4 is best-effort: if the visible resume already
+          // satisfies the instruction, continue without inventing further changes.
+          const metadataOnlyRetry =
+            mapped.code === "REFINEMENT_NOT_APPLICABLE" &&
+            !payloadRefinement &&
+            Boolean(metadataRefinement) &&
+            !isFinalQaRepair &&
+            versionNumber > 0;
+          if (!metadataOnlyRetry) {
+            logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python resume generation failed");
+            throw mapped;
+          }
+          logger.info(
+            { applicationPublicId: run.applicationPublicId, versionNumber },
+            "metadata refinement already satisfied â€” regenerating without refinement",
+          );
+          const py = await client.regenerateResume({
+            ...generateInput,
+            refinementInstruction: null,
+          });
+          result = {
+            data: resumeSchema.parse(py.resume),
+            rawText: "",
+            model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
+            prompt: {
+              id: "resume-regeneration",
+              version: py.promptVersion || "python@v1",
+              rubricVersion: "candidarc-rubric@v1",
+            },
+            usage: {
+              inputTokens: py.usage.inputTokens,
+              outputTokens: py.usage.outputTokens,
+              estimatedCostCents: py.usage.estimatedCostCents,
+            },
+            latencyMs: py.latencyMs,
+          };
         }
-        logger.info(
-          { applicationPublicId: run.applicationPublicId, versionNumber },
-          "metadata refinement already satisfied — regenerating without refinement",
-        );
-        const py = await client.regenerateResume({
-          ...generateInput,
-          refinementInstruction: null,
-        });
-        result = {
-          data: resumeSchema.parse(py.resume),
-          rawText: "",
-          model: { provider: py.provider, model: py.model, temperature: 0, maxOutputTokens: 0 },
-          prompt: {
-            id: "resume-regeneration",
-            version: py.promptVersion || "python@v1",
-            rubricVersion: "candidarc-rubric@v1",
-          },
-          usage: {
-            inputTokens: py.usage.inputTokens,
-            outputTokens: py.usage.outputTokens,
-            estimatedCostCents: py.usage.estimatedCostCents,
-          },
-          latencyMs: py.latencyMs,
-        };
       }
+      await this.recordProviderUsage(run, usageKey, result);
+
+      // Durably park provider result before append so crash/replay does not re-bill.
+      const pending: PendingResumeGeneration = {
+        operationKey,
+        usageKey,
+        versionLabel,
+        cycleStep: versionNumber,
+        isFinalQaRepair,
+        effectiveTriggeredBy,
+        result: {
+          data: result.data,
+          model: { provider: result.model.provider, model: result.model.model },
+          prompt: { version: result.prompt.version },
+          usage: result.usage,
+          latencyMs: result.latencyMs,
+        },
+      };
+      await this.deps.workflows.updateRun(run.id, {
+        payload: { ...run.payload, pendingResumeGeneration: pending },
+      });
+      maybeInjectResumeGenFault("after_provider");
     }
-    await this.recordProviderUsage(run, usageKey, result);
 
     // Only restore previous sections when there is no refinement, no Final-QA repair,
     // and no other explicit regeneration request with actionable findings already applied.
@@ -1119,12 +1353,11 @@ export class ResumePipeline {
       });
     }
 
-    const versionPayload = () => ({
+    const versionPayloadBase = {
       id: newId("rv"),
       publicId: newId(`rvv${storedVersionNumber}`),
       tenantId: run.tenantId,
       resumeId: resume.id,
-      versionNumber: storedVersionNumber,
       versionLabel,
       score: result.data.score,
       scoreBreakdown: result.data.scoreBreakdown,
@@ -1135,105 +1368,71 @@ export class ResumePipeline {
         storedVersionNumber,
       ),
       idempotencyKey,
+      operationKey,
       promptVersion: result.prompt.version,
-    });
+    };
 
     let version;
-    try {
-      version = await this.deps.resumes.appendVersion(versionPayload());
-    } catch (error) {
-      if (!isFinalQaRepair || !(error instanceof AppError) || error.code !== "RESUME_VERSION_CONFLICT") {
-        throw error;
+    if (this.deps.resumes.appendAllocatedVersion) {
+      version = await this.deps.resumes.appendAllocatedVersion({
+        tenantId: run.tenantId,
+        resumePublicId: resume.publicId,
+        operationKey,
+        setAsCurrent: false,
+        version: {
+          ...versionPayloadBase,
+          versionNumber: isFinalQaRepair ? undefined : storedVersionNumber,
+        },
+      });
+      storedVersionNumber = version.versionNumber;
+      if (isFinalQaRepair) {
+        const latestRun = (await this.deps.workflows.getById(run.id)) ?? run;
+        await this.deps.workflows.updateRun(run.id, {
+          payload: {
+            ...latestRun.payload,
+            finalQaRepairVersionNumber: storedVersionNumber,
+          },
+        });
       }
-      // Concurrent repair safety: unique (resume_id, version_number) may race after allocate.
-      // Reuse by idempotency key, or reallocate and retry insert without a second provider call.
-      const existing = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
-      if (existing) {
-        version = existing;
-        storedVersionNumber = existing.versionNumber;
-      } else {
-        version = undefined;
-        for (let retry = 0; retry < 5; retry++) {
-          if (this.deps.resumes.allocateNextVersionNumber) {
-            storedVersionNumber = await this.deps.resumes.allocateNextVersionNumber(
-              run.tenantId,
-              resume.publicId,
-            );
-          } else {
-            const latestNums = (await this.deps.resumes.listVersions(run.tenantId, resume.publicId)).map(
-              (item) => item.versionNumber,
-            );
-            storedVersionNumber = (latestNums.length ? Math.max(...latestNums) : -1) + 1;
-          }
-          try {
-            version = await this.deps.resumes.appendVersion(versionPayload());
-            break;
-          } catch (retryError) {
-            if (!(retryError instanceof AppError) || retryError.code !== "RESUME_VERSION_CONFLICT") {
-              throw retryError;
-            }
-            const raced = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
-            if (raced) {
-              version = raced;
-              storedVersionNumber = raced.versionNumber;
-              break;
-            }
-          }
+      maybeInjectResumeGenFault("after_append");
+    } else {
+      try {
+        version = await this.deps.resumes.appendVersion({
+          ...versionPayloadBase,
+          versionNumber: storedVersionNumber,
+        });
+      } catch (error) {
+        if (!isFinalQaRepair || !(error instanceof AppError) || error.code !== "RESUME_VERSION_CONFLICT") {
+          throw error;
         }
-        if (!version) {
-          throw new AppError("RESUME_VERSION_CONFLICT", "Unable to allocate Final QA repair version", 409);
+        const existing = await this.deps.resumes.findVersionByIdempotency(run.tenantId, idempotencyKey);
+        if (existing) {
+          version = existing;
+          storedVersionNumber = existing.versionNumber;
+        } else {
+          throw error;
         }
       }
+      maybeInjectResumeGenFault("after_append");
     }
 
-    await this.deps.resumes.setCurrentVersion(run.tenantId, resume.publicId, version.publicId);
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
-
-    const readyStage = `V${versionNumber}_READY` as WorkflowStage;
-    await this.deps.engine.transition(run.id, readyStage, {
-      message: `Resume V${versionNumber} ready`,
-      outputVersion: String(versionNumber),
-      patch: {
-        provider: result.model.provider,
-        model: result.model.model,
-        promptVersion: result.prompt.version,
-        tokenUsage: {
-          input: result.usage.inputTokens,
-          output: result.usage.outputTokens,
-          total: result.usage.inputTokens + result.usage.outputTokens,
-        },
+    await this.finalizeResumeGenerationPersistence({
+      run,
+      version,
+      resumePublicId: resume.publicId,
+      usageKey,
+      versionNumber,
+      versionLabel,
+      isFinalQaRepair,
+      result: {
+        data: result.data,
+        model: result.model,
+        prompt: result.prompt,
+        usage: result.usage,
       },
     });
-
-    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-      stage: readyStage,
-      workflowStage: readyStage,
-      resumeScore: result.data.score,
-      atsAlignment: result.data.scoreBreakdown.atsCompatibility,
-      resumePublicId: resume.publicId,
-      status: versionNumber >= 4 ? "final-qa" : "auditing",
-      nextAction: versionNumber >= 4 ? "Run Final QA" : `Start next audit`,
-    });
-
-    const nextRunning = [
-      "HR_AUDIT_1_RUNNING",
-      "EM_AUDIT_1_RUNNING",
-      "HR_AUDIT_2_RUNNING",
-      "EM_AUDIT_2_RUNNING",
-      "FINAL_QA_RUNNING",
-    ][versionNumber] as WorkflowStage;
-    // Final-QA re-entry after repair must not be blocked by the prior FINAL_QA claim lease.
-    const nextPayload = isFinalQaRepair ? withoutStageClaims({ ...(run.payload ?? {}) }) : undefined;
-    await this.deps.engine.transition(run.id, nextRunning, {
-      message: versionNumber >= 4 ? "Final QA started automatically" : "Next audit started automatically",
-      ...(nextPayload ? { patch: { payload: nextPayload } } : {}),
-    });
-    await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-      stage: nextRunning,
-      workflowStage: nextRunning,
-      nextAction: versionNumber >= 4 ? "Running Final QA" : "Running audit",
-    });
   }
+
 
   private async runAudit(
     run: WorkflowRunRecord,
@@ -1268,7 +1467,7 @@ export class ResumePipeline {
     const auditIdempotencyKey = `audit:${run.applicationPublicId}:${lens}:v${storedReviewsVersion}:${run.idempotencyKey}`;
     await this.ensureExecutionBackendPersisted(run);
     let result: AuditGenerationResult;
-    // Python is the only backend — no TypeScript fallback
+    // Python is the only backend â€” no TypeScript fallback
     await this.recordStageBackend(run, "audit", "python");
     const { getPythonIntelligenceClient, mapPythonBackendErrorToAppError } = await import("../intelligence/python-client");
     const { auditSchema: auditOutputSchema } = await import("../ai/schemas");
@@ -1344,7 +1543,7 @@ export class ResumePipeline {
     if (expectedRule && result.data.lens !== expectedRule.lens) {
       logger.warn(
         { expectedLens: expectedRule.lens, actualLens: result.data.lens, stage: run.stage },
-        "audit lens mismatch — skipping invalid audit output",
+        "audit lens mismatch â€” skipping invalid audit output",
       );
       await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
       const nextStage = (`V${producesVersion}_GENERATING`) as WorkflowStage;
@@ -1618,7 +1817,7 @@ export class ResumePipeline {
     if (supplement.data.passed === false) {
       const repairAttempted = run.payload?.finalQaRepairAttempted === true;
       if (repairAttempted) {
-        // Already attempted repair — fail permanently
+        // Already attempted repair â€” fail permanently
         logger.warn(
           { applicationPublicId: run.applicationPublicId, checks: supplement.data.checks },
           "Final QA failed after repair attempt",
@@ -1647,7 +1846,7 @@ export class ResumePipeline {
       // Attempt bounded repair: create a new immutable V4R1 revision from failed V4
       logger.info(
         { applicationPublicId: run.applicationPublicId, failedChecks: supplement.data.checks.filter((c) => c.status !== "pass") },
-        "Final QA failed — attempting bounded repair",
+        "Final QA failed â€” attempting bounded repair",
       );
       const failedChecks = supplement.data.checks.filter((check) => check.status !== "pass");
       const failedCheckSummary = failedChecks

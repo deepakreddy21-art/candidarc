@@ -142,18 +142,20 @@ describe("Final-QA repair versioning (postgres)", () => {
     resetEnvCache();
   });
 
-  it("allocates unique V4R1 under concurrent attempts and reuses by idempotency", async () => {
-    const idem = `resume:app:repair:from4:a1:hash:${tenantId}`;
+  it("allocates unique V4R1 under concurrent attempts and reuses by operationKey", async () => {
+    const operationKey = `app:repair:v4-to-v4r1:attempt-1:hash:${tenantId}`;
     const results = await Promise.all(
-      Array.from({ length: 8 }, async (_, index) => {
-        const allocated = await repos.resumes.allocateNextVersionNumber!(tenantId, resumePublicId);
-        try {
-          return await repos.resumes.appendVersion({
+      Array.from({ length: 8 }, async (_, index) =>
+        repos.resumes.appendAllocatedVersion!({
+          tenantId,
+          resumePublicId,
+          operationKey,
+          setAsCurrent: index % 2 === 0,
+          version: {
             id: randomUUID(),
             publicId: `rv_repair_${index}_${newId("x")}`,
             tenantId,
             resumeId,
-            versionNumber: allocated,
             versionLabel: "V4R1",
             score: 80,
             scoreBreakdown: {
@@ -171,18 +173,18 @@ describe("Final-QA repair versioning (postgres)", () => {
             notes: "repair",
             triggeredBy: "final-qa-repair",
             sections: [],
-            idempotencyKey: idem,
+            // Mix same and different idempotency keys for the same repair intent.
+            idempotencyKey: index < 4 ? `resume:app:repair:from4:a1:hash:${tenantId}` : `alt:${index}:${tenantId}`,
+            operationKey,
             promptVersion: "python@v1",
-          });
-        } catch {
-          return repos.resumes.findVersionByIdempotency(tenantId, idem);
-        }
-      }),
+          },
+        }),
+      ),
     );
 
     const versions = results.filter(Boolean);
     expect(versions.length).toBe(8);
-    const publicIds = new Set(versions.map((v) => v!.publicId));
+    const publicIds = new Set(versions.map((v) => v.publicId));
     expect(publicIds.size).toBe(1);
     expect(versions[0]!.versionNumber).toBeGreaterThan(4);
     expect(versions[0]!.versionLabel).toBe("V4R1");
@@ -198,5 +200,109 @@ describe("Final-QA repair versioning (postgres)", () => {
       where tenant_id = ${tenantId}::uuid and resume_id = ${resumeId}::uuid and version_number = 4
     `;
     expect(v4_notes).toBe("failed v4");
+
+    // Distinct legitimate operations still get unique sequential versions.
+    const other = await repos.resumes.appendAllocatedVersion!({
+      tenantId,
+      resumePublicId,
+      operationKey: `${operationKey}:other-op`,
+      setAsCurrent: false,
+      version: {
+        id: randomUUID(),
+        publicId: `rv_other_${newId("x")}`,
+        tenantId,
+        resumeId,
+        versionLabel: "V5",
+        score: 81,
+        scoreBreakdown: versions[0]!.scoreBreakdown,
+        notes: "other",
+        triggeredBy: "generate",
+        sections: [],
+        idempotencyKey: `other:${tenantId}`,
+        operationKey: `${operationKey}:other-op`,
+        promptVersion: "python@v1",
+      },
+    });
+    expect(other.versionNumber).toBe(versions[0]!.versionNumber + 1);
+  });
+
+  it("isolates identical external keys across tenants", async () => {
+    const tenantB = randomUUID();
+    const userB = randomUUID();
+    const appB = randomUUID();
+    const resumeB = randomUUID();
+    const resumePublicB = `resp_${tenantB.slice(0, 8)}`;
+    await sql`
+      insert into tenants (id, public_id, name, plan)
+      values (${tenantB}::uuid, ${`tenp_${tenantB.slice(0, 8)}`}, 'Tenant B', 'free')
+    `;
+    await sql`
+      insert into users (id, public_id, email, name, password_hash, email_verified)
+      values (${userB}::uuid, ${`usr_${userB.slice(0, 8)}`}, ${`b-${userB.slice(0, 8)}@example.com`}, 'B', 'x', true)
+    `;
+    await sql`
+      insert into applications (
+        id, public_id, tenant_id, owner_user_id, company, company_mark, role, location,
+        employment_type, stage, workflow_stage, status, next_action, research_confidence,
+        evidence_coverage, resume_score, ats_alignment, interview_status, archived, role_family, metadata
+      ) values (
+        ${appB}::uuid, ${`app_${tenantB.slice(0, 8)}`}, ${tenantB}::uuid, ${userB}::uuid,
+        'Acme', 'AC', 'Engineer', 'Remote', 'Full-time', 'FINAL_QA_RUNNING', 'FINAL_QA_RUNNING',
+        'final-qa', 'QA', 0.5, 0.9, 74, 70, 'not-started', false, 'General', '{}'::jsonb
+      )
+    `;
+    await sql`
+      insert into resumes (id, public_id, tenant_id, application_id, title, template_id, length)
+      values (${resumeB}::uuid, ${resumePublicB}, ${tenantB}::uuid, ${appB}::uuid, 'Resume B', 'alumni-clean', 'one-page')
+    `;
+
+    const sharedExternal = "shared-external-operation-key";
+    const a = await repos.resumes.appendAllocatedVersion!({
+      tenantId,
+      resumePublicId,
+      operationKey: sharedExternal,
+      version: {
+        id: randomUUID(),
+        publicId: `rv_a_${newId("x")}`,
+        tenantId,
+        resumeId,
+        versionLabel: "Vx",
+        score: 70,
+        scoreBreakdown: {},
+        notes: "a",
+        triggeredBy: "t",
+        sections: [],
+        idempotencyKey: sharedExternal,
+        operationKey: sharedExternal,
+      },
+    });
+    const b = await repos.resumes.appendAllocatedVersion!({
+      tenantId: tenantB,
+      resumePublicId: resumePublicB,
+      operationKey: sharedExternal,
+      version: {
+        id: randomUUID(),
+        publicId: `rv_b_${newId("x")}`,
+        tenantId: tenantB,
+        resumeId: resumeB,
+        versionLabel: "Vx",
+        score: 70,
+        scoreBreakdown: {},
+        notes: "b",
+        triggeredBy: "t",
+        sections: [],
+        idempotencyKey: sharedExternal,
+        operationKey: sharedExternal,
+      },
+    });
+    expect(a.publicId).not.toBe(b.publicId);
+    expect(a.tenantId).toBe(tenantId);
+    expect(b.tenantId).toBe(tenantB);
+
+    await sql`delete from resume_versions where tenant_id = ${tenantB}::uuid`;
+    await sql`delete from resumes where tenant_id = ${tenantB}::uuid`;
+    await sql`delete from applications where tenant_id = ${tenantB}::uuid`;
+    await sql`delete from users where id = ${userB}::uuid`;
+    await sql`delete from tenants where id = ${tenantB}::uuid`;
   });
 });
