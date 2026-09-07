@@ -26,7 +26,6 @@ describe("Final-QA repair versioning (postgres)", () => {
   let sql: import("postgres").Sql;
   let tenantId: string;
   let userId: string;
-  let applicationId: string;
   let resumeId: string;
   let resumePublicId: string;
 
@@ -43,7 +42,7 @@ describe("Final-QA repair versioning (postgres)", () => {
 
     tenantId = randomUUID();
     userId = randomUUID();
-    applicationId = randomUUID();
+    const applicationId = randomUUID();
     resumeId = randomUUID();
     resumePublicId = `resp_${tenantId.slice(0, 8)}`;
 
@@ -57,27 +56,43 @@ describe("Final-QA repair versioning (postgres)", () => {
       values (${userId}::uuid, ${"usr_" + userId.slice(0, 8)}, ${`r-${userId.slice(0, 8)}@example.com`}, true, 'x', 'Repair')
       on conflict (id) do nothing
     `;
-    await sql`
-      insert into applications (
-        id, public_id, tenant_id, owner_user_id, company, company_mark, role, location,
-        employment_type, stage, workflow_stage, status, next_action, research_confidence,
-        evidence_coverage, resume_score, ats_alignment, interview_status, archived, role_family, metadata
-      ) values (
-        ${applicationId}::uuid, ${"app_" + applicationId.slice(0, 8)}, ${tenantId}::uuid, ${userId}::uuid,
-        'Acme', 'AC', 'Engineer', 'Remote', 'Full-time', 'FINAL_QA_RUNNING', 'FINAL_QA_RUNNING',
-        'final-qa', 'Final QA', 50, 90, 70, 70, 'not-started', false, 'General', '{}'::jsonb
-      )
-      on conflict (id) do nothing
-    `;
-    await sql`
-      insert into resumes (
-        id, public_id, tenant_id, application_id, title, template_id, length, current_version_public_id
-      ) values (
-        ${resumeId}::uuid, ${resumePublicId}, ${tenantId}::uuid, ${applicationId}::uuid,
-        'Repair resume', 'alumni-clean', 'one-page', null
-      )
-      on conflict (id) do nothing
-    `;
+
+    const app = await repos.applications.create({
+      id: applicationId,
+      publicId: `app_${applicationId.slice(0, 8)}`,
+      tenantId,
+      ownerUserId: userId,
+      company: "Acme",
+      companyMark: "AC",
+      role: "Engineer",
+      location: "Remote",
+      employmentType: "Full-time",
+      stage: "FINAL_QA_RUNNING",
+      workflowStage: "FINAL_QA_RUNNING",
+      status: "final-qa",
+      nextAction: "Final QA",
+      researchConfidence: 50,
+      evidenceCoverage: 90,
+      resumeScore: 70,
+      atsAlignment: 70,
+      interviewStatus: "not-started",
+      archived: false,
+      roleFamily: "General",
+      metadata: {},
+    });
+
+    const resume = await repos.resumes.createResume({
+      id: resumeId,
+      publicId: resumePublicId,
+      tenantId,
+      applicationId: app.id,
+      applicationPublicId: app.publicId,
+      title: "Repair resume",
+      templateId: "alumni-clean",
+      length: "one-page",
+      currentVersionPublicId: null,
+    });
+    resumeId = resume.id;
 
     const v4Id = randomUUID();
     await repos.resumes.appendVersion({
@@ -178,7 +193,6 @@ describe("Final-QA repair versioning (postgres)", () => {
     `;
     expect(count).toBe("1");
 
-    // Failed V4 remains immutable
     const [{ v4_notes }] = await sql<{ v4_notes: string }[]>`
       select notes as v4_notes from resume_versions
       where tenant_id = ${tenantId}::uuid and resume_id = ${resumeId}::uuid and version_number = 4
