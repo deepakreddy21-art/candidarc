@@ -48,6 +48,27 @@ end
 return 0
 """
 
+# Atomic compare-and-complete: verify lock ownership, store result, set TTL, release lock.
+# KEYS[1] = lock key, KEYS[2] = data key
+# ARGV[1] = owner, ARGV[2] = data payload (JSON), ARGV[3] = TTL seconds
+# Returns 1 if completed successfully, 0 if lock missing or owner mismatch.
+_COMPLETE_LUA = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return 0
+end
+local ok, lock_data = pcall(cjson.decode, raw)
+if not ok then
+  return 0
+end
+if lock_data['owner'] ~= ARGV[1] then
+  return 0
+end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[3]))
+redis.call('DEL', KEYS[1])
+return 1
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyBeginResult:
@@ -69,7 +90,9 @@ class IdempotencyStore(Protocol):
         response: dict[str, Any],
         ttl_seconds: int,
         owner: str,
-    ) -> None: ...
+    ) -> bool:
+        """Complete with result. Returns True if owner still valid, False if ownership lost."""
+        ...
 
     async def release(self, key: str, owner: str) -> None: ...
 
@@ -152,11 +175,24 @@ class MemoryIdempotencyStore:
         response: dict[str, Any],
         ttl_seconds: int,
         owner: str,
-    ) -> None:
+    ) -> bool:
+        """Complete the idempotency operation atomically.
+
+        Returns True if completed successfully, False if lock missing, expired, or owner mismatch.
+        Stale workers (wrong owner or expired lock) must never overwrite results.
+        """
         async with self._lock:
             existing = self._entries.get(key)
-            if existing is not None and existing.locked and existing.owner is not None and existing.owner != owner:
-                return
+            # Lock must exist, be locked, be owned by caller, and not expired
+            if existing is None:
+                return False
+            if not existing.locked:
+                return False
+            if existing.owner is None or existing.owner != owner:
+                return False
+            if existing.expires_at <= time.time():
+                # Lock expired - lost ownership, do not write
+                return False
             self._entries[key] = _MemoryEntry(
                 request_hash=request_hash,
                 response=response,
@@ -164,6 +200,7 @@ class MemoryIdempotencyStore:
                 locked=False,
                 owner=None,
             )
+            return True
 
     async def release(self, key: str, owner: str) -> None:
         async with self._lock:
@@ -237,20 +274,19 @@ class RedisIdempotencyStore:
         response: dict[str, Any],
         ttl_seconds: int,
         owner: str,
-    ) -> None:
+    ) -> bool:
+        """Complete the idempotency operation atomically via Lua.
+
+        Returns True if completed successfully, False if lock missing or owner mismatch.
+        Stale workers (wrong owner or expired lock) must never overwrite results.
+        """
         data_key = f"{key}:data"
         lock_key = f"{key}:lock"
-        _, lock_hash = _parse_lock(await self._redis.get(lock_key))
-        # Only the owner may complete; if lock already expired, still write response for safety
-        # when hash matches or lock is gone.
-        if lock_hash is not None and lock_hash != request_hash:
-            return
-        current_owner, _ = _parse_lock(await self._redis.get(lock_key))
-        if current_owner is not None and current_owner != owner:
-            return
         payload = json.dumps({"request_hash": request_hash, "response": response})
-        await self._redis.set(data_key, payload, ex=ttl_seconds)
-        await self.release(key, owner)
+        result = await self._redis.eval(
+            _COMPLETE_LUA, 2, lock_key, data_key, owner, payload, str(ttl_seconds)
+        )
+        return bool(result)
 
     async def release(self, key: str, owner: str) -> None:
         lock_key = f"{key}:lock"
