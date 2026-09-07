@@ -1,5 +1,5 @@
 /** @vitest-environment node */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createEmptyMemoryStore,
   type Repositories,
@@ -17,6 +17,13 @@ import { ApplicationsService } from "../../server/modules/applications/service";
 import { UsageService } from "../../server/modules/usage/service";
 import { hashPassword, verifyPassword } from "../../server/auth/password";
 import { createSession, verifySession } from "../../server/auth/session";
+import { installMockPythonIntelligence } from "./helpers/mock-python-intelligence";
+import { resetEnvCache } from "../../server/config/env";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  resetEnvCache();
+});
 
 function authCtx(userId: string, tenantId: string, repos: Repositories): AuthContext {
   return {
@@ -198,6 +205,7 @@ describe("workflow integrity", () => {
   });
 
   it("pipeline research handle is safe to re-run without exploding version count", async () => {
+    installMockPythonIntelligence();
     const store = createEmptyMemoryStore();
     const { repos, tenantId, userId } = await ensureDemoUser(store);
     const queue = new InProcessQueueAdapter();

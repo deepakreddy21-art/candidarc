@@ -1,12 +1,13 @@
 /** @vitest-environment node */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetEnvCache } from "../../server/config/env";
+import { getEnv, resetEnvCache } from "../../server/config/env";
 import {
   PythonBackendError,
   PythonIntelligenceClient,
   mapPythonBackendErrorToAppError,
   resolveIntelligenceBackendForTenant,
   shouldSampleShadow,
+  getResumeIntelligenceBackend,
 } from "../../server/intelligence/python-client";
 import { createEmptyMemoryStore, MemoryRepositories } from "../../server/database/repositories";
 
@@ -19,7 +20,7 @@ function jsonResponse(status: number, body: unknown) {
   });
 }
 
-describe("intelligence routing (allowlist only)", () => {
+describe("intelligence routing (python-only)", () => {
   beforeEach(() => {
     resetEnvCache();
     vi.unstubAllEnvs();
@@ -29,33 +30,54 @@ describe("intelligence routing (allowlist only)", () => {
     resetEnvCache();
   });
 
-  it("global typescript kill switch ignores allowlist", () => {
-    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "typescript");
-    vi.stubEnv("PYTHON_INTELLIGENCE_TENANT_ALLOWLIST", "ten_a");
-    resetEnvCache();
-    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_a" })).toBe("typescript");
-  });
-
-  it("allowlisted tenant gets python when env is python", () => {
+  it("RESUME_INTELLIGENCE_BACKEND only accepts python value", () => {
     vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
-    vi.stubEnv("PYTHON_INTELLIGENCE_TENANT_ALLOWLIST", "ten_a,ten_b");
     resetEnvCache();
-    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_a" })).toBe("python");
-    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_other" })).toBe("typescript");
+    const env = getEnv();
+    expect(env.RESUME_INTELLIGENCE_BACKEND).toBe("python");
   });
 
-  it("tenant A allowlist does not leak to tenant B", () => {
+  it("typescript value is rejected by Zod schema", () => {
+    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "typescript");
+    resetEnvCache();
+    expect(() => getEnv()).toThrow(/Invalid environment/);
+  });
+
+  it("shadow value is rejected by Zod schema", () => {
     vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "shadow");
-    vi.stubEnv("PYTHON_INTELLIGENCE_TENANT_ALLOWLIST", "ten_a");
     resetEnvCache();
-    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_a" })).toBe("shadow");
-    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_b" })).toBe("typescript");
+    expect(() => getEnv()).toThrow(/Invalid environment/);
   });
 
-  it("shadow sampling is deterministic across retries", () => {
+  it("resolveIntelligenceBackendForTenant always returns python", () => {
+    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
+    resetEnvCache();
+    // Any tenant gets python — allowlist is ignored
+    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_a" })).toBe("python");
+    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_other" })).toBe("python");
+    expect(resolveIntelligenceBackendForTenant({ tenantId: "any_tenant" })).toBe("python");
+  });
+
+  it("getResumeIntelligenceBackend always returns python", () => {
+    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
+    resetEnvCache();
+    expect(getResumeIntelligenceBackend()).toBe("python");
+  });
+
+  it("allowlist env var is ignored (backward compat)", () => {
+    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
+    vi.stubEnv("PYTHON_INTELLIGENCE_TENANT_ALLOWLIST", ""); // Empty allowlist
+    resetEnvCache();
+    // Should still return python even with empty allowlist
+    expect(resolveIntelligenceBackendForTenant({ tenantId: "ten_a" })).toBe("python");
+  });
+
+  it("shadow sampling is deprecated but still deterministic (backward compat)", () => {
+    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
     vi.stubEnv("SHADOW_SAMPLE_PERCENT", "100");
     resetEnvCache();
     const seed = "ten_a:app_1:wf_1";
+    // Function still works but is no longer used in pipeline
     expect(shouldSampleShadow(seed)).toBe(true);
     expect(shouldSampleShadow(seed)).toBe(true);
   });

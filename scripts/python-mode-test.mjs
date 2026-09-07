@@ -92,6 +92,7 @@ try {
         ...process.env,
         APP_MODE: "demo",
         AI_MODE: "mock",
+        RESUME_INTELLIGENCE_BACKEND: "python",
         PYTHON_BACKEND_TOKEN: TOKEN,
         PYTHON_BACKEND_URL: BASE,
       },

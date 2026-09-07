@@ -29,6 +29,8 @@ describe("feature flags production config", () => {
       STORAGE_DRIVER: "s3",
       QUEUE_BACKEND: "redis",
       MALWARE_SCANNER: "clamav",
+      PYTHON_BACKEND_TOKEN: "production-python-backend-token-32chars",
+      RESUME_INTELLIGENCE_BACKEND: "python",
     });
     expect(env.FEATURE_RADAR).toBe(false);
     expect(env.FEATURE_COPILOT).toBe(false);

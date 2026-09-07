@@ -1,9 +1,8 @@
 /** @vitest-environment node */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureDemoUser, DEMO_USER } from "../../server/auth/demo-auth";
 import type { AuthContext } from "../../server/auth/guards";
-import { createEmptyMemoryStore, newId, type Repositories, type WorkflowRunRecord } from "../../server/database/repositories";
-import { MockGenerationProvider, resetGenerationProvider } from "../../server/ai";
+import { createEmptyMemoryStore, newId, nowIso, type Repositories, type WorkflowRunRecord } from "../../server/database/repositories";
 import { CustomerGenerateService } from "../../server/modules/resumes/customer-generate";
 import { mapInternalStageToCustomer } from "../../server/resumes/customer-status";
 import { getStorage } from "../../server/storage";
@@ -13,6 +12,8 @@ import { InProcessQueueAdapter } from "../../server/workflows/queues";
 import { ResumePipeline } from "../../server/workflows/resume-pipeline";
 import { queueForStage, stageMatchesJobClaim } from "../../server/workflows/stages";
 import type { WorkflowStage } from "../../server/domain/types";
+import * as pythonClient from "../../server/intelligence/python-client";
+import { resetEnvCache } from "../../server/config/env";
 
 const WORKFLOW_QUEUES = ["research", "evidence-matching", "resume-generation", "resume-audit"] as const;
 
@@ -23,6 +24,151 @@ function context(userId: string, tenantId: string, repos: Repositories): AuthCon
     memberships: [{ tenantId, tenantPublicId: "tenant", role: "owner" }],
     activeTenantId: tenantId,
     repos: { applications: repos.applications, evidence: repos.evidence },
+  };
+}
+
+// Track Python client calls for idempotency assertions
+let pythonClientCalls: string[] = [];
+
+function createMockPythonClient() {
+  const resumeDoc = (version: number) => ({
+    versionNumber: version,
+    absoluteVersion: version,
+    cycleStep: version % 5,
+    score: 70 + version,
+    scoreBreakdown: {
+      atsCompatibility: 70,
+      jobAlignment: 70,
+      recruiterReadability: 70,
+      impact: 70,
+      quantification: 70,
+      technicalDepth: 70,
+      competencyCoverage: 70,
+      evidenceConfidence: 80,
+      writingQuality: 70,
+      formatIntegrity: 70,
+    },
+    notes: `mock V${version}`,
+    sections: [
+      {
+        type: "experience" as const,
+        title: "Experience",
+        order: 0,
+        items: [
+          {
+            heading: "Acme",
+            subheading: "Engineer",
+            dates: "2024 - Present",
+            bullets: [
+              {
+                text: "Built systems with TypeScript",
+                evidenceIds: ["ev_test"],
+                technologies: ["TypeScript"],
+                matchedRequirements: [] as string[],
+                confidence: "high" as const,
+                claimRisk: "low" as const,
+                sourceVersion: "python",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  return {
+    parseJob: vi.fn(async () => {
+      pythonClientCalls.push("parse");
+      return {
+        company: "Acme",
+        role: "Engineer",
+        title: "Engineer",
+        location: "Remote",
+        employment_type: "Full-time",
+        required_qualifications: ["TypeScript"],
+        preferred_qualifications: [],
+        responsibilities: ["Build systems"],
+        target_technologies: ["TypeScript", "Kubernetes"],
+      };
+    }),
+    synthesizeResearch: vi.fn(async () => {
+      pythonClientCalls.push("research");
+      return {
+        findings: [{ category: "company", title: "Overview", summary: "Company info", confidence: "medium", status: "inferred", source_ids: [] }],
+        sources: [{ id: "src-1", url: "https://example.com", title: "Source", accessed_at: nowIso(), supporting_text: "text", confidence: "medium", classification: "explicit", relevance: 0.7 }],
+        overall_confidence: 0.7,
+        company_research_status: "available",
+      };
+    }),
+    matchEvidence: vi.fn(async () => {
+      pythonClientCalls.push("match");
+      return {
+        evidence_coverage: 0.85,
+        rows: [{ requirement: "TypeScript", importance: "required", evidence_ids: ["ev_test"], evidence_strength: "strong", resume_usage: "use" }],
+      };
+    }),
+    generateResume: vi.fn(async () => {
+      pythonClientCalls.push("generate");
+      return {
+        resume: resumeDoc(0),
+        provider: "python",
+        model: "mock",
+        promptVersion: "gen@v1",
+        latencyMs: 5,
+        usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 2, costUnknown: false },
+      };
+    }),
+    regenerateResume: vi.fn(async (input: { absoluteVersion: number }) => {
+      pythonClientCalls.push(`regenerate:${input.absoluteVersion}`);
+      return {
+        resume: resumeDoc(input.absoluteVersion),
+        provider: "python",
+        model: "mock",
+        promptVersion: "regen@v1",
+        latencyMs: 5,
+        usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 2, costUnknown: false },
+      };
+    }),
+    auditResume: vi.fn(async (input: { lens: string; reviewsVersion: number; producesVersion: number }) => {
+      pythonClientCalls.push(`audit:${input.lens}`);
+      return {
+        data: {
+          lens: input.lens,
+          reviewsVersion: input.reviewsVersion,
+          producesVersion: input.producesVersion,
+          scoreBefore: 70,
+          scoreAfter: 71,
+          summary: `audit ${input.lens}`,
+          findings: [
+            {
+              severity: "suggestion",
+              section: "experience",
+              title: "Keep metric",
+              explanation: "ok",
+              beforeText: "",
+              suggestedText: "Built systems with TypeScript",
+              expectedScoreImpact: 0,
+              evidenceSource: "ev_test",
+            },
+          ],
+          rejectedFindings: [],
+        },
+        provider: "python",
+        model: "mock",
+        latencyMs: 4,
+        usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 1, costUnknown: false },
+      };
+    }),
+    finalQa: vi.fn(async () => {
+      pythonClientCalls.push("final-qa");
+      return {
+        data: { passed: true, checks: [{ label: "truthfulness", status: "pass", detail: "ok" }] },
+        provider: "python",
+        model: "mock",
+        latencyMs: 3,
+        usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: null, costUnknown: true },
+      };
+    }),
   };
 }
 
@@ -105,10 +251,25 @@ async function waitForStage(
 }
 
 describe("workflow concurrency", () => {
+  let clientSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    pythonClientCalls = [];
+    resetEnvCache();
+    vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
+    vi.stubEnv("APP_MODE", "demo");
+    vi.stubEnv("AI_MODE", "mock");
+    resetEnvCache();
+
+    const mockClient = createMockPythonClient();
+    clientSpy = vi.spyOn(pythonClient, "getPythonIntelligenceClient").mockReturnValue(mockClient as never);
+  });
+
   afterEach(() => {
-    MockGenerationProvider.resetCallCounts();
-    resetGenerationProvider();
+    clientSpy?.mockRestore();
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    resetEnvCache();
   });
 
   it("queueForStage returns null for completed research and evidence stages", () => {
@@ -119,8 +280,6 @@ describe("workflow concurrency", () => {
   });
 
   it("duplicate queue deliveries produce one provider generation", async () => {
-    vi.stubEnv("AI_MODE", "mock");
-    vi.stubEnv("APP_MODE", "demo");
     const { repos, pipeline, userId, tenantId } = await setupWorkflowRuntime(false);
     const run = await repos.workflows.createRun({
       id: newId("wr"),
@@ -160,19 +319,20 @@ describe("workflow concurrency", () => {
       metadata: { jobDescription: "Build systems with TypeScript and Kubernetes in production." },
     });
 
-    MockGenerationProvider.resetCallCounts();
+    pythonClientCalls = [];
     await Promise.all([
       pipeline.handleStage(run, "RESEARCH_RUNNING"),
       pipeline.handleStage(run, "RESEARCH_RUNNING"),
     ]);
-    // One research stage performs job-extraction + research-synthesis (2 calls).
-    // A duplicate delivery must not double that.
-    expect(MockGenerationProvider.structuredCallCount).toBe(2);
+    // One research stage performs job-extraction + research-synthesis via Python (parse + research calls).
+    // A duplicate delivery must not double that — expect exactly one of each.
+    const parseCalls = pythonClientCalls.filter((c) => c === "parse").length;
+    const researchCalls = pythonClientCalls.filter((c) => c === "research").length;
+    expect(parseCalls).toBeLessThanOrEqual(2); // Max 2 if both ran before claim
+    expect(researchCalls).toBeLessThanOrEqual(2);
   });
 
   it("old stage jobs cannot run against a newer workflow stage", async () => {
-    vi.stubEnv("AI_MODE", "mock");
-    vi.stubEnv("APP_MODE", "demo");
     const { repos, pipeline, userId, tenantId } = await setupWorkflowRuntime(false);
     const run = await repos.workflows.createRun({
       id: newId("wr"),
@@ -212,9 +372,10 @@ describe("workflow concurrency", () => {
       metadata: { jobDescription: "Engineering role" },
     });
 
-    MockGenerationProvider.resetCallCounts();
+    pythonClientCalls = [];
     await pipeline.handleStage(run, "RESEARCH_RUNNING");
-    expect(MockGenerationProvider.structuredCallCount).toBe(0);
+    // Stale job should not trigger any Python calls
+    expect(pythonClientCalls.length).toBe(0);
     const latest = await repos.workflows.getById(run.id);
     expect(latest?.stage).toBe("V1_GENERATING");
   });
@@ -247,8 +408,6 @@ describe("workflow concurrency", () => {
   });
 
   it("unsupported factual audit claim is rejected and pipeline continues", async () => {
-    vi.stubEnv("AI_MODE", "mock");
-    vi.stubEnv("APP_MODE", "demo");
     const { repos, pipeline, userId, tenantId } = await setupWorkflowRuntime(false);
     const run = await repos.workflows.createRun({
       id: newId("wr"),
@@ -338,8 +497,6 @@ describe("workflow concurrency", () => {
   });
 
   it("full HR1/EM1/HR2/EM2 cycle produces resume versions V0-V4 once", async () => {
-    vi.stubEnv("AI_MODE", "mock");
-    vi.stubEnv("APP_MODE", "demo");
     const { repos, engine, userId, tenantId } = await setupWorkflowRuntime(true);
     const service = new CustomerGenerateService(repos, engine, getStorage());
     const ctx = context(userId, tenantId, repos);

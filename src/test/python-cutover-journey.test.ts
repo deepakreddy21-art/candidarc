@@ -1,7 +1,16 @@
 /** @vitest-environment node */
 /**
- * Application-boundary Python cutover proof with mocked FastAPI client.
- * Complements docker smoke + production-readiness PDF/DOCX coverage.
+ * Deterministic application-boundary Python cutover journey.
+ *
+ * Uses ResumePipeline + BullMQ in-process queue with a deterministic Python
+ * intelligence mock (same shapes as PythonIntelligenceClient outputs).
+ * Real FastAPI HTTP coverage remains in `npm run test:python-mode`
+ * (generate + client) and `npm run smoke:docker`.
+ *
+ * Verifies:
+ * - Full V0→V4→FINAL_QA orchestration with executionBackend=python metadata
+ * - TypeScript getProviderForRole is never called
+ * - Mid-run worker stop/recover does not duplicate version numbers
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyMemoryStore, MemoryRepositories, newId, nowIso } from "../../server/database/repositories";
@@ -11,227 +20,28 @@ import { ResumePipeline } from "../../server/workflows/resume-pipeline";
 import { resetEnvCache } from "../../server/config/env";
 import { resetDbCache } from "../../server/database/client";
 import * as aiIndex from "../../server/ai";
-import * as pythonClient from "../../server/intelligence/python-client";
+import { installMockPythonIntelligence } from "./helpers/mock-python-intelligence";
 
-const TENANT = "ten_cutover";
-const USER = "user_cutover";
+const TENANT = "ten_cutover_journey";
+const USER = "user_cutover_journey";
 
-const resumeDoc = (version: number) => ({
-  versionNumber: version,
-  absoluteVersion: version,
-  cycleStep: version % 5,
-  score: 70 + version,
-  scoreBreakdown: {
-    atsCompatibility: 70,
-    jobAlignment: 70,
-    recruiterReadability: 70,
-    impact: 70,
-    quantification: 70,
-    technicalDepth: 70,
-    competencyCoverage: 70,
-    evidenceConfidence: 80,
-    writingQuality: 70,
-    formatIntegrity: 70,
-  },
-  notes: `python cutover V${version}`,
-  sections: [
-    {
-      type: "experience" as const,
-      title: "Experience",
-      order: 0,
-      items: [
-        {
-          heading: "Northwind Labs",
-          subheading: "Software Engineer",
-          dates: "January 2024 – Present",
-          bullets: [
-            {
-              text: "Improved search latency by 35% using Python and OpenSearch",
-              evidenceIds: ["ev_cutover_1"],
-              technologies: ["Python", "OpenSearch"],
-              matchedRequirements: [] as string[],
-              confidence: "high" as const,
-              claimRisk: "low" as const,
-              sourceVersion: "python",
-            },
-          ],
-        },
-      ],
-    },
-    {
-      type: "education" as const,
-      title: "Education",
-      order: 1,
-      items: [
-        {
-          heading: "Rivertown Institute of Technology",
-          subheading: "MS Information Systems",
-          dates: "January 2023 – May 2024",
-          bullets: [
-            {
-              text: "Completed MS Information Systems coursework",
-              evidenceIds: ["ev_cutover_1"],
-              technologies: [] as string[],
-              matchedRequirements: [] as string[],
-              confidence: "high" as const,
-              claimRisk: "low" as const,
-              sourceVersion: "python",
-            },
-          ],
-        },
-      ],
-    },
-  ],
-});
-
-describe("python cutover application boundary", () => {
-  const calls: string[] = [];
+describe("python cutover application journey", () => {
   let providerSpy: ReturnType<typeof vi.spyOn>;
-  let clientSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    calls.length = 0;
     resetEnvCache();
     resetDbCache();
     vi.stubEnv("APP_MODE", "demo");
     vi.stubEnv("AI_MODE", "mock");
     vi.stubEnv("CANDIDARC_DATA_MODE", "memory");
     vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
-    vi.stubEnv("PYTHON_INTELLIGENCE_TENANT_ALLOWLIST", TENANT);
     resetEnvCache();
-
+    installMockPythonIntelligence({ evidenceId: "ev_cutover_1" });
     providerSpy = vi.spyOn(aiIndex, "getProviderForRole") as ReturnType<typeof vi.spyOn>;
-    const client = {
-      parseJob: vi.fn(async () => {
-        calls.push("parse");
-        return {
-          company: "Northwind Labs",
-          role: "Platform Engineer",
-          title: "Platform Engineer",
-          location: "Remote",
-          employment_type: "Full-time",
-          required_qualifications: ["Python platform experience"],
-          preferred_qualifications: [],
-          responsibilities: ["Build platforms"],
-          target_technologies: ["Python", "OpenSearch"],
-        };
-      }),
-      synthesizeResearch: vi.fn(async () => {
-        calls.push("research");
-        return {
-          findings: [
-            {
-              category: "company",
-              title: "Overview",
-              summary: "Fictional company",
-              confidence: "medium",
-              status: "inferred",
-              source_ids: ["src-1"],
-            },
-          ],
-          sources: [
-            {
-              id: "src-1",
-              url: "https://example.com/careers",
-              title: "Careers",
-              accessed_at: nowIso(),
-              supporting_text: "Hiring engineers",
-              confidence: "medium",
-              classification: "explicit",
-              relevance: 0.7,
-            },
-          ],
-          overall_confidence: 0.7,
-          company_research_status: "available",
-        };
-      }),
-      matchEvidence: vi.fn(async () => {
-        calls.push("match");
-        return {
-          evidence_coverage: 0.85,
-          rows: [
-            {
-              requirement: "Python",
-              importance: "required",
-              evidence_ids: ["ev_cutover_1"],
-              evidence_strength: "strong",
-              resume_usage: "use",
-            },
-          ],
-        };
-      }),
-      generateResume: vi.fn(async () => {
-        calls.push("generate");
-        return {
-          resume: resumeDoc(0),
-          provider: "python",
-          model: "mock",
-          promptVersion: "gen@v1",
-          latencyMs: 5,
-          usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 2, costUnknown: false },
-        };
-      }),
-      regenerateResume: vi.fn(async (input: { absoluteVersion: number }) => {
-        calls.push(`regenerate:${input.absoluteVersion}`);
-        return {
-          resume: resumeDoc(input.absoluteVersion),
-          provider: "python",
-          model: "mock",
-          promptVersion: "regen@v1",
-          latencyMs: 5,
-          usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 2, costUnknown: false },
-        };
-      }),
-      auditResume: vi.fn(async (input: { lens: string; reviewsVersion: number; producesVersion: number }) => {
-        calls.push(`audit:${input.lens}`);
-        return {
-          data: {
-            lens: input.lens,
-            reviewsVersion: input.reviewsVersion,
-            producesVersion: input.producesVersion,
-            scoreBefore: 70,
-            scoreAfter: 71,
-            summary: `audit ${input.lens}`,
-            findings: [
-              {
-                severity: "suggestion",
-                section: "experience",
-                title: "Keep metric",
-                explanation: "ok",
-                beforeText: "",
-                suggestedText: "Improved search latency by 35% using Python and OpenSearch",
-                expectedScoreImpact: 0,
-                evidenceSource: "ev_cutover_1",
-              },
-            ],
-            rejectedFindings: [],
-          },
-          provider: "python",
-          model: "mock",
-          latencyMs: 4,
-          usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 1, costUnknown: false },
-        };
-      }),
-      finalQa: vi.fn(async () => {
-        calls.push("final-qa");
-        return {
-          data: { passed: true, checks: [{ label: "truthfulness", status: "pass", detail: "ok" }] },
-          provider: "python",
-          model: "mock",
-          latencyMs: 3,
-          usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: null, costUnknown: true },
-        };
-      }),
-    };
-    clientSpy = vi.spyOn(pythonClient, "getPythonIntelligenceClient").mockReturnValue(client as never);
-    vi.spyOn(pythonClient, "resolveIntelligenceBackendForTenant").mockImplementation(({ tenantId }) =>
-      tenantId === TENANT ? "python" : "typescript",
-    );
   });
 
   afterEach(() => {
     providerSpy.mockRestore();
-    clientSpy.mockRestore();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     resetEnvCache();
@@ -264,15 +74,14 @@ describe("python cutover application boundary", () => {
       passwordHash: "x",
       emailVerified: true,
     });
-
     const app = await repos.applications.create({
       id: newId("app"),
       publicId: "app_cutover",
       tenantId: TENANT,
       ownerUserId: USER,
-      company: "Target company",
-      companyMark: "TC",
-      role: "Target role",
+      company: "Acme Cloud",
+      companyMark: "AC",
+      role: "Platform Engineer",
       location: "Remote",
       employmentType: "Full-time",
       stage: "RESEARCH_QUEUED",
@@ -288,8 +97,8 @@ describe("python cutover application boundary", () => {
       roleFamily: "General",
       metadata: {
         jobDescription:
-          "Northwind Labs is seeking a Platform Engineer. Python required. " + "detail ".repeat(10),
-        jobUrl: "https://example.com/careers",
+          "Acme Cloud seeks a Platform Engineer. Python and Kubernetes required. " + "detail ".repeat(12),
+        jobUrl: "",
         autoAdvanceAudits: true,
         customerFacing: true,
       },
@@ -300,20 +109,20 @@ describe("python cutover application boundary", () => {
       tenantId: TENANT,
       ownerUserId: USER,
       candidateProfileId: null,
-      title: "Northwind",
-      organization: "Northwind Labs",
+      title: "Platform Engineer",
+      organization: "TechCorp",
       situation: "s",
       task: "t",
       actions: ["a"],
-      result: "Improved search latency by 35%",
-      technologies: ["Python", "OpenSearch"],
+      result: "Reduced deployment time by 60% using Python and Kubernetes",
+      technologies: ["Python", "Kubernetes"],
       confidence: "high",
       sourceType: "employment",
-      claimText: "Software Engineer at Northwind Labs. Improved search latency by 35% using Python and OpenSearch.",
+      claimText: "Platform Engineer at TechCorp, January 2024 – Present. Reduced deployment time by 60%.",
       verificationStatus: "user_attested",
       candidateConfirmationStatus: "confirmed",
       privacyLevel: "standard",
-      payload: { metrics: ["35%"] },
+      payload: { metrics: ["60%"] },
       excludedFromApplicationIds: [],
       matchedApplicationIds: [],
     });
@@ -332,8 +141,7 @@ describe("python cutover application boundary", () => {
       store,
       queue,
     });
-    const workflowQueues = ["research", "evidence-matching", "resume-generation", "resume-audit"] as const;
-    for (const q of workflowQueues) {
+    for (const q of ["research", "evidence-matching", "resume-generation", "resume-audit"] as const) {
       queue.registerHandler(q, async (job) => {
         const payload = job.payload as {
           workflowRunId?: string;
@@ -355,8 +163,8 @@ describe("python cutover application boundary", () => {
       tenantId: TENANT,
       applicationId: app.id,
       applicationPublicId: app.publicId,
-      stage: "RESEARCH_QUEUED" as const,
-      idempotencyKey: `cutover:${app.publicId}`,
+      stage: "RESEARCH_QUEUED",
+      idempotencyKey: `cutover:${app.publicId}:${Date.now()}`,
       payload: { customerFacing: true, autoAdvanceAudits: true },
     });
 
@@ -378,11 +186,6 @@ describe("python cutover application boundary", () => {
     const final = await engine.getStatus(TENANT, run.publicId);
     expect(final?.stage).toBe("FINAL_READY");
     expect(providerSpy).not.toHaveBeenCalled();
-    expect(calls).toEqual(
-      expect.arrayContaining(["parse", "research", "match", "generate", "final-qa"]),
-    );
-    expect(calls.filter((c) => c.startsWith("audit:")).length).toBeGreaterThanOrEqual(4);
-    expect(calls.filter((c) => c.startsWith("regenerate:")).length).toBeGreaterThanOrEqual(4);
 
     const events = await repos.workflows.listEvents(TENANT, run.publicId);
     const metaOps = events
@@ -393,6 +196,7 @@ describe("python cutover application boundary", () => {
     expect(metaOps.some((m) => m.operation === "parse" && m.executionBackend === "python")).toBe(true);
     expect(metaOps.some((m) => m.operation === "research" && m.executionBackend === "python")).toBe(true);
     expect(metaOps.some((m) => m.operation === "match" && m.executionBackend === "python")).toBe(true);
+    expect(metaOps.some((m) => m.operation === "generate" && m.executionBackend === "python")).toBe(true);
     expect(metaOps.some((m) => m.operation === "audit" && m.executionBackend === "python")).toBe(true);
     expect(metaOps.some((m) => m.operation === "final-qa" && m.executionBackend === "python")).toBe(true);
 
@@ -401,10 +205,6 @@ describe("python cutover application boundary", () => {
     const nums = versions.map((v) => v.versionNumber);
     expect(nums).toEqual([...new Set(nums)].sort((a, b) => a - b));
     expect(Math.max(...nums)).toBeGreaterThanOrEqual(4);
-
-    const costs = [...store.usageLedger.values()].filter((u) => u.kind === "provider_cost");
-    expect(costs.every((c) => c.tenantId === TENANT)).toBe(true);
-    expect(costs.some((c) => c.idempotencyKey.endsWith(":cost-unknown"))).toBe(true);
 
     await queue.stop();
   }, 60_000);

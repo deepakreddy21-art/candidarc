@@ -242,4 +242,92 @@ describe("customer resume generation", () => {
     expect(source).toContain("Refine this resume");
     expect(source).toContain("Create new version");
   });
+
+  it("blocks download when Final QA has failed", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
+    const ctx = context(userId, tenantId, repos);
+
+    // Create a workflow
+    const created = await service.generate(ctx, {
+      jobDescription: "A detailed job description for testing Final QA failure handling.",
+      idempotencyKey: "final-qa-fail",
+    });
+
+    // Manually set the application to FINAL_QA_FAILED state
+    const app = await repos.applications.getByPublicId(tenantId, created.applicationId);
+    await repos.applications.update(tenantId, app!.publicId, {
+      workflowStage: "FINAL_QA_FAILED",
+      stage: "FINAL_QA_FAILED",
+      status: "failed",
+      metadata: {
+        ...app!.metadata,
+        customerFiles: {
+          pdfStorageKey: "generated/x/y/resume.pdf",
+          docxStorageKey: "generated/x/y/resume.docx",
+        },
+      },
+    });
+
+    // Attempt PDF download - should be blocked
+    await expect(service.getDownload(ctx, created.workflowId, "pdf")).rejects.toThrow(/quality checks|cannot be downloaded/i);
+
+    // Attempt DOCX download - should also be blocked
+    await expect(service.getDownload(ctx, created.workflowId, "docx")).rejects.toThrow(/quality checks|cannot be downloaded/i);
+  });
+
+  it("blocks download when workflow is not yet FINAL_READY", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
+    const ctx = context(userId, tenantId, repos);
+
+    // Create a workflow
+    const created = await service.generate(ctx, {
+      jobDescription: "A detailed job description for testing pre-completion download blocking.",
+      idempotencyKey: "not-ready-yet",
+    });
+
+    // Workflow is in RESEARCH_QUEUED state - download should be blocked
+    await expect(service.getDownload(ctx, created.workflowId, "pdf")).rejects.toThrow(/not ready|DOCUMENT_NOT_READY/i);
+  });
+
+  it("allows retry after Final QA failure", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    await seedOwnedEvidence(repos, tenantId, userId);
+    const service = makeService(repos);
+    const ctx = context(userId, tenantId, repos);
+
+    // Create a workflow
+    const created = await service.generate(ctx, {
+      jobDescription: "A detailed job description for testing retry after Final QA failure.",
+      idempotencyKey: "retry-after-fail",
+    });
+
+    // Manually set the application to FINAL_QA_FAILED state
+    const app = await repos.applications.getByPublicId(tenantId, created.applicationId);
+    const workflow = await repos.workflows.getByPublicId(tenantId, created.workflowId);
+    await repos.applications.update(tenantId, app!.publicId, {
+      workflowStage: "FINAL_QA_FAILED",
+      stage: "FINAL_QA_FAILED",
+      status: "failed",
+    });
+    await repos.workflows.updateRun(workflow!.id, {
+      status: "failed",
+      stage: "FINAL_QA_FAILED",
+      payload: { ...workflow!.payload, failedAtStage: "FINAL_QA_RUNNING" },
+    });
+
+    // Retry should succeed and re-queue from FINAL_QA_RUNNING
+    const retried = await service.retry(ctx, created.workflowId);
+    expect(retried.status).toBe("queued");
+
+    // Verify the workflow was resumed at the correct stage
+    const retriedRun = await repos.workflows.getByPublicId(tenantId, retried.workflowId);
+    expect(["FINAL_QA_RUNNING", "RESEARCH_QUEUED"]).toContain(retriedRun!.stage);
+  });
 });
