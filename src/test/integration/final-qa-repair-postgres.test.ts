@@ -65,7 +65,7 @@ describe("Final-QA repair versioning (postgres)", () => {
       ) values (
         ${applicationId}::uuid, ${"app_" + applicationId.slice(0, 8)}, ${tenantId}::uuid, ${userId}::uuid,
         'Acme', 'AC', 'Engineer', 'Remote', 'Full-time', 'FINAL_QA_RUNNING', 'FINAL_QA_RUNNING',
-        'final-qa', 'Final QA', 0.5, 0.9, 70, 70, 'not-started', false, 'General', '{}'::jsonb
+        'final-qa', 'Final QA', 50, 90, 70, 70, 'not-started', false, 'General', '{}'::jsonb
       )
       on conflict (id) do nothing
     `;
