@@ -390,7 +390,6 @@ def generate_grounded_resume(
     actionable = [f for f in (accepted_findings or []) if f.status in {None, "accepted", "edited", "open"}]
 
     base_notes = notes or f"Grounded resume V{absolute_version}"
-    baseline_for_change: ResumeDocument | None = None
 
     if previous_resume is not None:
         if actionable:

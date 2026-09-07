@@ -95,7 +95,7 @@ describe("commitReservedWithCost (postgres integration)", () => {
       userId: userA,
     });
     expect(result.reservation.status).toBe("committed");
-    expect(result.costRow?.costCents).toBe("42");
+    expect(Number(result.costRow?.costCents)).toBe(42);
     expect(result.costRow?.metadata.costStatus).toBe("known");
   });
 
@@ -160,7 +160,7 @@ describe("commitReservedWithCost (postgres integration)", () => {
     ]);
     for (const row of results) {
       expect(row.reservation.status).toBe("committed");
-      expect(row.costRow?.costCents).toBe("7");
+      expect(Number(row.costRow?.costCents)).toBe(7);
     }
     const [{ count }] = await sql<{ count: string }[]>`
       select count(*)::text as count from usage_ledger
