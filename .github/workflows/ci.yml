@@ -108,7 +108,19 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
       - run: npm ci
+      - name: Create Python venv for E2E FastAPI
+        working-directory: services/python-backend
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python scripts/verify_lock.py
+          .venv/bin/pip install --require-hashes -r requirements.txt
+          .venv/bin/pip install --no-deps -e .
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
         env:
@@ -116,6 +128,10 @@ jobs:
           NEXT_PUBLIC_APP_MODE: demo
           AI_MODE: mock
           CANDIDARC_DATA_MODE: memory
+          RESUME_INTELLIGENCE_BACKEND: python
+          PYTHON_BACKEND_URL: http://127.0.0.1:8090
+          PYTHON_BACKEND_TOKEN: dev-python-backend-token-change-me
+          QUEUE_BACKEND: inprocess
 
   build:
     runs-on: ubuntu-latest

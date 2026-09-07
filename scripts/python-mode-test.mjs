@@ -84,6 +84,7 @@ try {
       "vitest.python-mode.config.ts",
       "src/test/python-mode-generate.test.ts",
       "src/test/python-intelligence-client.test.ts",
+      "src/test/python-mode-pipeline-journey.test.ts",
       "--reporter=dot",
     ],
     {
