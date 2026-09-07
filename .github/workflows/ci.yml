@@ -98,6 +98,7 @@ jobs:
             -c "SELECT extname FROM pg_extension WHERE extname='vector';" \
             -c "SELECT to_regclass('public.evidence_documents'), to_regclass('public.evidence_chunks');"
       - run: npm run test:integration
+      - run: npm run test:usage-postgres
       - run: npm run test:production
 
   e2e:
