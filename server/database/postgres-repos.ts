@@ -599,6 +599,33 @@ function createResumeRepository(): Repositories["resumes"] {
         if (!version) return null;
         return mapResumeVersion(version, await loadSections(db, version.id));
       }),
+    findVersionByOperationKey: async (tenantId, resumePublicId, operationKey) =>
+      withTenant(tenantId, async (db) => {
+        const resume = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(and(eq(s.resumes.tenantId, tenantId), eq(s.resumes.publicId, resumePublicId), isNull(s.resumes.deletedAt)))
+            .limit(1)
+        )[0];
+        if (!resume) return null;
+        const version = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(
+              and(
+                eq(s.resumeVersions.tenantId, tenantId),
+                eq(s.resumeVersions.resumeId, resume.id),
+                eq(s.resumeVersions.operationKey, operationKey),
+                isNull(s.resumeVersions.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!version) return null;
+        return mapResumeVersion(version, await loadSections(db, version.id));
+      }),
     createResume: async (resume) =>
       withTenant(resume.tenantId, async (db) => {
         const row = (
@@ -630,6 +657,24 @@ function createResumeRepository(): Repositories["resumes"] {
         )[0];
         if (existing) return mapResumeVersion(existing, await loadSections(db, existing.id));
 
+        if (version.operationKey) {
+          const byOp = (
+            await db
+              .select()
+              .from(s.resumeVersions)
+              .where(
+                and(
+                  eq(s.resumeVersions.tenantId, version.tenantId),
+                  eq(s.resumeVersions.resumeId, version.resumeId),
+                  eq(s.resumeVersions.operationKey, version.operationKey),
+                  isNull(s.resumeVersions.deletedAt),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (byOp) return mapResumeVersion(byOp, await loadSections(db, byOp.id));
+        }
+
         try {
           const row = (
             await db
@@ -646,6 +691,7 @@ function createResumeRepository(): Repositories["resumes"] {
                 notes: version.notes,
                 triggeredBy: version.triggeredBy,
                 idempotencyKey: version.idempotencyKey,
+                operationKey: version.operationKey ?? null,
                 promptVersion: version.promptVersion,
               })
               .returning()
@@ -673,6 +719,22 @@ function createResumeRepository(): Repositories["resumes"] {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (/unique|duplicate/i.test(message)) {
+            if (version.operationKey) {
+              const byOp = (
+                await db
+                  .select()
+                  .from(s.resumeVersions)
+                  .where(
+                    and(
+                      eq(s.resumeVersions.tenantId, version.tenantId),
+                      eq(s.resumeVersions.resumeId, version.resumeId),
+                      eq(s.resumeVersions.operationKey, version.operationKey),
+                    ),
+                  )
+                  .limit(1)
+              )[0];
+              if (byOp) return mapResumeVersion(byOp, await loadSections(db, byOp.id));
+            }
             const byKey = (
               await db
                 .select()
@@ -709,6 +771,160 @@ function createResumeRepository(): Repositories["resumes"] {
           .from(s.resumeVersions)
           .where(and(eq(s.resumeVersions.tenantId, tenantId), eq(s.resumeVersions.resumeId, resume.id)));
         return Number(max) + 1;
+      }),
+    appendAllocatedVersion: async (input) =>
+      withTenant(input.tenantId, async (db) => {
+        const resume = (
+          await db
+            .select()
+            .from(s.resumes)
+            .where(
+              and(
+                eq(s.resumes.tenantId, input.tenantId),
+                eq(s.resumes.publicId, input.resumePublicId),
+                isNull(s.resumes.deletedAt),
+              ),
+            )
+            .limit(1)
+            .for("update")
+        )[0];
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+
+        // Hold advisory lock for the entire allocate+append+current update.
+        await db.execute(sql`select pg_advisory_xact_lock(hashtext(${resume.id}::text))`);
+
+        const byOp = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(
+              and(
+                eq(s.resumeVersions.tenantId, input.tenantId),
+                eq(s.resumeVersions.resumeId, resume.id),
+                eq(s.resumeVersions.operationKey, input.operationKey),
+                isNull(s.resumeVersions.deletedAt),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (byOp) {
+          if (input.setAsCurrent) {
+            await db
+              .update(s.resumes)
+              .set({ currentVersionId: byOp.id, updatedAt: new Date() })
+              .where(eq(s.resumes.id, resume.id));
+          }
+          return mapResumeVersion(byOp, await loadSections(db, byOp.id));
+        }
+
+        const byKey = (
+          await db
+            .select()
+            .from(s.resumeVersions)
+            .where(
+              and(
+                eq(s.resumeVersions.tenantId, input.tenantId),
+                eq(s.resumeVersions.idempotencyKey, input.version.idempotencyKey),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (byKey) {
+          if (input.setAsCurrent) {
+            await db
+              .update(s.resumes)
+              .set({ currentVersionId: byKey.id, updatedAt: new Date() })
+              .where(eq(s.resumes.id, resume.id));
+          }
+          return mapResumeVersion(byKey, await loadSections(db, byKey.id));
+        }
+
+        const [{ max }] = await db
+          .select({ max: sql<number>`coalesce(max(${s.resumeVersions.versionNumber}), -1)` })
+          .from(s.resumeVersions)
+          .where(and(eq(s.resumeVersions.tenantId, input.tenantId), eq(s.resumeVersions.resumeId, resume.id)));
+        const versionNumber =
+          typeof input.version.versionNumber === "number" ? input.version.versionNumber : Number(max) + 1;
+        const versionId = input.version.id;
+        const versionPublicId = input.version.publicId;
+
+        try {
+          const row = (
+            await db
+              .insert(s.resumeVersions)
+              .values({
+                id: versionId,
+                publicId: versionPublicId,
+                tenantId: input.tenantId,
+                resumeId: resume.id,
+                versionNumber,
+                versionLabel: input.version.versionLabel,
+                score: input.version.score,
+                scoreBreakdown: input.version.scoreBreakdown,
+                notes: input.version.notes,
+                triggeredBy: input.version.triggeredBy,
+                idempotencyKey: input.version.idempotencyKey,
+                operationKey: input.operationKey,
+                promptVersion: input.version.promptVersion,
+              })
+              .returning()
+          )[0]!;
+
+          const sections = Array.isArray(input.version.sections) ? input.version.sections : [];
+          if (sections.length) {
+            await db.insert(s.resumeSections).values(
+              sections.map((section, index) => {
+                const payload = section as Record<string, unknown>;
+                return {
+                  publicId: String(payload.id ?? newId("rs")),
+                  tenantId: input.tenantId,
+                  resumeVersionId: row.id,
+                  type: String(payload.type ?? "summary"),
+                  title: String(payload.title ?? "Section"),
+                  order: typeof payload.order === "number" ? payload.order : index,
+                  payload,
+                };
+              }),
+            );
+          }
+
+          if (input.setAsCurrent) {
+            await db
+              .update(s.resumes)
+              .set({ currentVersionId: row.id, updatedAt: new Date() })
+              .where(eq(s.resumes.id, resume.id));
+          }
+
+          return mapResumeVersion(row, sections);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/unique|duplicate/i.test(message)) {
+            const racedOp = (
+              await db
+                .select()
+                .from(s.resumeVersions)
+                .where(
+                  and(
+                    eq(s.resumeVersions.tenantId, input.tenantId),
+                    eq(s.resumeVersions.resumeId, resume.id),
+                    eq(s.resumeVersions.operationKey, input.operationKey),
+                  ),
+                )
+                .limit(1)
+            )[0];
+            if (racedOp) {
+              if (input.setAsCurrent) {
+                await db
+                  .update(s.resumes)
+                  .set({ currentVersionId: racedOp.id, updatedAt: new Date() })
+                  .where(eq(s.resumes.id, resume.id));
+              }
+              return mapResumeVersion(racedOp, await loadSections(db, racedOp.id));
+            }
+            throw new AppError("RESUME_VERSION_CONFLICT", "Resume version conflict under concurrency", 409);
+          }
+          throw error;
+        }
       }),
     setCurrentVersion: async (tenantId, resumePublicId, versionPublicId) =>
       withTenant(tenantId, async (db) => {

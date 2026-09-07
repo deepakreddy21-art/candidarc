@@ -717,6 +717,7 @@ export const resumeVersions = pgTable(
     triggeredBy: text("triggered_by"),
     promptVersion: text("prompt_version"),
     idempotencyKey: text("idempotency_key"),
+    operationKey: text("operation_key"),
     workflowRunId: uuid("workflow_run_id"),
     /** Soft metadata only — content fields must not be mutated after create. */
     locked: boolean("locked").notNull().default(false),

@@ -134,6 +134,8 @@ export type ResumeVersionRecord = {
   triggeredBy: string;
   sections: unknown[];
   idempotencyKey: string;
+  /** Durable operation/repair intent (tenant + resume scoped). */
+  operationKey?: string | null;
   promptVersion?: string;
   createdAt: string;
 };
@@ -422,16 +424,38 @@ export interface EvidenceRepository {
   softDelete(tenantId: string, publicId: string): Promise<void>;
 }
 
+export type ResumeVersionAppendInput = Omit<ResumeVersionRecord, "createdAt" | "versionNumber"> & {
+  createdAt?: string;
+  versionNumber?: number;
+};
+
 export interface ResumeRepository {
   getByApplication(tenantId: string, applicationPublicId: string): Promise<ResumeRecord | null>;
   listVersions(tenantId: string, resumePublicId: string): Promise<ResumeVersionRecord[]>;
   getVersion(tenantId: string, versionPublicId: string): Promise<ResumeVersionRecord | null>;
   findVersionByIdempotency(tenantId: string, idempotencyKey: string): Promise<ResumeVersionRecord | null>;
+  /** Lookup by durable repair/operation intent (tenant + resume scoped). */
+  findVersionByOperationKey?(
+    tenantId: string,
+    resumePublicId: string,
+    operationKey: string,
+  ): Promise<ResumeVersionRecord | null>;
   createResume(resume: Omit<ResumeRecord, "createdAt" | "updatedAt" | "deletedAt">): Promise<ResumeRecord>;
   appendVersion(version: Omit<ResumeVersionRecord, "createdAt"> & { createdAt?: string }): Promise<ResumeVersionRecord>;
   setCurrentVersion(tenantId: string, resumePublicId: string, versionPublicId: string): Promise<ResumeRecord>;
   /** Atomically allocate the next numeric version for a resume (concurrency-safe). */
   allocateNextVersionNumber?(tenantId: string, resumePublicId: string): Promise<number>;
+  /**
+   * Atomically allocate (if needed), append, and optionally set current under one DB lock.
+   * Replays with the same operationKey/idempotencyKey return the existing version.
+   */
+  appendAllocatedVersion?(input: {
+    tenantId: string;
+    resumePublicId: string;
+    operationKey: string;
+    setAsCurrent?: boolean;
+    version: ResumeVersionAppendInput;
+  }): Promise<ResumeVersionRecord>;
 }
 
 export interface AuditRepository {
@@ -858,6 +882,14 @@ export class MemoryRepositories implements Repositories {
         }
         return null;
       },
+      async findVersionByOperationKey(tenantId, resumePublicId, operationKey) {
+        const resume = [...store.resumes.values()].find((r) => r.tenantId === tenantId && r.publicId === resumePublicId);
+        if (!resume) return null;
+        for (const v of store.resumeVersions.values()) {
+          if (v.tenantId === tenantId && v.resumeId === resume.id && v.operationKey === operationKey) return v;
+        }
+        return null;
+      },
       async createResume(resume) {
         const record: ResumeRecord = {
           ...resume,
@@ -874,6 +906,15 @@ export class MemoryRepositories implements Repositories {
             (v) => v.tenantId === version.tenantId && v.idempotencyKey === version.idempotencyKey,
           );
           if (existing) return existing;
+          if (version.operationKey) {
+            const byOp = [...store.resumeVersions.values()].find(
+              (v) =>
+                v.tenantId === version.tenantId &&
+                v.resumeId === version.resumeId &&
+                v.operationKey === version.operationKey,
+            );
+            if (byOp) return byOp;
+          }
           const collision = [...store.resumeVersions.values()].find(
             (v) => v.resumeId === version.resumeId && v.versionNumber === version.versionNumber,
           );
@@ -888,6 +929,7 @@ export class MemoryRepositories implements Repositories {
           }
           const record: ResumeVersionRecord = {
             ...version,
+            operationKey: version.operationKey ?? null,
             scoreBreakdown: structuredClone(version.scoreBreakdown),
             sections: structuredClone(version.sections),
             createdAt: version.createdAt ?? nowIso(),
@@ -905,6 +947,85 @@ export class MemoryRepositories implements Repositories {
             .filter((v) => v.resumeId === resume.id)
             .map((v) => v.versionNumber);
           return (nums.length ? Math.max(...nums) : -1) + 1;
+        });
+      },
+      async appendAllocatedVersion(input) {
+        const resume = [...store.resumes.values()].find(
+          (r) => r.tenantId === input.tenantId && r.publicId === input.resumePublicId,
+        );
+        if (!resume) throw new AppError("RESUME_NOT_FOUND", "Resume not found", 404);
+        return withMemoryClaimLock(`resume-version:${resume.id}`, async () => {
+          const byOp = [...store.resumeVersions.values()].find(
+            (v) =>
+              v.tenantId === input.tenantId && v.resumeId === resume.id && v.operationKey === input.operationKey,
+          );
+          if (byOp) {
+            if (input.setAsCurrent) {
+              store.resumes.set(resume.id, {
+                ...resume,
+                currentVersionPublicId: byOp.publicId,
+                updatedAt: nowIso(),
+              });
+            }
+            return byOp;
+          }
+          const byKey = [...store.resumeVersions.values()].find(
+            (v) => v.tenantId === input.tenantId && v.idempotencyKey === input.version.idempotencyKey,
+          );
+          if (byKey) {
+            if (input.setAsCurrent) {
+              store.resumes.set(resume.id, {
+                ...resume,
+                currentVersionPublicId: byKey.publicId,
+                updatedAt: nowIso(),
+              });
+            }
+            return byKey;
+          }
+          const nums = [...store.resumeVersions.values()]
+            .filter((v) => v.resumeId === resume.id)
+            .map((v) => v.versionNumber);
+          const versionNumber =
+            typeof input.version.versionNumber === "number"
+              ? input.version.versionNumber
+              : (nums.length ? Math.max(...nums) : -1) + 1;
+          if (typeof input.version.versionNumber === "number") {
+            const collision = [...store.resumeVersions.values()].find(
+              (v) => v.resumeId === resume.id && v.versionNumber === versionNumber,
+            );
+            if (collision) {
+              if (collision.idempotencyKey === input.version.idempotencyKey || collision.operationKey === input.operationKey) {
+                if (input.setAsCurrent) {
+                  store.resumes.set(resume.id, {
+                    ...resume,
+                    currentVersionPublicId: collision.publicId,
+                    updatedAt: nowIso(),
+                  });
+                }
+                return collision;
+              }
+              throw new AppError("RESUME_VERSION_CONFLICT", `Resume version ${versionNumber} already exists`, 409);
+            }
+          }
+          const record: ResumeVersionRecord = {
+            ...input.version,
+            resumeId: resume.id,
+            tenantId: input.tenantId,
+            versionNumber,
+            operationKey: input.operationKey,
+            scoreBreakdown: structuredClone(input.version.scoreBreakdown),
+            sections: structuredClone(input.version.sections),
+            createdAt: input.version.createdAt ?? nowIso(),
+          };
+          store.resumeVersions.set(record.id, record);
+          if (input.setAsCurrent) {
+            store.resumes.set(resume.id, {
+              ...resume,
+              currentVersionPublicId: record.publicId,
+              updatedAt: nowIso(),
+            });
+          }
+          return record;
         });
       },
       async setCurrentVersion(tenantId, resumePublicId, versionPublicId) {

@@ -141,6 +141,7 @@ export function mapResumeVersion(
     triggeredBy: row.triggeredBy ?? "",
     sections,
     idempotencyKey: row.idempotencyKey ?? "",
+    operationKey: row.operationKey ?? null,
     promptVersion: row.promptVersion ?? undefined,
     createdAt: row.createdAt.toISOString(),
   };
