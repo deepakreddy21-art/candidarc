@@ -633,6 +633,42 @@ def _apply_finding_text(text: str, finding: AuditFinding) -> str:
     return replacement
 
 
+def _bullet_fingerprint(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower()).strip()[:100]
+
+
+def _dedupe_resume_sections(sections: list[ResumeSection]) -> list[ResumeSection]:
+    """Drop later bullets that collide with earlier normalized fingerprints."""
+    seen: set[str] = set()
+    result: list[ResumeSection] = []
+    for section in sections:
+        new_bullets = None
+        if section.bullets is not None:
+            new_bullets = []
+            for bullet in section.bullets:
+                fingerprint = _bullet_fingerprint(bullet.text)
+                if fingerprint and fingerprint in seen:
+                    continue
+                if fingerprint:
+                    seen.add(fingerprint)
+                new_bullets.append(bullet)
+        new_items = None
+        if section.items is not None:
+            new_items = []
+            for item in section.items:
+                item_bullets = []
+                for bullet in item.bullets:
+                    fingerprint = _bullet_fingerprint(bullet.text)
+                    if fingerprint and fingerprint in seen:
+                        continue
+                    if fingerprint:
+                        seen.add(fingerprint)
+                    item_bullets.append(bullet)
+                new_items.append(item.model_copy(update={"bullets": item_bullets}))
+        result.append(section.model_copy(update={"bullets": new_bullets, "items": new_items}))
+    return result
+
+
 def apply_accepted_findings(
     previous: ResumeDocument,
     accepted: list[AuditFinding],
@@ -840,6 +876,7 @@ def generate_grounded_resume(
         else:
             final_notes = updated.notes or notes or base_notes
 
+        updated = updated.model_copy(update={"sections": _dedupe_resume_sections(updated.sections)})
         scored = score_resume(
             sections=updated.sections,
             evidence=normalized,
@@ -907,6 +944,7 @@ def generate_grounded_resume(
     else:
         final_notes = resume.notes or base_notes
 
+    resume = resume.model_copy(update={"sections": _dedupe_resume_sections(resume.sections)})
     scored = score_resume(
         sections=resume.sections,
         evidence=normalized,
