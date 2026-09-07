@@ -11,6 +11,7 @@ from app.domain.schemas import (
     AuditResponse,
     EvidenceItem,
     EvidenceMatchResponse,
+    EvidenceMatchRow,
     FinalQaCheck,
     FinalQaResponse,
     MistakeMemoryRule,
@@ -51,6 +52,8 @@ class MockProvider:
         mistake_memory: list[MistakeMemoryRule] | None = None,
         research_findings: list[ResearchFinding] | None = None,
         user_confirmations: list[UserConfirmation] | None = None,
+        refinement_instruction: str | None = None,
+        evidence_matches: list[EvidenceMatchRow] | None = None,
         **_: Any,
     ) -> tuple[ResumeDocument, int, ProviderUsage]:
         started = time.perf_counter()
@@ -71,6 +74,8 @@ class MockProvider:
             mistake_memory=mistake_memory,
             research_findings=research_findings,
             user_confirmations=user_confirmations,
+            refinement_instruction=refinement_instruction,
+            evidence_matches=evidence_matches,
         )
         violations = validate_resume_claims(
             resume,
