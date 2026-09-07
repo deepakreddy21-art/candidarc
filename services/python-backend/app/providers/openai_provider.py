@@ -317,23 +317,55 @@ class OpenAIProvider:
         result = research.synthesize_from_sources(company=company, sources=sources)
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic",
+            model="internal",
             prompt_version="research@python-v1",
             latency_ms=latency,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            provider_request_id=None,
+            estimated_cost_cents=0,
             retry_count=0,
         )
-        return result, latency, usage
+        return (
+            result.model_copy(
+                update={
+                    "provider": usage.provider,
+                    "model": usage.model,
+                    "latency_ms": latency,
+                    "usage": usage,
+                }
+            ),
+            latency,
+            usage,
+        )
 
     async def match_evidence(self, **kwargs: Any) -> tuple[EvidenceMatchResponse, int, ProviderUsage]:
         started = time.perf_counter()
         result = match_evidence_request_scoped(kwargs["requirements"], kwargs["evidence"])
         latency = int((time.perf_counter() - started) * 1000)
         usage = ProviderUsage(
-            provider=self.name,
-            model=self.model,
+            provider="deterministic",
+            model="internal",
             prompt_version="evidence-match@lexical-v1",
             latency_ms=latency,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            provider_request_id=None,
+            estimated_cost_cents=0,
             retry_count=0,
         )
-        return result, latency, usage
+        return (
+            result.model_copy(
+                update={
+                    "provider": usage.provider,
+                    "model": usage.model,
+                    "latency_ms": latency,
+                    "usage": usage,
+                }
+            ),
+            latency,
+            usage,
+        )
