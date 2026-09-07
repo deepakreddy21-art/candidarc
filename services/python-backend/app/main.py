@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.v1.routes import router as v1_router
@@ -116,6 +117,22 @@ def create_app() -> FastAPI:
         redoc_url=None,
         lifespan=lifespan,
     )
+
+    # Distinguish FastAPI validation 422 from domain GUARDRAIL_VIOLATION 422
+    # RequestValidationError → code=VALIDATION_ERROR (schema/type issues)
+    # GUARDRAIL_VIOLATION → code=GUARDRAIL_VIOLATION (business rule violations)
+    @application.exception_handler(RequestValidationError)
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "VALIDATION_ERROR",
+                "message": "Request validation failed",
+                "details": exc.errors(),
+            },
+        )
 
     @application.get("/health/live", response_model=HealthLiveResponse)
     async def health_live() -> HealthLiveResponse:

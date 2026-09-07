@@ -19,7 +19,29 @@ from app.modules.scoring.service import score_resume
 
 PERCENT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*%")
 DOLLAR_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s*(?:k|m|b|million|billion))?", re.I)
+# Multi-digit numbers (10+), decimal numbers, or comma-formatted numbers
 NUMBER_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+\.\d+\b|\b\d{2,}\b")
+# Single-digit metrics when followed by metric-context words (e.g., "9 platforms", "5 engineers")
+SINGLE_DIGIT_METRIC_RE = re.compile(
+    r"\b([1-9])\s+(?:platform|platforms|engineer|engineers|people|users|customers|projects|systems|services|"
+    r"microservices|applications|apps|api|apis|teams|members|regions|countries)\b",
+    re.I,
+)
+# Spelled-out numbers (one through twenty, hundred, thousand, million, billion)
+SPELLED_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "hundred": 100, "thousand": 1000, "million": 1000000, "billion": 1000000000,
+}
+SPELLED_NUMBER_RE = re.compile(
+    r"\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+    r"sixteen|seventeen|eighteen|nineteen|twenty|hundred|thousand|million|billion)\s+"
+    r"(?:platform|platforms|engineer|engineers|people|users|customers|projects|systems|services|"
+    r"microservices|applications|apps|api|apis|teams|members|regions|countries)\b",
+    re.I,
+)
 DATE_RE = re.compile(
     r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
     r"sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}\b|\b\d{4}\s*[–-]\s*(?:\d{4}|present)\b|"
@@ -96,6 +118,26 @@ KNOWN_TECH_HINTS = (
     "node.js",
 )
 
+# Well-known single-word employer names that are commonly used in resumes
+# These need special handling since normal org detection requires multi-word names
+KNOWN_SINGLE_WORD_EMPLOYERS = frozenset({
+    # FAANG / Big Tech
+    "google", "meta", "amazon", "apple", "netflix", "microsoft", "nvidia", "intel", "oracle", "ibm",
+    "salesforce", "adobe", "cisco", "vmware", "qualcomm", "amd", "dell", "hp", "samsung",
+    # Fintech / Finance
+    "stripe", "plaid", "square", "paypal", "visa", "mastercard", "bloomberg", "robinhood",
+    # Enterprise / Cloud
+    "slack", "zoom", "atlassian", "twilio", "datadog", "snowflake", "databricks", "confluent",
+    # Consumer / Social
+    "twitter", "x", "tiktok", "snap", "snapchat", "pinterest", "spotify", "discord", "reddit",
+    # Startups / Scale-ups
+    "uber", "lyft", "airbnb", "doordash", "instacart", "coinbase", "figma", "notion",
+    # E-commerce / Retail
+    "shopify", "etsy", "ebay", "walmart", "target", "costco",
+    # Other notable
+    "spacex", "tesla", "palantir", "openai", "anthropic", "deepmind",
+})
+
 # Only these sources may create first-person experience claims
 FIRST_PERSON_CLAIM_SOURCES: frozenset[ClaimSourceKind] = frozenset({"candidate_evidence", "user_confirmation"})
 
@@ -163,11 +205,28 @@ def extract_claim_atoms(text: str, explicit_techs: list[str] | None = None) -> C
     for hint in KNOWN_TECH_HINTS:
         if re.search(rf"\b{re.escape(hint)}\b", lower):
             techs.append(hint)
+    # Multi-word orgs from capitalized sequences
     orgs = re.findall(r"\b([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Z][A-Za-z0-9&.\-]+){0,3})\b", text)
+    # Add known single-word employers (e.g., Google, Meta, Amazon)
+    for word in re.findall(r"\b([A-Za-z]+)\b", text):
+        if word.lower() in KNOWN_SINGLE_WORD_EMPLOYERS:
+            orgs.append(word)
+
+    # Collect all numbers: multi-digit, single-digit metrics, and spelled numbers
+    numbers = NUMBER_RE.findall(text)
+    # Single-digit metrics (e.g., "9 platforms", "5 engineers")
+    single_digit_matches = SINGLE_DIGIT_METRIC_RE.findall(text)
+    numbers.extend(single_digit_matches)
+    # Spelled numbers (e.g., "nine platforms", "five engineers")
+    for match in SPELLED_NUMBER_RE.finditer(text):
+        spelled_word = match.group(1).lower()
+        if spelled_word in SPELLED_NUMBER_WORDS:
+            numbers.append(str(SPELLED_NUMBER_WORDS[spelled_word]))
+
     return ClaimAtoms(
         percentages=PERCENT_RE.findall(text),
         dollars=DOLLAR_RE.findall(text),
-        numbers=NUMBER_RE.findall(text),
+        numbers=numbers,
         dates=DATE_RE.findall(text),
         team_sizes=TEAM_SIZE_RE.findall(text),
         technologies=sorted({t.lower() for t in techs}),
@@ -397,7 +456,10 @@ def _append_atom_violations(
     for org in atoms.orgs:
         org_l = org.lower()
         if evidence_orgs and org_l not in corpus and not any(org_l in eo or eo in org_l for eo in evidence_orgs if eo):
-            if len(org.split()) >= 2 and org_l not in corpus:
+            # Flag unsupported orgs: multi-word names OR known single-word employers
+            is_multi_word = len(org.split()) >= 2
+            is_known_single_word_employer = org_l in KNOWN_SINGLE_WORD_EMPLOYERS
+            if (is_multi_word or is_known_single_word_employer) and org_l not in corpus:
                 violations.append(org_code)
 
 
