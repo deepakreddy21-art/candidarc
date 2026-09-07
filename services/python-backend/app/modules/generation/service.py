@@ -638,32 +638,87 @@ def _bullet_fingerprint(text: str) -> str:
 
 
 def _dedupe_resume_sections(sections: list[ResumeSection]) -> list[ResumeSection]:
-    """Drop later bullets that collide with earlier normalized fingerprints."""
-    seen: set[str] = set()
+    """Drop later cross-section bullet collisions while keeping sections valid.
+
+    Experience/education bullets win over summary/skills when fingerprints collide.
+    If a summary/skills section would become empty, rewrite its lead bullet to a
+    short unique technology line instead of emitting an empty section.
+    """
+    priority = {"experience": 0, "education": 1, "skills": 2, "summary": 3}
+    claimed: set[str] = set()
+    keep: set[tuple[int, int | None, int]] = set()
+
+    candidates: list[tuple[int, int, int | None, int, str]] = []
+    for section_index, section in enumerate(sections):
+        section_priority = priority.get(section.type, 9)
+        if section.bullets is not None:
+            for bullet_index, bullet in enumerate(section.bullets):
+                candidates.append((section_priority, section_index, None, bullet_index, bullet.text))
+        if section.items is not None:
+            for item_index, item in enumerate(section.items):
+                for bullet_index, bullet in enumerate(item.bullets):
+                    candidates.append((section_priority, section_index, item_index, bullet_index, bullet.text))
+
+    for _section_priority, section_index, item_index, bullet_index, text in sorted(candidates):
+        fingerprint = _bullet_fingerprint(text)
+        key = (section_index, item_index, bullet_index)
+        if fingerprint and fingerprint in claimed:
+            continue
+        if fingerprint:
+            claimed.add(fingerprint)
+        keep.add(key)
+
     result: list[ResumeSection] = []
-    for section in sections:
+    for section_index, section in enumerate(sections):
         new_bullets = None
         if section.bullets is not None:
-            new_bullets = []
-            for bullet in section.bullets:
-                fingerprint = _bullet_fingerprint(bullet.text)
-                if fingerprint and fingerprint in seen:
-                    continue
+            new_bullets = [
+                bullet
+                for bullet_index, bullet in enumerate(section.bullets)
+                if (section_index, None, bullet_index) in keep
+            ]
+            if not new_bullets:
+                techs = sorted(
+                    {
+                        technology
+                        for item in section.items or []
+                        for bullet in item.bullets
+                        for technology in bullet.technologies
+                    }
+                    | {
+                        technology
+                        for bullet in section.bullets
+                        for technology in bullet.technologies
+                    }
+                )
+                if section.type == "summary":
+                    fallback = (
+                        f"{techs[0]}-focused engineer" if techs else "Experienced engineer"
+                    )
+                elif section.type == "skills":
+                    fallback = " · ".join(techs[:6]) if techs else "Core technical skills"
+                else:
+                    fallback = f"{section.type} highlights"
+                lead = section.bullets[0]
+                rewritten = lead.model_copy(update={"text": fallback[:3900]})
+                fingerprint = _bullet_fingerprint(rewritten.text)
+                if fingerprint and fingerprint in claimed:
+                    rewritten = lead.model_copy(update={"text": f"{fallback} ({section.type})"[:3900]})
+                    fingerprint = _bullet_fingerprint(rewritten.text)
                 if fingerprint:
-                    seen.add(fingerprint)
-                new_bullets.append(bullet)
+                    claimed.add(fingerprint)
+                new_bullets = [rewritten]
         new_items = None
         if section.items is not None:
             new_items = []
-            for item in section.items:
-                item_bullets = []
-                for bullet in item.bullets:
-                    fingerprint = _bullet_fingerprint(bullet.text)
-                    if fingerprint and fingerprint in seen:
-                        continue
-                    if fingerprint:
-                        seen.add(fingerprint)
-                    item_bullets.append(bullet)
+            for item_index, item in enumerate(section.items):
+                item_bullets = [
+                    bullet
+                    for bullet_index, bullet in enumerate(item.bullets)
+                    if (section_index, item_index, bullet_index) in keep
+                ]
+                if not item_bullets and item.bullets:
+                    item_bullets = [item.bullets[0]]
                 new_items.append(item.model_copy(update={"bullets": item_bullets}))
         result.append(section.model_copy(update={"bullets": new_bullets, "items": new_items}))
     return result
