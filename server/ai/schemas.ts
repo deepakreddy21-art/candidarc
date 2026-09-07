@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  FINAL_QA_CHECK_REGISTRY,
+  type FinalQaCheckCode,
+} from "../workflows/final-qa";
 
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 
@@ -178,18 +182,12 @@ export const finalQaSchema = z.object({
             "section count": "SECTION_COUNT",
             truthfulness: "UNKNOWN",
           }[check.label.toLowerCase()] ?? "UNKNOWN");
-        const nonBlocking = new Set([
-          "EDUCATION",
-          "CONTACT_INFORMATION",
-          "CHRONOLOGY",
-          "PAGE_LENGTH",
-          "SECTION_COUNT",
-        ]);
+        const definition = FINAL_QA_CHECK_REGISTRY[code as FinalQaCheckCode];
         return {
           code,
           label: check.label,
           status: check.status === "warning" ? ("warn" as const) : check.status,
-          blocking: check.blocking ?? !nonBlocking.has(code),
+          blocking: definition?.blocking ?? false,
           detail: check.detail,
         };
       }),

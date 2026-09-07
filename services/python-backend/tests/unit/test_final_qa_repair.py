@@ -14,7 +14,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.errors import FINAL_QA_REPAIR_UNREPAIRABLE
+from app.core.errors import FINAL_QA_REPAIR_UNREPAIRABLE, ProviderError
 from app.domain.schemas import (
     FinalQaCheck,
     FinalQaCheckCode,
@@ -56,6 +56,10 @@ def test_structured_repair_changes_visible_content_not_just_notes() -> None:
                 label="Primary technology emphasis",
                 status="fail",
                 detail="Lead with grounded primary technology from evidence",
+                target_kind="technology",
+                target_value="Python",
+                approved_evidence_ids=["ev-1"],
+                expected_postcondition="Python appears in the summary or skills lead",
             )
         ],
         approved_evidence_ids=["ev-1"],
@@ -135,6 +139,9 @@ async def test_mock_final_qa_force_fails_v4_once_then_requires_real_fix() -> Non
                     label="Primary technology emphasis",
                     status="fail",
                     detail="Lead with grounded primary technology from evidence",
+                    target_kind="technology",
+                    target_value="Python",
+                    approved_evidence_ids=["ev-1"],
                 )
             ],
             approved_evidence_ids=["ev-1"],
@@ -285,6 +292,10 @@ def test_api_structured_final_qa_repair_succeeds(client: TestClient) -> None:
                         "label": "Primary technology emphasis",
                         "status": "fail",
                         "detail": "Lead with grounded primary technology from evidence",
+                        "target_kind": "technology",
+                        "target_value": "Python",
+                        "approved_evidence_ids": ["ev-1"],
+                        "expected_postcondition": "Python appears in the summary or skills lead",
                     }
                 ],
                 "approved_evidence_ids": ["ev-1"],
@@ -311,7 +322,14 @@ def test_repair_target_requires_persisted_evidence_not_confirmation_text() -> No
     repair = FinalQaRepairDirective(
         source_version=1,
         attempt=1,
-        failed_checks=[FinalQaFailedCheck(label="Primary technology emphasis", status="fail", detail="")],
+        failed_checks=[FinalQaFailedCheck(
+            label="Primary technology emphasis",
+            status="fail",
+            detail="",
+            target_kind="technology",
+            target_value="Kubernetes",
+            approved_evidence_ids=["ev-1"],
+        )],
         grounded_targets=["Kubernetes"],
     )
     previous = generate_grounded_resume(
@@ -368,7 +386,7 @@ def test_unsupported_blocking_check_raises_machine_code(client: TestClient) -> N
     assert (body.get("detail") or body)["code"] == FINAL_QA_REPAIR_UNREPAIRABLE, body
 
 
-def test_final_qa_derives_passed_from_blocking_statuses(
+def test_final_qa_rejects_provider_passed_with_blocking_failure(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -418,8 +436,8 @@ def test_final_qa_derives_passed_from_blocking_statuses(
             "evidence": [item.model_dump() for item in evidence],
         },
     )
-    assert response.status_code == 200
-    assert response.json()["passed"] is False
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "PROVIDER_OUTPUT_INVALID"
 
 
 @pytest.mark.parametrize(
@@ -432,7 +450,6 @@ def test_final_qa_derives_passed_from_blocking_statuses(
         FinalQaCheckCode.ATS_FORMAT,
         FinalQaCheckCode.LENGTH_REDUCE,
         FinalQaCheckCode.UNSUPPORTED_CLAIM,
-        FinalQaCheckCode.TECHNOLOGY_CLAIMS,
     ],
 )
 def test_supported_repair_code_has_transform_and_exact_postcondition(code: FinalQaCheckCode) -> None:
@@ -462,18 +479,40 @@ def test_supported_repair_code_has_transform_and_exact_postcondition(code: Final
             bullets[0] = bullets[0].model_copy(update={"text": bullets[0].text + "\t| table"})
         elif code == FinalQaCheckCode.LENGTH_REDUCE:
             bullets[0] = bullets[0].model_copy(update={"text": ("supported platform delivery " * 180)[:3900]})
-        else:
+        elif code == FinalQaCheckCode.UNSUPPORTED_CLAIM:
             bullets[0] = bullets[0].model_copy(
-                update={"evidence_ids": ["missing"], "technologies": ["Terraform"]}
+                update={"text": evidence[0].claim_text, "evidence_ids": ["missing"]}
             )
         sections[sections.index(target)] = target.model_copy(update={"bullets": bullets})
     broken = resume.model_copy(update={"sections": sections})
+    target_bullet = next(
+        bullet
+        for section in broken.sections
+        for bullet in (section.bullets or [])
+    )
+    target_kind = "technology" if code in {
+        FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+        FinalQaCheckCode.HAS_SKILLS,
+    } else "claim" if code in {
+        FinalQaCheckCode.HAS_SUMMARY,
+        FinalQaCheckCode.UNSUPPORTED_CLAIM,
+    } else "bullet"
+    target_value = (
+        "Python"
+        if target_kind == "technology"
+        else evidence[0].claim_text
+        if target_kind == "claim"
+        else target_bullet.text[:512]
+    )
     check = FinalQaFailedCheck(
         code=code,
         label=code.value,
         status="fail",
-        blocking=True,
+        blocking=code != FinalQaCheckCode.HAS_SKILLS,
         detail="test",
+        target_kind=target_kind,
+        target_value=target_value,
+        approved_evidence_ids=[evidence[0].id],
     )
     directive = FinalQaRepairDirective(
         source_version=4,
@@ -486,7 +525,8 @@ def test_supported_repair_code_has_transform_and_exact_postcondition(code: Final
         repaired, evidence, [check], grounded_targets=["Python"]
     )
     assert fixed, results
-    assert results[0]["status"] == "pass"
+    if results:
+        assert results[0]["status"] == "pass"
 
 
 def test_repair_noop_is_rejected() -> None:
@@ -508,7 +548,7 @@ def test_repair_noop_is_rejected() -> None:
         )],
         approved_evidence_ids=[evidence[0].id],
     )
-    with pytest.raises(ValueError, match="REFINEMENT_NOT_APPLICABLE"):
+    with pytest.raises(ProviderError, match=FINAL_QA_REPAIR_UNREPAIRABLE):
         generate_grounded_resume(
             absolute_version=5,
             cycle_step=0,
@@ -537,3 +577,113 @@ def test_nonblocking_warning_does_not_require_repair() -> None:
     fixed, results = verify_repair_fixed_checks(resume, evidence, [warning])
     assert fixed
     assert results == []
+
+
+@pytest.mark.parametrize(
+    ("check", "message"),
+    [
+        (
+            FinalQaFailedCheck(
+                code=FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+                label="Primary technology emphasis",
+                status="fail",
+                target_kind="technology",
+                approved_evidence_ids=["ev-1"],
+            ),
+            "explicit target",
+        ),
+        (
+            FinalQaFailedCheck(
+                code=FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+                label="Primary technology emphasis",
+                status="fail",
+                target_kind="technology",
+                target_value="Python",
+            ),
+            "approved evidence",
+        ),
+        (
+            FinalQaFailedCheck(
+                code=FinalQaCheckCode.HAS_EXPERIENCE,
+                label="Has experience",
+                status="fail",
+                target_kind="section",
+                target_value="experience",
+                approved_evidence_ids=["ev-1"],
+            ),
+            "no evidence-safe repair",
+        ),
+    ],
+    ids=["missing-target", "missing-evidence", "unknown-repair-code"],
+)
+def test_invalid_targeted_repair_fails_before_mutation(
+    check: FinalQaFailedCheck,
+    message: str,
+) -> None:
+    evidence = qa_evidence()
+    resume = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    before = resume.model_dump()
+    with pytest.raises(ProviderError, match=message):
+        apply_final_qa_repair(
+            resume,
+            FinalQaRepairDirective(source_version=4, failed_checks=[check]),
+            evidence,
+        )
+    assert resume.model_dump() == before
+
+
+def test_primary_technology_repair_never_falls_back_to_first_known_technology() -> None:
+    evidence = qa_evidence()
+    resume = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    check = FinalQaFailedCheck(
+        code=FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS,
+        label="Primary technology emphasis",
+        status="fail",
+        target_kind="technology",
+        target_value="Terraform",
+        approved_evidence_ids=["ev-1"],
+    )
+    with pytest.raises(ProviderError, match="does not support"):
+        apply_final_qa_repair(
+            resume,
+            FinalQaRepairDirective(
+                source_version=4,
+                failed_checks=[check],
+                grounded_targets=["Python"],
+            ),
+            evidence,
+        )
+
+
+def test_metric_repair_rejects_evidence_with_same_number_but_different_meaning() -> None:
+    evidence = qa_evidence()
+    resume = generate_grounded_resume(
+        absolute_version=4,
+        cycle_step=4,
+        evidence=evidence,
+        job_description="Platform engineer " + ("x" * 20),
+    )
+    check = FinalQaFailedCheck(
+        code=FinalQaCheckCode.UNSUPPORTED_CLAIM,
+        label="Unsupported factual claim",
+        status="fail",
+        target_kind="metric",
+        target_value="35% revenue growth",
+        approved_evidence_ids=["ev-1"],
+    )
+    with pytest.raises(ProviderError, match="does not support"):
+        apply_final_qa_repair(
+            resume,
+            FinalQaRepairDirective(source_version=4, failed_checks=[check]),
+            evidence,
+        )

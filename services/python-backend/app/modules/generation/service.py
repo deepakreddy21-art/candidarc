@@ -10,6 +10,7 @@ from app.domain.schemas import (
     EvidenceItem,
     EvidenceMatchRow,
     FinalQaCheckCode,
+    FinalQaFailedCheck,
     FinalQaRepairDirective,
     MistakeMemoryRule,
     ResearchFinding,
@@ -20,7 +21,7 @@ from app.domain.schemas import (
 )
 from app.modules.evidence.service import normalize_evidence
 from app.modules.guardrails.service import build_grounded_resume, validate_resume_claims
-from app.modules.quality.service import unsupported_blocking_repairs, verify_repair_fixed_checks
+from app.modules.quality.service import REPAIRABLE_CHECK_CODES, verify_repair_fixed_checks
 from app.modules.scoring.service import score_resume
 
 # Disallowed free-form refinement patterns — fabrication / unsupported claims.
@@ -201,6 +202,50 @@ def _safe_wording(text: str) -> str:
     return updated
 
 
+def _evidence_text(item: EvidenceItem) -> str:
+    return _dedupe_whitespace(" ".join(filter(None, [
+        item.title,
+        item.organization,
+        item.situation,
+        item.task,
+        *(item.actions or []),
+        item.result,
+        item.claim_text,
+        item.employer_association,
+        *item.metrics,
+        *item.technologies,
+    ]))).casefold()
+
+
+def _evidence_supports_target(
+    item: EvidenceItem,
+    target_kind: str,
+    target_value: str,
+) -> bool:
+    target = _dedupe_whitespace(target_value).casefold()
+    blob = _evidence_text(item)
+    if target_kind == "technology":
+        return target in {technology.casefold() for technology in item.technologies}
+    if target_kind == "metric":
+        numbers = re.findall(r"\d+(?:\.\d+)?%?", target)
+        meaning = {
+            token for token in re.findall(r"[a-z]{3,}", target)
+            if token not in {"the", "and", "with", "from", "that", "this"}
+        }
+        return bool(numbers) and all(number in blob for number in numbers) and bool(
+            meaning.intersection(re.findall(r"[a-z]{3,}", blob))
+        )
+    if target_kind == "employer":
+        return target == (item.employer_association or item.organization or "").casefold()
+    if target_kind in {"title", "date", "education", "certification"}:
+        return target in blob
+    if target_kind in {"bullet", "section"}:
+        return bool(target)
+    if target_kind in {"ownership", "claim"}:
+        return target in blob or (item.claim_text or "").casefold() in target
+    return False
+
+
 def apply_visible_refinement(
     resume: ResumeDocument,
     instruction: str,
@@ -286,7 +331,11 @@ def apply_final_qa_repair(
 
     Prioritizes approved evidence and grounded technology targets already in evidence.
     """
-    unsupported = unsupported_blocking_repairs(repair.failed_checks)
+    active_checks = [check for check in repair.failed_checks if check.status != "pass"]
+    unsupported = [
+        check for check in active_checks
+        if check.code not in REPAIRABLE_CHECK_CODES
+    ]
     if unsupported:
         codes = ", ".join(check.code.value for check in unsupported)
         raise ProviderError(
@@ -295,22 +344,74 @@ def apply_final_qa_repair(
         )
 
     evidence_by_id = {item.id: item for item in evidence}
-    approved = [evidence_by_id[eid] for eid in repair.approved_evidence_ids if eid in evidence_by_id]
-    evidence_techs = {t.lower() for item in evidence for t in item.technologies}
-    targets = [t.lower() for t in repair.grounded_targets if t.lower() in evidence_techs]
-    if not targets:
-        # Derive from approved evidence technologies
-        for item in approved or evidence:
-            for tech in item.technologies:
-                if tech.lower() not in targets:
-                    targets.append(tech.lower())
-                if len(targets) >= 3:
-                    break
-            if len(targets) >= 3:
-                break
+    resolved_evidence: dict[int, list[EvidenceItem]] = {}
+    for index, check in enumerate(active_checks):
+        if not check.target_kind or not check.target_value:
+            raise ProviderError(
+                FINAL_QA_REPAIR_UNREPAIRABLE,
+                f"{check.code.value} repair requires an explicit target_kind and target_value",
+            )
+        evidence_ids = check.approved_evidence_ids or repair.approved_evidence_ids
+        if not evidence_ids:
+            raise ProviderError(
+                FINAL_QA_REPAIR_UNREPAIRABLE,
+                f"{check.code.value} repair requires approved evidence",
+            )
+        approved = [evidence_by_id[eid] for eid in evidence_ids if eid in evidence_by_id]
+        if len(approved) != len(set(evidence_ids)):
+            raise ProviderError(
+                FINAL_QA_REPAIR_UNREPAIRABLE,
+                f"{check.code.value} repair references missing approved evidence",
+            )
+        supporting = [
+            item for item in approved
+            if _evidence_supports_target(item, check.target_kind, check.target_value)
+        ]
+        if not supporting:
+            raise ProviderError(
+                FINAL_QA_REPAIR_UNREPAIRABLE,
+                f"Approved evidence does not support the targeted {check.target_kind}: {check.target_value}",
+            )
+        resolved_evidence[index] = supporting
 
-    primary = targets[0] if targets else None
-    approved_ids = set(repair.approved_evidence_ids)
+    check_entries = list(enumerate(active_checks))
+    primary_entry = next(
+        ((index, check) for index, check in check_entries
+         if check.code == FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS),
+        None,
+    )
+    primary = None
+    primary_display = None
+    if primary_entry is not None:
+        primary_index, primary_check = primary_entry
+        if primary_check.target_kind != "technology" or not primary_check.target_value:
+            raise ProviderError(
+                FINAL_QA_REPAIR_UNREPAIRABLE,
+                "PRIMARY_TECHNOLOGY_EMPHASIS requires target_kind=technology and target_value",
+            )
+        primary = primary_check.target_value.casefold()
+        primary_display = next(
+            (
+                technology
+                for item in resolved_evidence[primary_index]
+                for technology in item.technologies
+                if primary == technology.casefold()
+            ),
+            primary_check.target_value,
+        )
+        if not any(
+            primary == technology.casefold()
+            for item in resolved_evidence[primary_index]
+            for technology in item.technologies
+        ):
+            raise ProviderError(
+                FINAL_QA_REPAIR_UNREPAIRABLE,
+                f"Primary technology '{primary_check.target_value}' is not in approved evidence",
+            )
+    targets = [primary] if primary else []
+    approved_ids = {
+        item.id for items in resolved_evidence.values() for item in items
+    }
 
     def score_bullet(bullet: ResumeBullet) -> float:
         score = 0.0
@@ -325,22 +426,26 @@ def apply_final_qa_repair(
         return score
 
     requested_codes = {
-        check.code for check in repair.failed_checks
-        if check.blocking and check.status != "pass"
+        check.code for check in active_checks if check.blocking
     }
-    if requested_codes.intersection({
-        FinalQaCheckCode.HAS_SUMMARY,
-        FinalQaCheckCode.UNSUPPORTED_CLAIM,
-        FinalQaCheckCode.TECHNOLOGY_CLAIMS,
-    }) and not approved:
-        raise ProviderError(
-            FINAL_QA_REPAIR_UNREPAIRABLE,
-            "Repair requires at least one approved evidence item",
-        )
+
+    evidence_for_code = {
+        check.code: resolved_evidence[index]
+        for index, check in check_entries
+    }
+    check_for_code = {check.code: check for check in active_checks}
 
     def approved_text(item: EvidenceItem) -> str:
         candidates = [item.claim_text, item.result, *(item.actions or []), item.task, item.situation]
         return next((_dedupe_whitespace(text) for text in candidates if text and text.strip()), item.title)
+
+    def matches_target(bullet: ResumeBullet, check: FinalQaFailedCheck) -> bool:
+        target = (check.target_value or "").casefold()
+        if check.claim_id and check.claim_id in bullet.evidence_ids:
+            return True
+        if check.target_kind == "technology":
+            return target in {technology.casefold() for technology in bullet.technologies}
+        return bool(target) and target in bullet.text.casefold()
 
     seen_bullets: set[str] = set()
 
@@ -366,7 +471,9 @@ def apply_final_qa_repair(
                 rewritten = sorted(rewritten, key=lambda b: (-score_bullet(b), rewritten.index(b)))
                 if section.type == "skills" and rewritten and primary:
                     skill = rewritten[0]
-                    techs = list(skill.technologies) or [t for t in evidence_techs]
+                    techs = list(skill.technologies)
+                    if primary_display and primary not in {tech.casefold() for tech in techs}:
+                        techs.insert(0, primary_display)
                     prioritized = sorted(
                         techs,
                         key=lambda t: (0 if primary in str(t).lower() else 1, str(t).lower()),
@@ -402,25 +509,29 @@ def apply_final_qa_repair(
                 FinalQaCheckCode.UNSUPPORTED_CLAIM,
                 FinalQaCheckCode.TECHNOLOGY_CLAIMS,
             }):
-                approved_item = approved[0]
-                approved_techs = {tech.casefold() for item in approved for tech in item.technologies}
-                rewritten = [
-                    bullet.model_copy(
-                        update={
-                            "text": approved_text(approved_item),
-                            "evidence_ids": [approved_item.id],
-                            "technologies": [
-                                tech for tech in bullet.technologies if tech.casefold() in approved_techs
-                            ] or list(approved_item.technologies),
-                        }
-                    )
-                    if (
-                        not set(bullet.evidence_ids).issubset(set(evidence_by_id))
-                        or any(tech.casefold() not in approved_techs for tech in bullet.technologies)
-                    )
-                    else bullet
-                    for bullet in rewritten
-                ]
+                for code in (FinalQaCheckCode.UNSUPPORTED_CLAIM, FinalQaCheckCode.TECHNOLOGY_CLAIMS):
+                    failed_check = check_for_code.get(code)
+                    if failed_check is None:
+                        continue
+                    supporting = evidence_for_code[code]
+                    approved_item = supporting[0]
+                    approved_techs = {
+                        tech.casefold() for item in supporting for tech in item.technologies
+                    }
+                    rewritten = [
+                        bullet.model_copy(
+                            update={
+                                "text": approved_text(approved_item),
+                                "evidence_ids": [approved_item.id],
+                                "technologies": [
+                                    tech for tech in bullet.technologies if tech.casefold() in approved_techs
+                                ] or list(approved_item.technologies),
+                            }
+                        )
+                        if matches_target(bullet, failed_check)
+                        else bullet
+                        for bullet in rewritten
+                    ]
             new_bullets = rewritten
 
         new_items = None
@@ -449,25 +560,29 @@ def apply_final_qa_repair(
                     FinalQaCheckCode.UNSUPPORTED_CLAIM,
                     FinalQaCheckCode.TECHNOLOGY_CLAIMS,
                 }):
-                    approved_item = approved[0]
-                    approved_techs = {tech.casefold() for item in approved for tech in item.technologies}
-                    item_bullets = [
-                        bullet.model_copy(
-                            update={
-                                "text": approved_text(approved_item),
-                                "evidence_ids": [approved_item.id],
-                                "technologies": [
-                                    tech for tech in bullet.technologies if tech.casefold() in approved_techs
-                                ] or list(approved_item.technologies),
-                            }
-                        )
-                        if (
-                            not set(bullet.evidence_ids).issubset(set(evidence_by_id))
-                            or any(tech.casefold() not in approved_techs for tech in bullet.technologies)
-                        )
-                        else bullet
-                        for bullet in item_bullets
-                    ]
+                    for code in (FinalQaCheckCode.UNSUPPORTED_CLAIM, FinalQaCheckCode.TECHNOLOGY_CLAIMS):
+                        failed_check = check_for_code.get(code)
+                        if failed_check is None:
+                            continue
+                        supporting = evidence_for_code[code]
+                        approved_item = supporting[0]
+                        approved_techs = {
+                            tech.casefold() for item in supporting for tech in item.technologies
+                        }
+                        item_bullets = [
+                            bullet.model_copy(
+                                update={
+                                    "text": approved_text(approved_item),
+                                    "evidence_ids": [approved_item.id],
+                                    "technologies": [
+                                        tech for tech in bullet.technologies if tech.casefold() in approved_techs
+                                    ] or list(approved_item.technologies),
+                                }
+                            )
+                            if matches_target(bullet, failed_check)
+                            else bullet
+                            for bullet in item_bullets
+                        ]
                 new_items.append(resume_item.model_copy(update={"bullets": item_bullets}))
 
         content = section.content
@@ -476,9 +591,7 @@ def apply_final_qa_repair(
         sections.append(section.model_copy(update={"bullets": new_bullets, "items": new_items, "content": content}))
 
     if FinalQaCheckCode.HAS_SUMMARY in requested_codes and not any(s.type == "summary" for s in sections):
-        source = approved[0] if approved else (evidence[0] if evidence else None)
-        if source is None:
-            raise ProviderError(FINAL_QA_REPAIR_UNREPAIRABLE, "No approved evidence is available for summary repair")
+        source = evidence_for_code[FinalQaCheckCode.HAS_SUMMARY][0]
         sections.insert(0, ResumeSection(
             type="summary",
             title="Summary",
@@ -492,8 +605,8 @@ def apply_final_qa_repair(
         ))
 
     if FinalQaCheckCode.HAS_SKILLS in requested_codes and not any(s.type == "skills" for s in sections):
-        source = approved[0] if approved else (evidence[0] if evidence else None)
-        if source is None or not source.technologies:
+        source = evidence_for_code[FinalQaCheckCode.HAS_SKILLS][0]
+        if not source.technologies:
             raise ProviderError(FINAL_QA_REPAIR_UNREPAIRABLE, "No evidence-backed skills are available")
         sections.insert(1, ResumeSection(
             type="skills",
@@ -610,6 +723,18 @@ def generate_grounded_resume(
     if final_qa_repair is not None and refinement_instruction:
         raise ValueError("GUARDRAIL_VIOLATION:final_qa_repair and refinement_instruction are mutually exclusive")
 
+    repair_grounded_targets = (
+        [
+            check.target_value
+            for check in final_qa_repair.failed_checks
+            if check.code == FinalQaCheckCode.PRIMARY_TECHNOLOGY_EMPHASIS
+            and check.target_kind == "technology"
+            and check.target_value
+        ]
+        if final_qa_repair is not None
+        else []
+    )
+
     refinement_applied = False
     if refinement_instruction:
         allowed, reason = _is_refinement_allowed(refinement_instruction, evidence)
@@ -691,7 +816,7 @@ def generate_grounded_resume(
                 updated,
                 evidence,
                 final_qa_repair.failed_checks,
-                grounded_targets=final_qa_repair.grounded_targets,
+                grounded_targets=repair_grounded_targets,
             )
             if not repair_fixed:
                 failed_labels = [c["label"] for c in check_results if c["status"] == "fail"]
@@ -758,7 +883,7 @@ def generate_grounded_resume(
             resume,
             evidence,
             final_qa_repair.failed_checks,
-            grounded_targets=final_qa_repair.grounded_targets,
+            grounded_targets=repair_grounded_targets,
         )
         if not repair_fixed:
             failed_labels = [c["label"] for c in check_results if c["status"] == "fail"]

@@ -37,11 +37,14 @@ type RequestContext = {
 };
 
 export type MappedProviderUsage = {
+  provider?: string;
+  model?: string;
+  latencyMs?: number;
   inputTokens: number;
   outputTokens: number;
   estimatedCostCents: number | null;
   cachedTokens?: number;
-  providerRequestId?: string;
+  providerRequestId?: string | null;
   retryCount?: number;
   pricingTableVersion?: string | null;
   costUnknown?: boolean;
@@ -357,11 +360,14 @@ export function mapProviderUsage(usage: ProviderUsage | null | undefined): Mappe
   const pricingTableVersion =
     pricingRaw == null ? null : typeof pricingRaw === "string" ? pricingRaw : String(pricingRaw);
   return {
+    provider: data?.provider,
+    model: data?.model,
+    latencyMs: data?.latency_ms == null ? undefined : Number(data.latency_ms),
     inputTokens: Number(data?.input_tokens ?? 0),
     outputTokens: Number(data?.output_tokens ?? 0),
     estimatedCostCents,
     cachedTokens: data?.cached_tokens == null ? undefined : Number(data.cached_tokens),
-    providerRequestId: data?.provider_request_id ?? undefined,
+    providerRequestId: data?.provider_request_id ?? null,
     retryCount: data?.retry_count == null ? undefined : Number(data.retry_count),
     pricingTableVersion,
     costUnknown: estimatedCostCents == null,
@@ -595,7 +601,21 @@ export type FinalQaRepairDirective = {
   sourceVersion: number;
   sourceVersionLabel?: string | null;
   attempt: number;
-  failedChecks: Array<{ code: string; label: string; status: string; blocking: boolean; detail?: string }>;
+  failedChecks: Array<{
+    code: string;
+    label: string;
+    status: string;
+    blocking: boolean;
+    detail?: string;
+    targetKind?: string;
+    targetValue?: string;
+    sectionId?: string;
+    bulletId?: string;
+    claimId?: string;
+    violationType?: string;
+    approvedEvidenceIds?: string[];
+    expectedPostcondition?: string;
+  }>;
   approvedEvidenceIds?: string[];
   groundedTargets?: string[];
 };
@@ -684,6 +704,14 @@ function buildGenerateBody(input: GenerateResumeInput) {
             status: check.status,
             blocking: check.blocking,
             detail: check.detail ?? "",
+            target_kind: check.targetKind ?? null,
+            target_value: check.targetValue ?? null,
+            section_id: check.sectionId ?? null,
+            bullet_id: check.bulletId ?? null,
+            claim_id: check.claimId ?? null,
+            violation_type: check.violationType ?? null,
+            approved_evidence_ids: check.approvedEvidenceIds ?? [],
+            expected_postcondition: check.expectedPostcondition ?? null,
           })),
           approved_evidence_ids: input.finalQaRepair.approvedEvidenceIds ?? [],
           grounded_targets: input.finalQaRepair.groundedTargets ?? [],
@@ -822,7 +850,26 @@ export class PythonIntelligenceClient {
       job_description: input.jobDescription,
       sources: input.sources ?? [],
     });
-    return ResearchSynthesizeResponseSchema.parse(data);
+    const parsed = ResearchSynthesizeResponseSchema.parse(data);
+    const usage = mapProviderUsage(parsed.usage);
+    const latencyMs = parsed.latency_ms ?? usage.latencyMs ?? 0;
+    return {
+      ...parsed,
+      provider: parsed.provider ?? usage.provider ?? "deterministic",
+      model: parsed.model ?? usage.model ?? "internal",
+      latency_ms: latencyMs,
+      usage: {
+        provider: usage.provider ?? parsed.provider ?? "deterministic",
+        model: usage.model ?? parsed.model ?? "internal",
+        prompt_version: parsed.usage?.prompt_version ?? "research@python-v1",
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        latency_ms: latencyMs,
+        estimated_cost_cents: usage.estimatedCostCents,
+        provider_request_id: usage.providerRequestId ?? null,
+        retry_count: 0,
+      },
+    };
   }
 
   async indexEvidence(input: { context: RequestContext; evidence: Array<Record<string, unknown>> }) {
@@ -876,7 +923,26 @@ export class PythonIntelligenceClient {
       evidence: input.evidence.map((item) => toSnakeEvidence(item)),
       research_findings: (input.researchFindings ?? []).map((finding) => toSnakeResearchFinding(finding)),
     });
-    return EvidenceMatchResponseSchema.parse(data);
+    const parsed = EvidenceMatchResponseSchema.parse(data);
+    const usage = mapProviderUsage(parsed.usage);
+    const latencyMs = parsed.latency_ms ?? usage.latencyMs ?? 0;
+    return {
+      ...parsed,
+      provider: parsed.provider ?? usage.provider ?? "deterministic",
+      model: parsed.model ?? usage.model ?? "internal",
+      latency_ms: latencyMs,
+      usage: {
+        provider: usage.provider ?? parsed.provider ?? "deterministic",
+        model: usage.model ?? parsed.model ?? "internal",
+        prompt_version: parsed.usage?.prompt_version ?? "evidence-match@python-v1",
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        latency_ms: latencyMs,
+        estimated_cost_cents: usage.estimatedCostCents,
+        provider_request_id: usage.providerRequestId ?? null,
+        retry_count: 0,
+      },
+    };
   }
 
   async generateResume(input: GenerateResumeInput) {

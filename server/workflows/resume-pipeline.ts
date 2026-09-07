@@ -35,7 +35,12 @@ function withoutStageClaims(payload: Record<string, unknown>): Record<string, un
   return next;
 }
 import type { DurableWorkflowEngine } from "./engine";
-import { runDeterministicFinalQa } from "./final-qa";
+import {
+  FINAL_QA_CHECK_REGISTRY,
+  runDeterministicFinalQa,
+  validateAuthorizedFinalQaResult,
+  type FinalQaCheckCode,
+} from "./final-qa";
 import type { QueueAdapter } from "./queues";
 import { extractTechQuestions, hasUnansweredTechQuestions, type TechQuestion } from "../resumes/tech-questions";
 import { computeCandidArcQualityScore } from "../resumes/quality-score";
@@ -64,22 +69,12 @@ function hashFinalQaChecks(checks: Array<{
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
 
-const REPAIRABLE_FINAL_QA_CODES = new Set([
-  "PRIMARY_TECHNOLOGY_EMPHASIS",
-  "HAS_SUMMARY",
-  "HAS_SKILLS",
-  "DUPLICATE_BULLETS",
-  "ATS_FORMAT",
-  "LENGTH_REDUCE",
-  "UNSUPPORTED_CLAIM",
-  "TECHNOLOGY_CLAIMS",
-]);
-
 /** Test-only crash points for persistence-boundary fault injection. */
 export type ResumeGenFaultPoint =
   | "after_provider"
   | "after_append"
   | "after_current"
+  | "after_usage"
   | "before_transition";
 
 let resumeGenFaultPoint: ResumeGenFaultPoint | null = null;
@@ -586,28 +581,20 @@ export class ResumePipeline {
         })),
       });
       const mapped = mapPythonResearchToTs(py);
-      const usage = mapProviderUsage({
-        provider: "python",
-        model: "research-synthesize",
-        prompt_version: "research@python-v1",
-        latency_ms: Date.now() - started,
-        input_tokens: 0,
-        output_tokens: 0,
-        estimated_cost_cents: null,
-      });
+      const usage = mapProviderUsage(py.usage);
       result = {
         data: mapped,
-        model: { provider: "python", model: "research-synthesize" },
-        prompt: { version: "research@python-v1" },
+        model: { provider: py.provider, model: py.model },
+        prompt: { version: py.usage?.prompt_version ?? "research@python-v1" },
         usage: {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
           estimatedCostCents: usage.estimatedCostCents,
           costUnknown: usage.costUnknown,
         },
-        latencyMs: Date.now() - started,
+        latencyMs: py.latency_ms ?? Date.now() - started,
       };
-      promptVersion = "research@python-v1";
+      promptVersion = py.usage?.prompt_version ?? "research@python-v1";
     } catch (error) {
       throw mapPythonBackendErrorToAppError(error);
     }
@@ -646,11 +633,14 @@ export class ResumePipeline {
         relevance: "Permitted public source collected for this job application",
       }));
     }
-    await this.recordProviderUsage(run, usageKey, result);
+    await this.recordProviderUsage(run, usageKey, result, { billable: false });
 
     const existing = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
     if (existing && existing.status === "completed") {
-      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
+      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), {
+        tenantId: run.tenantId,
+        billable: false,
+      });
       const pauseForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
       await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
         status: pauseForTech ? "waiting_review" : undefined,
@@ -704,7 +694,10 @@ export class ResumePipeline {
       });
     }
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), {
+      tenantId: run.tenantId,
+      billable: false,
+    });
     const waitingForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
     await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
       status: waitingForTech ? "waiting_review" : undefined,
@@ -815,32 +808,24 @@ export class ResumePipeline {
           : [],
       });
       const mapped = mapPythonEvidenceMatchToTs(py);
-      const usage = mapProviderUsage({
-        provider: "python",
-        model: "evidence-match",
-        prompt_version: "evidence-match@lexical-v1",
-        latency_ms: Date.now() - started,
-        input_tokens: 0,
-        output_tokens: 0,
-        estimated_cost_cents: null,
-      });
+      const usage = mapProviderUsage(py.usage);
       result = {
         data: mapped,
-        model: { provider: "python", model: "evidence-match" },
-        prompt: { version: "evidence-match@lexical-v1" },
+        model: { provider: py.provider, model: py.model },
+        prompt: { version: py.usage?.prompt_version ?? "evidence-match@lexical-v1" },
         usage: {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
           estimatedCostCents: usage.estimatedCostCents,
           costUnknown: usage.costUnknown,
         },
-        latencyMs: Date.now() - started,
+        latencyMs: py.latency_ms ?? Date.now() - started,
       };
-      promptVersion = "evidence-match@lexical-v1";
+      promptVersion = py.usage?.prompt_version ?? "evidence-match@lexical-v1";
     } catch (error) {
       throw mapPythonBackendErrorToAppError(error);
     }
-    await this.recordProviderUsage(run, usageKey, result);
+    await this.recordProviderUsage(run, usageKey, result, { billable: false });
 
     await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
       metadata: {
@@ -852,7 +837,10 @@ export class ResumePipeline {
       evidenceCoverage: result.data.evidenceCoverage,
     });
 
-    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
+    await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), {
+      tenantId: run.tenantId,
+      billable: false,
+    });
     await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_COMPLETED", {
       message: "Evidence matching completed",
       patch: { provider: result.model.provider, model: result.model.model, promptVersion },
@@ -908,6 +896,7 @@ export class ResumePipeline {
     if (!skipFaultPoints) maybeInjectResumeGenFault("after_current");
 
     await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), { tenantId: run.tenantId });
+    if (!skipFaultPoints) maybeInjectResumeGenFault("after_usage");
     if (!skipFaultPoints) maybeInjectResumeGenFault("before_transition");
 
     const latest = (await this.deps.workflows.getById(run.id)) ?? run;
@@ -1205,36 +1194,42 @@ export class ResumePipeline {
           researchFindings,
           mistakeMemory: mistakeMemory as unknown as Array<Record<string, unknown>>,
           refinementInstruction: isFinalQaRepair ? null : resolvedRefinementInstruction,
-          finalQaRepair: isFinalQaRepair
-            ? ((run.payload.finalQaRepairDirective as {
-                repairType: "final_qa_repair";
-                sourceVersion: number;
-                sourceVersionLabel?: string | null;
-                attempt: number;
-                failedChecks: Array<{ code: string; label: string; status: string; blocking: boolean; detail?: string }>;
-                approvedEvidenceIds?: string[];
-                groundedTargets?: string[];
-              } | undefined) ?? {
-                repairType: "final_qa_repair" as const,
-                sourceVersion: Number(repairSourceVersion),
-                sourceVersionLabel:
-                  typeof run.payload.finalQaRepairSourceLabel === "string"
-                    ? String(run.payload.finalQaRepairSourceLabel)
-                    : `V${repairSourceVersion}`,
-                attempt: repairAttempt,
-                failedChecks: Array.isArray(run.payload.finalQaFailedChecks)
-                  ? (run.payload.finalQaFailedChecks as Array<{
-                      code: string;
-                      label: string;
-                      status: string;
-                      blocking: boolean;
-                      detail?: string;
-                    }>)
-                  : [],
-                approvedEvidenceIds: evidence.map((item) => item.publicId),
-                groundedTargets: evidenceTechnologies.slice(0, 8),
-              })
-            : null,
+          finalQaRepair: (() => {
+            if (!isFinalQaRepair) return null;
+            const directive = run.payload.finalQaRepairDirective as
+              | {
+                  repairType: "final_qa_repair";
+                  sourceVersion: number;
+                  sourceVersionLabel?: string | null;
+                  attempt: number;
+                  failedChecks: Array<{
+                    code: string;
+                    label: string;
+                    status: string;
+                    blocking: boolean;
+                    detail?: string;
+                    targetKind?: string;
+                    targetValue?: string;
+                    sectionId?: string;
+                    bulletId?: string;
+                    claimId?: string;
+                    violationType?: string;
+                    approvedEvidenceIds?: string[];
+                    expectedPostcondition?: string;
+                  }>;
+                  approvedEvidenceIds?: string[];
+                  groundedTargets?: string[];
+                }
+              | undefined;
+            if (!directive || !Array.isArray(directive.failedChecks) || directive.failedChecks.length === 0) {
+              throw new AppError(
+                "FINAL_QA_REPAIR_UNREPAIRABLE",
+                "Final-QA repair requires an explicit targeted repair directive",
+                422,
+              );
+            }
+            return directive;
+          })(),
           jobRequirements,
           evidenceMatches,
           // Positive confirmations are persisted as ordinary scoped evidence before
@@ -1800,13 +1795,22 @@ export class ResumePipeline {
       logger.warn({ err: error, applicationPublicId: run.applicationPublicId }, "python final QA failed");
       throw mapPythonBackendErrorToAppError(error);
     }
+
+    const authorized = validateAuthorizedFinalQaResult(supplement.data);
+    if (!authorized.valid) {
+      throw new AppError(
+        "PROVIDER_OUTPUT_INVALID",
+        "Python Final-QA response failed authority validation",
+        422,
+        supplement.data.checks,
+      );
+    }
+
     await this.recordProviderUsage(run, usageKey, supplement);
     await this.commit(usageKey, this.commitCostCents(supplement.usage.estimatedCostCents), { tenantId: run.tenantId });
 
-    const failedBlockingChecks = supplement.data.checks.filter(
-      (check) => check.blocking && check.status !== "pass",
-    );
-    const supplementPassed = failedBlockingChecks.length === 0;
+    const failedBlockingChecks = authorized.blockingFailures;
+    const supplementPassed = supplement.data.passed && failedBlockingChecks.length === 0;
 
     // Final QA authority: if AI final QA fails, attempt ONE bounded repair
     if (!supplementPassed) {
@@ -1839,7 +1843,7 @@ export class ResumePipeline {
       }
 
       const unsupported = failedBlockingChecks.filter(
-        (check) => !REPAIRABLE_FINAL_QA_CODES.has(check.code),
+        (check) => !FINAL_QA_CHECK_REGISTRY[check.code as FinalQaCheckCode].repairable,
       );
       if (unsupported.length) {
         throw new AppError(
@@ -1860,20 +1864,98 @@ export class ResumePipeline {
         .map((check) => `${check.label}: ${check.detail}`)
         .join("; ");
       const checksHash = hashFinalQaChecks(supplement.data.checks);
+      const allBullets = latest.sections.flatMap((section) => [
+        ...((section as { bullets?: Array<Record<string, unknown>> }).bullets ?? []),
+        ...((section as { items?: Array<{ bullets?: Array<Record<string, unknown>> }> }).items ?? [])
+          .flatMap((item) => item.bullets ?? []),
+      ]);
+      const targetedChecks = failedChecks.map((check) => {
+        const parenthesized = check.detail.match(/\(([^()]+)\)\s*$/)?.[1]?.trim();
+        const unsupportedTechnology = check.detail.match(/technolog(?:y|ies)[^:]*:\s*([^,;]+)/i)?.[1]?.trim();
+        const metric = check.detail.match(/\b\d+(?:\.\d+)?%?(?:\s+\w+){0,4}/)?.[0]?.trim();
+        const targetKind =
+          check.code === "PRIMARY_TECHNOLOGY_EMPHASIS" || check.code === "TECHNOLOGY_CLAIMS"
+            ? "technology"
+            : check.code === "UNSUPPORTED_CLAIM" && metric
+              ? "metric"
+              : check.code === "DUPLICATE_BULLETS"
+                ? "bullet"
+                : "claim";
+        const targetValue =
+          parenthesized ??
+          unsupportedTechnology ??
+          metric ??
+          check.detail.split(":").slice(1).join(":").trim();
+        const matchingBullet = allBullets.find((bullet) => {
+          const text = String(bullet.text ?? "").toLowerCase();
+          const technologies = ((bullet.technologies ?? []) as string[]).map((tech) => tech.toLowerCase());
+          return Boolean(targetValue) && (
+            text.includes(targetValue.toLowerCase()) ||
+            technologies.includes(targetValue.toLowerCase())
+          );
+        });
+        const bulletEvidenceIds = (matchingBullet?.evidenceIds ?? matchingBullet?.evidence_ids ?? []) as string[];
+        const supportingEvidence = evidence.filter((item) => {
+          if (bulletEvidenceIds.includes(item.publicId)) return true;
+          if (!targetValue) return false;
+          if (targetKind === "technology") {
+            return item.technologies.some((technology) => technology.toLowerCase() === targetValue.toLowerCase());
+          }
+          const blob = [
+            item.title,
+            item.organization,
+            item.claimText,
+            item.result,
+            ...(item.actions ?? []),
+            ...((item.payload?.metrics as string[] | undefined) ?? []),
+          ].filter(Boolean).join(" ").toLowerCase();
+          return blob.includes(targetValue.toLowerCase());
+        });
+        return {
+          code: check.code,
+          label: check.label,
+          status: check.status,
+          blocking: FINAL_QA_CHECK_REGISTRY[check.code as FinalQaCheckCode].blocking,
+          detail: check.detail,
+          targetKind,
+          targetValue: targetValue || undefined,
+          bulletId: typeof matchingBullet?.id === "string" ? matchingBullet.id : undefined,
+          approvedEvidenceIds: supportingEvidence.map((item) => item.publicId),
+          expectedPostcondition:
+            check.code === "PRIMARY_TECHNOLOGY_EMPHASIS" && targetValue
+              ? `${targetValue} appears in the first 80 characters or technologies of the summary/skills lead`
+              : undefined,
+        };
+      });
+      const structuralRepairCodes = new Set([
+        "DUPLICATE_BULLETS",
+        "ATS_FORMAT",
+        "HAS_SUMMARY",
+        "HAS_SKILLS",
+        "LENGTH_REDUCE",
+      ]);
+      const untargetable = targetedChecks.filter((check) => {
+        if (structuralRepairCodes.has(check.code)) return false;
+        return !check.targetValue || check.approvedEvidenceIds.length === 0;
+      });
+      if (untargetable.length) {
+        throw new AppError(
+          "FINAL_QA_REPAIR_UNREPAIRABLE",
+          `Blocking Final-QA checks lack a safe repair target or supporting evidence: ${untargetable
+            .map((check) => check.code)
+            .join(", ")}`,
+          422,
+          untargetable,
+        );
+      }
       const finalQaRepairDirective = {
         repairType: "final_qa_repair" as const,
         sourceVersion: latest.versionNumber,
         sourceVersionLabel: latest.versionLabel,
         attempt: 1,
-        failedChecks: failedChecks.map((check) => ({
-          code: check.code,
-          label: check.label,
-          status: check.status,
-          blocking: check.blocking,
-          detail: check.detail,
-        })),
-        approvedEvidenceIds: evidence.map((item) => item.publicId),
-        groundedTargets: knownTechnologies.slice(0, 8),
+        failedChecks: targetedChecks,
+        approvedEvidenceIds: [],
+        groundedTargets: [],
       };
 
       const repairPayload = withoutStageClaims({

@@ -98,6 +98,19 @@ function createMockPythonClient() {
         sources: [{ id: "src-1", url: "https://example.com", title: "Source", accessed_at: nowIso(), supporting_text: "text", confidence: "medium", classification: "explicit", relevance: 0.7 }],
         overall_confidence: 0.7,
         company_research_status: "available",
+        provider: "deterministic",
+        model: "internal",
+        latency_ms: 1,
+        usage: {
+          provider: "deterministic",
+          model: "internal",
+          prompt_version: "research@python-v1",
+          latency_ms: 1,
+          input_tokens: 0,
+          output_tokens: 0,
+          estimated_cost_cents: 0,
+          retry_count: 0,
+        },
       };
     }),
     matchEvidence: vi.fn(async () => {
@@ -105,6 +118,19 @@ function createMockPythonClient() {
       return {
         evidence_coverage: 0.85,
         rows: [{ requirement: "TypeScript", importance: "required", evidence_ids: ["ev_test"], evidence_strength: "strong", resume_usage: "use" }],
+        provider: "deterministic",
+        model: "internal",
+        latency_ms: 1,
+        usage: {
+          provider: "deterministic",
+          model: "internal",
+          prompt_version: "evidence-match@lexical-v1",
+          latency_ms: 1,
+          input_tokens: 0,
+          output_tokens: 0,
+          estimated_cost_cents: 0,
+          retry_count: 0,
+        },
       };
     }),
     generateResume: vi.fn(async () => {
@@ -161,8 +187,26 @@ function createMockPythonClient() {
     }),
     finalQa: vi.fn(async () => {
       pythonClientCalls.push("final-qa");
+      const required = [
+        "PRIMARY_TECHNOLOGY_EMPHASIS",
+        "HAS_SUMMARY",
+        "HAS_EXPERIENCE",
+        "DUPLICATE_BULLETS",
+        "REQUIRED_SECTIONS",
+        "EVIDENCE_LINKED",
+        "TECHNOLOGY_CLAIMS",
+        "SCORE_RUBRIC_PRESENT",
+        "CRITICAL_FINDINGS",
+        "EVIDENCE_REFERENCES",
+      ].map((code) => ({
+        code,
+        label: code,
+        status: "pass" as const,
+        blocking: true,
+        detail: "ok",
+      }));
       return {
-        data: { passed: true, checks: [{ code: "REQUIRED_SECTIONS", label: "Required sections", status: "pass", blocking: true, detail: "ok" }] },
+        data: { passed: true, checks: required },
         provider: "python",
         model: "mock",
         latencyMs: 3,
@@ -277,6 +321,66 @@ describe("workflow concurrency", () => {
     expect(queueForStage("EVIDENCE_MATCHING_COMPLETED")).toBeNull();
     expect(queueForStage("RESEARCH_QUEUED")).toBe("research");
     expect(queueForStage("V0_GENERATING")).toBe("resume-generation");
+  });
+
+  it("does not create billable provider-cost rows for deterministic research and matching", async () => {
+    const { repos, pipeline, userId, tenantId, store } = await setupWorkflowRuntime(false);
+    const applicationId = newId("app");
+    const applicationPublicId = newId("appp");
+    const run = await repos.workflows.createRun({
+      id: newId("wr"),
+      publicId: newId("wrp"),
+      tenantId,
+      applicationId,
+      applicationPublicId,
+      stage: "RESEARCH_RUNNING",
+      status: "running",
+      attempt: 1,
+      idempotencyKey: newId("deterministic-usage"),
+      maxAttempts: 5,
+      payload: { customerFacing: true, executionBackend: "python" },
+      startedAt: nowIso(),
+    });
+    await repos.applications.create({
+      id: applicationId,
+      publicId: applicationPublicId,
+      tenantId,
+      ownerUserId: userId,
+      company: "Acme",
+      companyMark: "AC",
+      role: "Engineer",
+      location: "Remote",
+      employmentType: "Full-time",
+      status: "researching",
+      stage: "RESEARCH_RUNNING",
+      workflowStage: "RESEARCH_RUNNING",
+      resumeScore: 0,
+      evidenceCoverage: 0,
+      atsAlignment: 0,
+      interviewStatus: "not-started",
+      researchConfidence: 0,
+      archived: false,
+      roleFamily: "General",
+      nextAction: "Research",
+      metadata: {
+        jobDescription: "Build production systems with TypeScript and Kubernetes.",
+        jobRequirements: ["TypeScript"],
+      },
+    });
+
+    await pipeline.handleStage(run, "RESEARCH_RUNNING");
+    const matchingRun = await repos.workflows.getById(run.id);
+    expect(matchingRun?.stage).toBe("EVIDENCE_MATCHING_RUNNING");
+    await pipeline.handleStage(matchingRun!, "EVIDENCE_MATCHING_RUNNING");
+
+    const rows = [...store.usageLedger.values()].filter((row) => row.workflowRunId === run.id);
+    const providerUsage = rows.filter((row) => String(row.idempotencyKey).endsWith(":provider-usage"));
+    expect(providerUsage).toHaveLength(2);
+    expect(providerUsage.every((row) => row.metadata?.provider === "deterministic")).toBe(true);
+    expect(providerUsage.every((row) => row.metadata?.billable === false)).toBe(true);
+    const providerCosts = rows.filter((row) => row.kind === "provider_cost");
+    expect(providerCosts).toHaveLength(2);
+    expect(providerCosts.some((row) => row.metadata?.billable === true)).toBe(false);
   });
 
   it("duplicate queue deliveries produce one provider generation", async () => {
