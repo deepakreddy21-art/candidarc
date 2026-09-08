@@ -77,6 +77,8 @@ export default function OnboardingPage() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [version, setVersion] = useState<number | undefined>();
+  const versionRef = useRef<number | undefined>(undefined);
+  const pendingSave = useRef<Promise<unknown> | null>(null);
   const [form, setForm] = useState<OnboardingFormState>(emptyOnboardingForm);
   const [errors, setErrors] = useState<Partial<Record<string, string>>>({});
   const [importStatus, setImportStatus] = useState<string | null>(null);
@@ -89,32 +91,41 @@ export default function OnboardingPage() {
     async (nextForm: OnboardingFormState, nextStep?: number, completed = false) => {
       setSaving(true);
       setSaveStatus(null);
-      try {
-        const result = await api.updateOnboardingProgress({
-          step: nextStep ?? step,
-          completed,
-          expectedVersion: version,
-          data: formToPayload(nextForm),
-        });
-        setVersion(result.version ?? result.profile.version);
-        if (typeof nextStep === "number") setStep(nextStep);
-        setSaveStatus("Saved");
-        return result;
-      } catch (err) {
-        const message = err instanceof ApiError ? err.message : "Could not save progress";
-        toast.error(message);
-        setSaveStatus("Save failed");
-        throw err;
-      } finally {
-        setSaving(false);
-      }
+      const run = async () => {
+        try {
+          const result = await api.updateOnboardingProgress({
+            step: nextStep ?? step,
+            completed,
+            data: formToPayload(nextForm),
+          });
+          const nextVersion = result.version ?? result.profile.version;
+          versionRef.current = nextVersion;
+          setVersion(nextVersion);
+          if (typeof nextStep === "number") setStep(nextStep);
+          setSaveStatus("Saved");
+          return result;
+        } catch (err) {
+          const message = err instanceof ApiError ? err.message : "Could not save progress";
+          toast.error(message);
+          setSaveStatus("Save failed");
+          throw err;
+        } finally {
+          setSaving(false);
+        }
+      };
+      const promise = run();
+      pendingSave.current = promise.finally(() => {
+        if (pendingSave.current === promise) pendingSave.current = null;
+      });
+      return promise;
     },
-    [step, version],
+    [step],
   );
 
   function patchForm(patch: Partial<OnboardingFormState>) {
     setForm((prev) => {
       const next = { ...prev, ...patch };
+      formRef.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         void persist(next).catch(() => undefined);
@@ -122,6 +133,21 @@ export default function OnboardingPage() {
       return next;
     });
     setErrors({});
+  }
+
+  async function flushPersist(
+    nextForm: OnboardingFormState,
+    nextStep?: number,
+    completed = false,
+  ) {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (pendingSave.current) {
+      await pendingSave.current.catch(() => undefined);
+    }
+    return persist(nextForm, nextStep, completed);
   }
 
   useEffect(() => {
@@ -136,7 +162,9 @@ export default function OnboardingPage() {
         setImportStatus(importState.status);
         setForm(profileToForm(saved.data, importState.extraction));
         setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
-        setVersion(saved.version ?? saved.data.version);
+        const loadedVersion = saved.version ?? saved.data.version;
+        versionRef.current = loadedVersion;
+        setVersion(loadedVersion);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           router.replace("/sign-in?next=/onboarding");
@@ -246,13 +274,14 @@ export default function OnboardingPage() {
   }
 
   async function handleContinue() {
-    const message = validateStepClient(step, form, importStatus);
+    const current = formRef.current;
+    const message = validateStepClient(step, current, importStatus);
     if (message) {
-      if (step === 0 && !form.targetRoles.length) setErrors({ targetRoles: message });
+      if (step === 0 && !current.targetRoles.length) setErrors({ targetRoles: message });
       else if (step === 0) setErrors({ seniority: message });
-      else if (step === 1 && !form.jobTypes.length) setErrors({ jobTypes: message });
+      else if (step === 1 && !current.jobTypes.length) setErrors({ jobTypes: message });
       else if (step === 1) setErrors({ workplaceModes: message });
-      else if (step === 2 && !form.fullName.trim()) setErrors({ fullName: message });
+      else if (step === 2 && !current.fullName.trim()) setErrors({ fullName: message });
       else setErrors({ career: message });
       toast.error(message);
       return;
@@ -260,7 +289,7 @@ export default function OnboardingPage() {
 
     if (step < 3) {
       try {
-        await persist(form, step + 1);
+        await flushPersist(current, step + 1);
       } catch {
         return;
       }
@@ -268,7 +297,7 @@ export default function OnboardingPage() {
     }
 
     try {
-      await persist(form, 3, true);
+      await flushPersist(current, 3, true);
       router.push("/onboarding/complete");
     } catch {
       return;
@@ -278,7 +307,7 @@ export default function OnboardingPage() {
   async function handleBack() {
     if (step === 0) return;
     try {
-      await persist(form, step - 1);
+      await flushPersist(formRef.current, step - 1);
     } catch {
       setStep(step - 1);
     }
@@ -334,7 +363,7 @@ export default function OnboardingPage() {
           form={form}
           importStatus={importStatus}
           onEditStep={(next) => {
-            void persist(form, next).catch(() => setStep(next));
+            void flushPersist(formRef.current, next).catch(() => setStep(next));
           }}
         />
       ) : null}

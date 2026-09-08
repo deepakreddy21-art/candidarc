@@ -62,6 +62,7 @@ export function ChipInput({
         {values.map((value) => (
           <span
             key={value}
+            data-testid={`chip-${value}`}
             className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-2 px-2.5 py-1 text-xs text-foreground"
           >
             {value}
@@ -96,7 +97,7 @@ export function ChipInput({
         />
       </div>
       {filtered.length > 0 ? (
-        <ul className="flex flex-wrap gap-2" role="listbox" aria-label={`${label} suggestions`}>
+        <ul className="flex flex-wrap gap-2" role="listbox" aria-label="Suggestions">
           {filtered.map((suggestion) => (
             <li key={suggestion}>
               <button
