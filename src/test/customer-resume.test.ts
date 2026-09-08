@@ -90,7 +90,7 @@ describe("customer resume generation", () => {
     for (const stage of ["V0_GENERATING", "HR_AUDIT_1_REVIEW", "EM_AUDIT_2_RUNNING", "RESEARCH_QUEUED", "REVISING"]) {
       const mapped = mapInternalStageToCustomer(stage);
       expect(JSON.stringify(mapped)).not.toMatch(/V0|HR_AUDIT|EM_AUDIT|RESEARCH_QUEUED|REVISING/);
-      expect(["Understanding role", "Tailoring experience", "Preparing documents"]).toContain(mapped.pipelineLabel);
+      expect(["Researching the role", "Tailoring your resume", "Quality checking"]).toContain(mapped.pipelineLabel);
     }
   });
 
@@ -238,7 +238,7 @@ describe("customer resume generation", () => {
     expect(source).not.toContain("setTimeout(");
     expect(source).not.toMatch(/You may close this page/i);
     expect(source).not.toMatch(/HR Audit|EM Audit|HR_AUDIT|EM_AUDIT|\bV0\b|token usage|BullMQ|OpenAI|Anthropic/i);
-    expect(source).toContain("Understanding role");
+    expect(source).toContain("Researching the role");
     expect(source).toContain("Refine this resume");
     expect(source).toContain("Create new version");
   });
