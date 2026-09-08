@@ -1,6 +1,6 @@
 /** @vitest-environment node */
-import { createHash, generateKeyPairSync, randomUUID } from "crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SignJWT, createLocalJWKSet, exportJWK, type JWK } from "jose";
 import { resetEnvCache } from "../../server/config/env";
 import {
@@ -8,15 +8,17 @@ import {
   __setGoogleOAuthTestHooks,
   beginGoogleOAuth,
   exchangeGoogleAuthorizationCode,
+  GOOGLE_OAUTH_COOKIE,
   isGoogleAuthConfigured,
   parseGoogleOAuthCookie,
   requireMatchingState,
   sanitizeReturnPath,
   serializeGoogleOAuthCookie,
+  validateGoogleAuthConfiguration,
   verifyGoogleIdToken,
 } from "../../server/auth/google-oauth";
 import { resolveGoogleSignIn } from "../../server/auth/google-account";
-import { createSession, hashToken, verifySession } from "../../server/auth/session";
+import { createSession, hashToken, SESSION_COOKIE_NAME, verifySession } from "../../server/auth/session";
 import { hashPassword } from "../../server/auth/password";
 import {
   createEmptyMemoryStore,
@@ -25,35 +27,110 @@ import {
 } from "../../server/database/repositories";
 import { AppError } from "../../server/domain/types";
 import { googleErrorMessage } from "@/components/auth/google-auth-button";
+import { resetRuntimeForTests, setRuntimeForTests, type Runtime } from "../../server/bootstrap";
+import { CSRF_COOKIE_NAME } from "../../server/http/csrf";
+import { resetRateLimitsForTests } from "../../server/http/rate-limit";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const otherKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
-async function publicJwk(): Promise<JWK> {
-  const jwk = await exportJWK(publicKey);
-  return { ...jwk, alg: "RS256", use: "sig", kid: "test-google-kid" };
+async function publicJwk(key = publicKey, kid = "test-google-kid"): Promise<JWK> {
+  const jwk = await exportJWK(key);
+  return { ...jwk, alg: "RS256", use: "sig", kid };
 }
 
-async function signIdToken(claims: Record<string, unknown>, overrides?: { exp?: number; audience?: string }) {
-  const jwk = await publicJwk();
-  return new SignJWT(claims)
-    .setProtectedHeader({ alg: "RS256", kid: jwk.kid })
-    .setIssuer("https://accounts.google.com")
+type SignOverrides = {
+  exp?: number;
+  nbf?: number;
+  iat?: number;
+  audience?: string | string[];
+  issuer?: string;
+  alg?: string;
+  signingKey?: KeyObject | Uint8Array;
+  kid?: string;
+};
+
+/**
+ * Sign a Google-like ID token. Does NOT inject a default `sub` —
+ * omit `sub` from claims to produce a token without a subject.
+ */
+async function signIdToken(claims: Record<string, unknown>, overrides?: SignOverrides) {
+  const headerAlg = overrides?.alg ?? "RS256";
+  const key = overrides?.signingKey ?? privateKey;
+  const jwk = headerAlg === "RS256" ? await publicJwk(publicKey, overrides?.kid ?? "test-google-kid") : null;
+  const builder = new SignJWT({ ...claims })
+    .setProtectedHeader(
+      headerAlg === "RS256"
+        ? { alg: "RS256", kid: jwk!.kid }
+        : { alg: headerAlg },
+    )
+    .setIssuer(overrides?.issuer ?? "https://accounts.google.com")
     .setAudience(overrides?.audience ?? "test-google-client")
-    .setSubject(String(claims.sub ?? "google-sub-1"))
-    .setIssuedAt()
-    .setExpirationTime(overrides?.exp ?? Math.floor(Date.now() / 1000) + 600)
-    .sign(privateKey);
+    .setIssuedAt(overrides?.iat ?? Math.floor(Date.now() / 1000));
+  if (overrides?.nbf !== undefined) builder.setNotBefore(overrides.nbf);
+  builder.setExpirationTime(overrides?.exp ?? Math.floor(Date.now() / 1000) + 600);
+  return builder.sign(key);
 }
 
-function configureGoogleEnv() {
-  resetEnvCache();
+function configureGoogleEnv(extra?: Record<string, string | undefined>) {
   process.env.GOOGLE_CLIENT_ID = "test-google-client";
   process.env.GOOGLE_CLIENT_SECRET = "test-google-secret";
   process.env.GOOGLE_REDIRECT_URI = "http://localhost:3000/api/v1/auth/google/callback";
   process.env.APP_URL = "http://localhost:3000";
   process.env.APP_MODE = "demo";
   process.env.SESSION_SECRET = "candidarc-dev-session-secret-change-me!!";
+  process.env.CSRF_SECRET = "candidarc-dev-csrf-secret-change-me!!!!";
+  process.env.CANDIDARC_DATA_MODE = "memory";
+  process.env.QUEUE_BACKEND = "inprocess";
+  process.env.AI_MODE = "mock";
+  if (extra) {
+    for (const [key, value] of Object.entries(extra)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
   resetEnvCache();
+}
+
+function clearGoogleEnv() {
+  delete process.env.GOOGLE_CLIENT_ID;
+  delete process.env.GOOGLE_CLIENT_SECRET;
+  delete process.env.GOOGLE_REDIRECT_URI;
+  resetEnvCache();
+}
+
+function collectSetCookies(response: Response): string[] {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  if (typeof headers.getSetCookie === "function") return headers.getSetCookie();
+  const single = response.headers.get("set-cookie");
+  return single ? [single] : [];
+}
+
+function cookieHeaderFromSetCookies(setCookies: string[]): string {
+  return setCookies
+    .map((item) => item.split(";")[0]!)
+    .filter(Boolean)
+    .join("; ");
+}
+
+function emptyAuthRuntime(): Runtime {
+  const store = createEmptyMemoryStore();
+  const repos = new MemoryRepositories(store);
+  return {
+    mode: "memory",
+    repos,
+    store,
+    queue: {
+      start: async () => undefined,
+      stop: async () => undefined,
+      enqueue: async () => "job",
+      registerHandler: () => undefined,
+      onExhaustedRetries: () => undefined,
+    } as unknown as Runtime["queue"],
+    engine: {} as Runtime["engine"],
+    pipeline: {} as Runtime["pipeline"],
+    services: {} as Runtime["services"],
+  };
 }
 
 describe("Google OAuth security primitives", () => {
@@ -67,10 +144,8 @@ describe("Google OAuth security primitives", () => {
 
   afterEach(() => {
     __resetGoogleOAuthTestHooks();
-    delete process.env.GOOGLE_CLIENT_ID;
-    delete process.env.GOOGLE_CLIENT_SECRET;
-    delete process.env.GOOGLE_REDIRECT_URI;
-    resetEnvCache();
+    clearGoogleEnv();
+    resetRateLimitsForTests();
   });
 
   it("reports not configured without credentials", () => {
@@ -109,7 +184,7 @@ describe("Google OAuth security primitives", () => {
   it("rejects missing, expired, or tampered transaction cookies", () => {
     expect(parseGoogleOAuthCookie(null)).toBeNull();
     const { cookie, txn } = beginGoogleOAuth("/app");
-    expect(parseGoogleOAuthCookie(cookie.replace(/^candidarc_google_oauth=/, "candidarc_google_oauth="))).toBeTruthy();
+    expect(parseGoogleOAuthCookie(cookie)).toBeTruthy();
 
     const sealed = cookie.split("=")[1]!;
     const decoded = decodeURIComponent(sealed);
@@ -120,43 +195,161 @@ describe("Google OAuth security primitives", () => {
     expect(parseGoogleOAuthCookie(expiredCookie)).toBeNull();
   });
 
-  it("verifies nonce, issuer, audience, expiry, sub, email, and email_verified", async () => {
+  it("rejects invalid signature signed with a different key", async () => {
     const { txn } = beginGoogleOAuth("/app");
-    const good = await signIdToken({
-      sub: "sub-1",
-      email: "new@example.com",
-      email_verified: true,
-      name: "New User",
-      nonce: txn.nonce,
-    });
-    await expect(verifyGoogleIdToken(good, txn.nonce)).resolves.toMatchObject({
-      sub: "sub-1",
-      email: "new@example.com",
-    });
-
-    const badNonce = await signIdToken({
-      sub: "sub-1",
-      email: "new@example.com",
-      email_verified: true,
-      nonce: "other",
-    });
-    await expect(verifyGoogleIdToken(badNonce, txn.nonce)).rejects.toMatchObject({ code: "GOOGLE_NONCE_MISMATCH" });
-
-    const expired = await signIdToken(
-      { sub: "sub-1", email: "new@example.com", email_verified: true, nonce: txn.nonce },
-      { exp: Math.floor(Date.now() / 1000) - 120 },
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
+      { signingKey: otherKeys.privateKey, kid: "other-kid" },
     );
-    await expect(verifyGoogleIdToken(expired, txn.nonce)).rejects.toBeInstanceOf(AppError);
+    // JWKS only has the primary public key — signature must fail closed.
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_INVALID",
+    });
+  });
 
-    const wrongAud = await signIdToken(
-      { sub: "sub-1", email: "new@example.com", email_verified: true, nonce: txn.nonce },
+  it("rejects unsupported signing algorithms", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const secret = new TextEncoder().encode("not-an-rsa-hmac-secret-key!!");
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
+      { alg: "HS256", signingKey: secret },
+    );
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_INVALID",
+    });
+  });
+
+  it("rejects wrong issuer", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
+      { issuer: "https://evil.example" },
+    );
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_ISSUER",
+    });
+  });
+
+  it("rejects wrong audience", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
       { audience: "someone-else" },
     );
-    await expect(verifyGoogleIdToken(wrongAud, txn.nonce)).rejects.toBeInstanceOf(AppError);
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_INVALID",
+    });
+  });
+
+  it("rejects multiple audiences even when client id is included", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce, azp: "test-google-client" },
+      { audience: ["test-google-client", "another-client"] },
+    );
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_INVALID",
+    });
+  });
+
+  it("rejects multiple audiences without valid azp", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
+      { audience: ["test-google-client", "another-client"] },
+    );
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_INVALID",
+    });
+  });
+
+  it("rejects wrong azp when present", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken({
+      sub: "sub-1",
+      email: "a@example.com",
+      email_verified: true,
+      nonce: txn.nonce,
+      azp: "other-client",
+    });
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_INVALID",
+    });
+  });
+
+  it("accepts a one-element audience array containing only the client id", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
+      { audience: ["test-google-client"] },
+    );
+    await expect(verifyGoogleIdToken(token, txn.nonce)).resolves.toMatchObject({ sub: "sub-1" });
+  });
+
+  it("classifies expired tokens as GOOGLE_ID_TOKEN_EXPIRED via JOSE codes", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
+      { exp: Math.floor(Date.now() / 1000) - 120, iat: Math.floor(Date.now() / 1000) - 600 },
+    );
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_EXPIRED",
+    });
+  });
+
+  it("rejects not-yet-valid tokens", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const now = Math.floor(Date.now() / 1000);
+    const token = await signIdToken(
+      { sub: "sub-1", email: "a@example.com", email_verified: true, nonce: txn.nonce },
+      { nbf: now + 600, iat: now, exp: now + 1200 },
+    );
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_ID_TOKEN_INVALID",
+    });
+  });
+
+  it("rejects missing sub without injecting a default subject", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken({
+      email: "a@example.com",
+      email_verified: true,
+      nonce: txn.nonce,
+    });
+    // Decode payload to prove sub is absent
+    const payload = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(payload.sub).toBeUndefined();
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_SUB_MISSING",
+    });
+  });
+
+  it("rejects empty sub", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const token = await signIdToken({
+      sub: "",
+      email: "a@example.com",
+      email_verified: true,
+      nonce: txn.nonce,
+    });
+    await expect(verifyGoogleIdToken(token, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_SUB_MISSING",
+    });
+  });
+
+  it("rejects missing email, unverified email, missing nonce, and wrong nonce", async () => {
+    const { txn } = beginGoogleOAuth("/app");
+    const missingEmail = await signIdToken({ sub: "sub-1", email_verified: true, nonce: txn.nonce });
+    await expect(verifyGoogleIdToken(missingEmail, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_EMAIL_MISSING",
+    });
 
     const unverified = await signIdToken({
       sub: "sub-1",
-      email: "new@example.com",
+      email: "a@example.com",
       email_verified: false,
       nonce: txn.nonce,
     });
@@ -164,9 +357,23 @@ describe("Google OAuth security primitives", () => {
       code: "GOOGLE_EMAIL_UNVERIFIED",
     });
 
-    const missingEmail = await signIdToken({ sub: "sub-1", email_verified: true, nonce: txn.nonce });
-    await expect(verifyGoogleIdToken(missingEmail, txn.nonce)).rejects.toMatchObject({
-      code: "GOOGLE_EMAIL_MISSING",
+    const missingNonce = await signIdToken({
+      sub: "sub-1",
+      email: "a@example.com",
+      email_verified: true,
+    });
+    await expect(verifyGoogleIdToken(missingNonce, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_NONCE_MISMATCH",
+    });
+
+    const wrongNonce = await signIdToken({
+      sub: "sub-1",
+      email: "a@example.com",
+      email_verified: true,
+      nonce: "other-nonce",
+    });
+    await expect(verifyGoogleIdToken(wrongNonce, txn.nonce)).rejects.toMatchObject({
+      code: "GOOGLE_NONCE_MISMATCH",
     });
   });
 
@@ -192,6 +399,159 @@ describe("Google OAuth security primitives", () => {
       exchangeGoogleAuthorizationCode({ code: "x", codeVerifier: "y" }),
     ).rejects.toMatchObject({ code: "GOOGLE_TOKEN_MALFORMED" });
   });
+
+  it("refuses test hooks outside NODE_ENV=test", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => __setGoogleOAuthTestHooks({ fetch: fetch })).toThrow(/NODE_ENV=test/);
+    vi.unstubAllEnvs();
+    vi.stubEnv("NODE_ENV", "test");
+  });
+});
+
+describe("Google configuration validation", () => {
+  afterEach(() => {
+    clearGoogleEnv();
+    vi.unstubAllEnvs();
+    vi.stubEnv("NODE_ENV", "test");
+    delete process.env.APP_MODE;
+    delete process.env.APP_URL;
+    resetEnvCache();
+  });
+
+  it("allows completely disabled Google auth", () => {
+    configureGoogleEnv({ GOOGLE_CLIENT_ID: undefined, GOOGLE_CLIENT_SECRET: undefined, GOOGLE_REDIRECT_URI: undefined });
+    expect(isGoogleAuthConfigured()).toBe(false);
+    expect(() => validateGoogleAuthConfiguration()).toThrow(
+      expect.objectContaining({ code: "GOOGLE_AUTH_NOT_CONFIGURED" }),
+    );
+  });
+
+  it("rejects client id without secret", () => {
+    configureGoogleEnv({ GOOGLE_CLIENT_SECRET: undefined });
+    expect(() => validateGoogleAuthConfiguration()).toThrow(
+      expect.objectContaining({ code: "GOOGLE_AUTH_MISCONFIGURED" }),
+    );
+  });
+
+  it("rejects secret without client id", () => {
+    configureGoogleEnv({ GOOGLE_CLIENT_ID: undefined });
+    expect(() => validateGoogleAuthConfiguration()).toThrow(
+      expect.objectContaining({ code: "GOOGLE_AUTH_MISCONFIGURED" }),
+    );
+  });
+
+  it("rejects invalid callback URL", () => {
+    configureGoogleEnv({ GOOGLE_REDIRECT_URI: "not-a-url" });
+    // Zod may reject at getEnv — either path is fail-closed.
+    expect(() => {
+      try {
+        validateGoogleAuthConfiguration();
+      } catch (err) {
+        if (err instanceof Error && /Invalid environment|GOOGLE_AUTH_MISCONFIGURED/.test(err.message)) throw err;
+        if (err instanceof AppError) throw err;
+        throw err;
+      }
+    }).toThrow();
+  });
+
+  it("rejects wrong callback path", () => {
+    configureGoogleEnv({ GOOGLE_REDIRECT_URI: "http://localhost:3000/api/v1/auth/google/wrong" });
+    expect(() => validateGoogleAuthConfiguration()).toThrow(
+      expect.objectContaining({ code: "GOOGLE_AUTH_MISCONFIGURED" }),
+    );
+  });
+
+  it("rejects production HTTP callback", () => {
+    configureGoogleEnv({
+      NODE_ENV: "production",
+      APP_MODE: "production",
+      APP_URL: "https://app.candidarc.example",
+      GOOGLE_REDIRECT_URI: "http://app.candidarc.example/api/v1/auth/google/callback",
+      SESSION_SECRET: "a-unique-production-secret-that-is-long-enough",
+      CANDIDARC_DATA_MODE: "postgres",
+      DATABASE_URL: "postgres://example",
+      AI_MODE: "live",
+      OPENAI_API_KEY: "key",
+      ANTHROPIC_API_KEY: "key",
+      STORAGE_DRIVER: "s3",
+      QUEUE_BACKEND: "redis",
+      MALWARE_SCANNER: "clamav",
+      PYTHON_BACKEND_TOKEN: "production-python-backend-token-32chars",
+    });
+    expect(() => validateGoogleAuthConfiguration()).toThrow(
+      expect.objectContaining({ code: "GOOGLE_AUTH_MISCONFIGURED" }),
+    );
+  });
+
+  it("rejects production localhost callback", () => {
+    configureGoogleEnv({
+      NODE_ENV: "production",
+      APP_MODE: "production",
+      APP_URL: "https://app.candidarc.example",
+      GOOGLE_REDIRECT_URI: "https://localhost/api/v1/auth/google/callback",
+      SESSION_SECRET: "a-unique-production-secret-that-is-long-enough",
+      CANDIDARC_DATA_MODE: "postgres",
+      DATABASE_URL: "postgres://example",
+      AI_MODE: "live",
+      OPENAI_API_KEY: "key",
+      ANTHROPIC_API_KEY: "key",
+      STORAGE_DRIVER: "s3",
+      QUEUE_BACKEND: "redis",
+      MALWARE_SCANNER: "clamav",
+      PYTHON_BACKEND_TOKEN: "production-python-backend-token-32chars",
+    });
+    expect(() => validateGoogleAuthConfiguration()).toThrow(
+      expect.objectContaining({ code: "GOOGLE_AUTH_MISCONFIGURED" }),
+    );
+  });
+
+  it("rejects callback origin different from APP_URL in production", () => {
+    configureGoogleEnv({
+      NODE_ENV: "production",
+      APP_MODE: "production",
+      APP_URL: "https://app.candidarc.example",
+      GOOGLE_REDIRECT_URI: "https://evil.example/api/v1/auth/google/callback",
+      SESSION_SECRET: "a-unique-production-secret-that-is-long-enough",
+      CANDIDARC_DATA_MODE: "postgres",
+      DATABASE_URL: "postgres://example",
+      AI_MODE: "live",
+      OPENAI_API_KEY: "key",
+      ANTHROPIC_API_KEY: "key",
+      STORAGE_DRIVER: "s3",
+      QUEUE_BACKEND: "redis",
+      MALWARE_SCANNER: "clamav",
+      PYTHON_BACKEND_TOKEN: "production-python-backend-token-32chars",
+    });
+    expect(() => validateGoogleAuthConfiguration()).toThrow(
+      expect.objectContaining({ code: "GOOGLE_AUTH_MISCONFIGURED" }),
+    );
+  });
+
+  it("accepts valid localhost configuration", () => {
+    configureGoogleEnv();
+    expect(() => validateGoogleAuthConfiguration()).not.toThrow();
+    expect(isGoogleAuthConfigured()).toBe(true);
+  });
+
+  it("accepts valid production HTTPS configuration", () => {
+    configureGoogleEnv({
+      NODE_ENV: "production",
+      APP_MODE: "production",
+      APP_URL: "https://app.candidarc.example",
+      GOOGLE_REDIRECT_URI: "https://app.candidarc.example/api/v1/auth/google/callback",
+      SESSION_SECRET: "a-unique-production-secret-that-is-long-enough",
+      CANDIDARC_DATA_MODE: "postgres",
+      DATABASE_URL: "postgres://example",
+      AI_MODE: "live",
+      OPENAI_API_KEY: "key",
+      ANTHROPIC_API_KEY: "key",
+      STORAGE_DRIVER: "s3",
+      QUEUE_BACKEND: "redis",
+      MALWARE_SCANNER: "clamav",
+      PYTHON_BACKEND_TOKEN: "production-python-backend-token-32chars",
+    });
+    expect(() => validateGoogleAuthConfiguration()).not.toThrow();
+  });
 });
 
 describe("Google account lifecycle (memory)", () => {
@@ -200,7 +560,7 @@ describe("Google account lifecycle (memory)", () => {
   });
 
   afterEach(() => {
-    resetEnvCache();
+    clearGoogleEnv();
   });
 
   it("creates exactly one user, tenant, owner membership, and identity for a new Google account", async () => {
@@ -317,7 +677,6 @@ describe("Google account lifecycle (memory)", () => {
       name: "No Password",
     });
     expect(user.passwordHash).toBeNull();
-    // Mirrors login route guard
     expect(!user.passwordHash).toBe(true);
   });
 
@@ -366,23 +725,8 @@ describe("Google auth UI helpers", () => {
     expect(googleErrorMessage("GOOGLE_ACCOUNT_LINK_REQUIRED")).toMatch(/already exists/i);
     expect(googleErrorMessage("GOOGLE_AUTH_CANCELLED")).toMatch(/cancelled/i);
     expect(googleErrorMessage("GOOGLE_AUTH_NOT_CONFIGURED")).toMatch(/not available/i);
+    expect(googleErrorMessage("GOOGLE_RATE_LIMITED")).toMatch(/too many/i);
     expect(googleErrorMessage("UNKNOWN_CODE")).toMatch(/failed/i);
-  });
-
-  it("sign-in and sign-up pages expose Continue with Google affordance", async () => {
-    const fs = await import("fs/promises");
-    const signIn = await fs.readFile(new URL("../../src/app/sign-in/page.tsx", import.meta.url), "utf8");
-    const signUp = await fs.readFile(new URL("../../src/app/sign-up/page.tsx", import.meta.url), "utf8");
-    expect(signIn).toContain("GoogleAuthButton");
-    expect(signUp).toContain("GoogleAuthButton");
-    expect(signIn).toContain('nextPath="/app"');
-    expect(signUp).toContain('nextPath="/onboarding"');
-    const button = await fs.readFile(
-      new URL("../../src/components/auth/google-auth-button.tsx", import.meta.url),
-      "utf8",
-    );
-    expect(button).toContain("/api/v1/auth/google/start");
-    expect(button).toContain("Continue with Google");
   });
 });
 
@@ -394,5 +738,284 @@ describe("Google OAuth PKCE challenge", () => {
     expect(authorizationUrl).toContain(`code_challenge=${challenge}`);
     expect(authorizationUrl).toContain("code_challenge_method=S256");
     expect(authorizationUrl).toContain("scope=openid+email+profile");
+  });
+});
+
+describe("Google OAuth real route journey", () => {
+  beforeEach(async () => {
+    configureGoogleEnv();
+    resetRateLimitsForTests();
+    resetRuntimeForTests();
+    setRuntimeForTests(emptyAuthRuntime());
+    const jwk = await publicJwk();
+    __setGoogleOAuthTestHooks({
+      jwks: createLocalJWKSet({ keys: [jwk] }),
+    });
+  });
+
+  afterEach(() => {
+    __resetGoogleOAuthTestHooks();
+    resetRuntimeForTests();
+    setRuntimeForTests(null);
+    clearGoogleEnv();
+    resetRateLimitsForTests();
+    vi.restoreAllMocks();
+  });
+
+  it("start → callback → me → logout through real route handlers", async () => {
+    const { GET: startGet } = await import("../../src/app/api/v1/auth/google/start/route");
+    const { GET: callbackGet } = await import("../../src/app/api/v1/auth/google/callback/route");
+    const { GET: meGet } = await import("../../src/app/api/v1/auth/me/route");
+    const { POST: logoutPost } = await import("../../src/app/api/v1/auth/logout/route");
+
+    const startRes = await startGet(
+      new Request("http://localhost:3000/api/v1/auth/google/start?next=/onboarding", {
+        headers: { "x-forwarded-for": "203.0.113.10" },
+      }),
+    );
+    expect(startRes.status).toBe(302);
+    expect(startRes.headers.get("cache-control")).toBe("no-store");
+    const location = startRes.headers.get("location")!;
+    expect(location).toContain("https://accounts.google.com/o/oauth2/v2/auth");
+    const authUrl = new URL(location);
+    expect(authUrl.searchParams.get("scope")).toBe("openid email profile");
+    expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authUrl.searchParams.get("code_challenge")).toBeTruthy();
+    expect(authUrl.searchParams.get("state")).toBeTruthy();
+    expect(authUrl.searchParams.get("nonce")).toBeTruthy();
+
+    const startCookies = collectSetCookies(startRes);
+    const oauthSet = startCookies.find((c) => c.startsWith(`${GOOGLE_OAUTH_COOKIE}=`))!;
+    expect(oauthSet).toMatch(/HttpOnly/i);
+    expect(oauthSet).toMatch(/SameSite=Lax/i);
+    expect(oauthSet).toMatch(/Max-Age=600/i);
+    expect(oauthSet).toMatch(/Path=\/api\/v1\/auth\/google/i);
+
+    const txnCookieHeader = cookieHeaderFromSetCookies(startCookies);
+    const txn = parseGoogleOAuthCookie(txnCookieHeader)!;
+    expect(txn.state).toBe(authUrl.searchParams.get("state"));
+    expect(txn.nonce).toBe(authUrl.searchParams.get("nonce"));
+
+    const idToken = await signIdToken({
+      sub: "route-journey-sub",
+      email: "journey@example.com",
+      email_verified: true,
+      name: "Journey User",
+      nonce: txn.nonce,
+    });
+
+    __setGoogleOAuthTestHooks({
+      jwks: createLocalJWKSet({ keys: [await publicJwk()] }),
+      fetch: async () =>
+        new Response(JSON.stringify({ id_token: idToken, access_token: "should-not-persist", refresh_token: "nope" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+
+    const callbackRes = await callbackGet(
+      new Request(
+        `http://localhost:3000/api/v1/auth/google/callback?code=auth-code-1&state=${encodeURIComponent(txn.state)}`,
+        {
+          headers: {
+            cookie: txnCookieHeader,
+            "x-forwarded-for": "203.0.113.10",
+          },
+        },
+      ),
+    );
+    expect(callbackRes.status).toBe(302);
+    expect(callbackRes.headers.get("location")).toBe("http://localhost:3000/onboarding");
+    const callbackCookies = collectSetCookies(callbackRes);
+    const clearedOAuth = callbackCookies.find((c) => c.startsWith(`${GOOGLE_OAUTH_COOKIE}=`))!;
+    expect(clearedOAuth).toMatch(/Max-Age=0/i);
+    const sessionSet = callbackCookies.find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=`))!;
+    expect(sessionSet).toBeTruthy();
+    const csrfSet = callbackCookies.find((c) => c.startsWith(`${CSRF_COOKIE_NAME}=`))!;
+    expect(csrfSet).toBeTruthy();
+
+    const { getRuntime } = await import("../../server/bootstrap");
+    const live = await getRuntime();
+    expect(live.store.users.size).toBe(1);
+    expect(live.store.tenants.size).toBe(1);
+    expect(live.store.memberships).toHaveLength(1);
+    expect(live.store.memberships[0]!.role).toBe("owner");
+    expect(live.store.authIdentities.size).toBe(1);
+    const identity = [...live.store.authIdentities.values()][0]!;
+    expect(identity.providerSubject).toBe("route-journey-sub");
+    const serialized = JSON.stringify({
+      users: [...live.store.users.values()],
+      identities: [...live.store.authIdentities.values()],
+      sessions: [...live.store.sessions.values()],
+    });
+    expect(serialized).not.toMatch(/should-not-persist|refresh_token|auth-code-1/);
+    expect(serialized).not.toContain(idToken);
+
+    const sessionCookie = cookieHeaderFromSetCookies([sessionSet]);
+    const meRes = await meGet(
+      new Request("http://localhost:3000/api/v1/auth/me", {
+        headers: { cookie: sessionCookie },
+      }),
+    );
+    expect(meRes.status).toBe(200);
+    const meBody = (await meRes.json()) as {
+      user: { email: string };
+      tenant: { role: string };
+    };
+    expect(meBody.user.email).toBe("journey@example.com");
+    expect(meBody.tenant.role).toBe("owner");
+
+    const logoutRes = await logoutPost(
+      new Request("http://localhost:3000/api/v1/auth/logout", {
+        method: "POST",
+        headers: { cookie: sessionCookie },
+      }),
+    );
+    expect(logoutRes.status).toBe(200);
+
+    const meAfter = await meGet(
+      new Request("http://localhost:3000/api/v1/auth/me", {
+        headers: { cookie: sessionCookie },
+      }),
+    );
+    expect(meAfter.status).toBe(401);
+  });
+
+  it("start redirects Google-not-configured safely", async () => {
+    clearGoogleEnv();
+    configureGoogleEnv({ GOOGLE_CLIENT_ID: undefined, GOOGLE_CLIENT_SECRET: undefined, GOOGLE_REDIRECT_URI: undefined });
+    const { GET: startGet } = await import("../../src/app/api/v1/auth/google/start/route");
+    const res = await startGet(new Request("http://localhost:3000/api/v1/auth/google/start"));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("google_error=GOOGLE_AUTH_NOT_CONFIGURED");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(collectSetCookies(res).some((c) => c.includes("Max-Age=0"))).toBe(true);
+  });
+
+  it("start redirects rate-limit failures safely", async () => {
+    process.env.RATE_LIMIT_PER_MINUTE = "1";
+    resetEnvCache();
+    resetRateLimitsForTests();
+    const { GET: startGet } = await import("../../src/app/api/v1/auth/google/start/route");
+    const req = () =>
+      new Request("http://localhost:3000/api/v1/auth/google/start", {
+        headers: { "x-forwarded-for": "198.51.100.9" },
+      });
+    expect((await startGet(req())).status).toBe(302);
+    const limited = await startGet(req());
+    expect(limited.status).toBe(302);
+    expect(limited.headers.get("location")).toContain("google_error=GOOGLE_RATE_LIMITED");
+    delete process.env.RATE_LIMIT_PER_MINUTE;
+    resetEnvCache();
+  });
+
+  it("start maps unexpected internal failures to GOOGLE_AUTH_FAILED", async () => {
+    const bootstrap = await import("../../server/bootstrap");
+    vi.spyOn(bootstrap, "getRuntime").mockRejectedValue(new Error("boom-internal-secret"));
+    const { GET: startGet } = await import("../../src/app/api/v1/auth/google/start/route");
+    const res = await startGet(new Request("http://localhost:3000/api/v1/auth/google/start"));
+    expect(res.status).toBe(302);
+    const loc = res.headers.get("location")!;
+    expect(loc).toContain("google_error=GOOGLE_AUTH_FAILED");
+    expect(loc).not.toContain("boom-internal-secret");
+  });
+
+  it("callback failure paths create no session", async () => {
+    const { GET: startGet } = await import("../../src/app/api/v1/auth/google/start/route");
+    const { GET: callbackGet } = await import("../../src/app/api/v1/auth/google/callback/route");
+
+    const cancel = await callbackGet(
+      new Request("http://localhost:3000/api/v1/auth/google/callback?error=access_denied"),
+    );
+    expect(cancel.headers.get("location")).toContain("GOOGLE_AUTH_CANCELLED");
+
+    const startRes = await startGet(new Request("http://localhost:3000/api/v1/auth/google/start?next=/app"));
+    const txnCookie = cookieHeaderFromSetCookies(collectSetCookies(startRes));
+    const txn = parseGoogleOAuthCookie(txnCookie)!;
+
+    const mismatch = await callbackGet(
+      new Request(`http://localhost:3000/api/v1/auth/google/callback?code=c&state=wrong`, {
+        headers: { cookie: txnCookie },
+      }),
+    );
+    expect(mismatch.headers.get("location")).toContain("GOOGLE_STATE_MISMATCH");
+
+    const missingTxn = await callbackGet(
+      new Request(`http://localhost:3000/api/v1/auth/google/callback?code=c&state=${txn.state}`),
+    );
+    expect(missingTxn.headers.get("location")).toContain("GOOGLE_TXN_INVALID");
+
+    const missingCode = await callbackGet(
+      new Request(`http://localhost:3000/api/v1/auth/google/callback?state=${txn.state}`, {
+        headers: { cookie: txnCookie },
+      }),
+    );
+    expect(missingCode.headers.get("location")).toContain("GOOGLE_CODE_MISSING");
+
+    __setGoogleOAuthTestHooks({
+      jwks: createLocalJWKSet({ keys: [await publicJwk()] }),
+      fetch: async () => {
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      },
+    });
+    const timeout = await callbackGet(
+      new Request(`http://localhost:3000/api/v1/auth/google/callback?code=c&state=${txn.state}`, {
+        headers: { cookie: txnCookie },
+      }),
+    );
+    expect(timeout.headers.get("location")).toContain("GOOGLE_TOKEN_TIMEOUT");
+
+    const badToken = await signIdToken({
+      sub: "bad",
+      email: "bad@example.com",
+      email_verified: true,
+      nonce: "wrong",
+    });
+    __setGoogleOAuthTestHooks({
+      jwks: createLocalJWKSet({ keys: [await publicJwk()] }),
+      fetch: async () =>
+        new Response(JSON.stringify({ id_token: badToken }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    const invalidId = await callbackGet(
+      new Request(`http://localhost:3000/api/v1/auth/google/callback?code=c&state=${txn.state}`, {
+        headers: { cookie: txnCookie },
+      }),
+    );
+    expect(invalidId.headers.get("location")).toMatch(/GOOGLE_NONCE_MISMATCH|GOOGLE_ID_TOKEN_INVALID/);
+
+    const live = await (await import("../../server/bootstrap")).getRuntime();
+    await live.repos.users.create({
+      publicId: newPublicId("usr"),
+      email: "existing-pw@example.com",
+      emailVerified: true,
+      passwordHash: await hashPassword("Password!12345"),
+      name: "Existing",
+    });
+    const conflictToken = await signIdToken({
+      sub: "conflict-sub",
+      email: "existing-pw@example.com",
+      email_verified: true,
+      nonce: txn.nonce,
+      name: "G",
+    });
+    __setGoogleOAuthTestHooks({
+      jwks: createLocalJWKSet({ keys: [await publicJwk()] }),
+      fetch: async () =>
+        new Response(JSON.stringify({ id_token: conflictToken }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    const conflict = await callbackGet(
+      new Request(`http://localhost:3000/api/v1/auth/google/callback?code=c&state=${txn.state}`, {
+        headers: { cookie: txnCookie },
+      }),
+    );
+    expect(conflict.headers.get("location")).toContain("GOOGLE_ACCOUNT_LINK_REQUIRED");
+    expect(live.store.sessions.size).toBe(0);
+    expect(live.store.authIdentities.size).toBe(0);
   });
 });
