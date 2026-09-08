@@ -111,10 +111,7 @@ export function JobCard({
         <button
           type="button"
           className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          onClick={() => {
-            if (navigateOnSelect) return;
-            onSelect?.(job.id);
-          }}
+          onClick={() => onSelect?.(job.id)}
         >
           <div className="flex flex-wrap items-center gap-2">
             {fit ? (
