@@ -39,7 +39,9 @@ describe("evidence ownership", () => {
     const profileService = ProfileService.fromRepos(repos);
     const ctx = context(userId, tenantId, repos);
 
+    const profile = await profileService.getOrCreate(ctx);
     await profileService.updateOnboarding(ctx, {
+      expectedVersion: profile.version,
       step: 2,
       data: { evidenceNotes: "Led platform modernization and mentored junior engineers." },
     });
@@ -50,7 +52,9 @@ describe("evidence ownership", () => {
     expect(owned[0]?.ownerUserId).toBe(userId);
     expect(owned[0]?.verificationStatus).toBe("user_attested");
 
+    const afterNotes = await profileService.get(ctx);
     await profileService.updateOnboarding(ctx, {
+      expectedVersion: afterNotes.version,
       step: 2,
       data: { evidenceNotes: "Updated notes about leadership and delivery." },
     });
@@ -88,6 +92,13 @@ describe("evidence ownership", () => {
       preferredLocations: [],
       workAuthorization: null,
       requiresSponsorship: null,
+      targetCompanies: [],
+      targetIndustries: [],
+      jobTypes: [],
+      workplaceModes: [],
+      willingToRelocate: null,
+      salaryPreference: null,
+      seniority: null,
       onboardingStep: 0,
       onboardingCompletedAt: null,
       modelImprovementOptIn: false,
@@ -157,6 +168,13 @@ describe("evidence ownership", () => {
       preferredLocations: [],
       workAuthorization: null,
       requiresSponsorship: null,
+      targetCompanies: [],
+      targetIndustries: [],
+      jobTypes: [],
+      workplaceModes: [],
+      willingToRelocate: null,
+      salaryPreference: null,
+      seniority: null,
       onboardingStep: 0,
       onboardingCompletedAt: null,
       modelImprovementOptIn: false,

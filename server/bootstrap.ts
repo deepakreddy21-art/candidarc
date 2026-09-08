@@ -74,8 +74,20 @@ export type Runtime = {
   store: Repositories["store"];
 };
 
-let runtimePromise: Promise<Runtime> | null = null;
-let queueDrainStarted = false;
+let runtimePromise: Promise<Runtime> | null =
+  (globalThis as { __candidarcRuntimePromise?: Promise<Runtime> | null }).__candidarcRuntimePromise ?? null;
+let queueDrainStarted =
+  (globalThis as { __candidarcQueueDrainStarted?: boolean }).__candidarcQueueDrainStarted ?? false;
+
+function persistRuntimeGlobals() {
+  const g = globalThis as {
+    __candidarcRuntimePromise?: Promise<Runtime> | null;
+    __candidarcQueueDrainStarted?: boolean;
+  };
+  g.__candidarcRuntimePromise = runtimePromise;
+  g.__candidarcQueueDrainStarted = queueDrainStarted;
+}
+
 
 const WORKFLOW_QUEUES = [
   "research",
@@ -172,10 +184,18 @@ export function mapProfileToUi(p: CandidateProfileRecord): CandidateProfile {
     preferredLocations: p.preferredLocations ?? [],
     workAuthorization: p.workAuthorization ?? undefined,
     requiresSponsorship: p.requiresSponsorship ?? undefined,
+    targetCompanies: p.targetCompanies ?? [],
+    targetIndustries: p.targetIndustries ?? [],
+    jobTypes: p.jobTypes ?? [],
+    workplaceModes: p.workplaceModes ?? [],
+    willingToRelocate: p.willingToRelocate ?? null,
+    salaryPreference: p.salaryPreference ?? null,
+    seniority: p.seniority ?? null,
     onboardingStep: p.onboardingStep,
     onboardingCompletedAt: p.onboardingCompletedAt,
     modelImprovementOptIn: p.modelImprovementOptIn,
     resumeImportStatus: p.resumeImportStatus,
+    version: p.version,
   };
 }
 
@@ -539,6 +559,7 @@ async function buildRuntime(): Promise<Runtime> {
 
   if (mode === "memory" && env.QUEUE_BACKEND === "inprocess" && !queueDrainStarted) {
     queueDrainStarted = true;
+    persistRuntimeGlobals();
     // InProcessQueueAdapter pumps every 50ms once started; start once for memory mode.
     void queue.start().then(async () => {
       const recovered = await engine.recoverIncomplete();
@@ -561,8 +582,10 @@ export async function getRuntime(): Promise<Runtime> {
   if (!runtimePromise) {
     runtimePromise = buildRuntime().catch((err) => {
       runtimePromise = null;
+      persistRuntimeGlobals();
       throw err;
     });
+    persistRuntimeGlobals();
   }
   return runtimePromise;
 }
@@ -570,6 +593,7 @@ export async function getRuntime(): Promise<Runtime> {
 export function resetRuntimeForTests() {
   runtimePromise = null;
   queueDrainStarted = false;
+  persistRuntimeGlobals();
 }
 
 /** Test-only: install a prebuilt runtime (e.g. empty memory store for route journeys). */
@@ -579,6 +603,7 @@ export function setRuntimeForTests(runtime: Runtime | null) {
   }
   runtimePromise = runtime ? Promise.resolve(runtime) : null;
   queueDrainStarted = false;
+  persistRuntimeGlobals();
 }
 
 export { getDemoExtras };

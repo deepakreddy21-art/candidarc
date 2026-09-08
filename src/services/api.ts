@@ -381,28 +381,50 @@ export const api = {
     if (!isDemoFallbackAllowed()) throw new ApiError("Could not save profile", res.status);
     return mock.updateProfile(patch);
   },
-  async getOnboardingProgress(): Promise<{ step: number; completedAt: string | null; data: CandidateProfile }> {
-    const res = await apiFetch<{ step: number; completedAt: string | null; data: CandidateProfile }>("/profile/onboarding");
+  async getOnboardingProgress(): Promise<{
+    step: number;
+    completedAt: string | null;
+    version?: number;
+    data: CandidateProfile;
+  }> {
+    const res = await apiFetch<{
+      step: number;
+      completedAt: string | null;
+      version?: number;
+      data: CandidateProfile;
+    }>("/profile/onboarding");
     if (res.ok) return res.data;
     if (!isDemoFallbackAllowed()) {
       const profile = await this.getProfile();
-      return { step: profile.onboardingStep ?? 0, completedAt: profile.onboardingCompletedAt ?? null, data: profile };
+      return {
+        step: profile.onboardingStep ?? 0,
+        completedAt: profile.onboardingCompletedAt ?? null,
+        version: profile.version,
+        data: profile,
+      };
     }
     return { step: 0, completedAt: null, data: await mock.getProfile() };
   },
   async updateOnboardingProgress(input: {
     step?: number;
     completed?: boolean;
+    expectedVersion: number;
     data?: Record<string, unknown>;
-  }): Promise<{ step: number; completedAt: string | null; profile: CandidateProfile }> {
-    const res = await apiFetch<{ step: number; completedAt: string | null; profile: CandidateProfile }>(
-      "/profile/onboarding",
-      { method: "PATCH", body: JSON.stringify(input) },
-    );
+  }): Promise<{ step: number; completedAt: string | null; version?: number; profile: CandidateProfile }> {
+    const res = await apiFetch<{
+      step: number;
+      completedAt: string | null;
+      version?: number;
+      profile: CandidateProfile;
+    }>("/profile/onboarding", { method: "PATCH", body: JSON.stringify(input) });
     if (res.ok) return res.data;
     if (!isDemoFallbackAllowed()) throw new ApiError("Could not save onboarding progress", res.status);
     if (input.data) await mock.updateProfile(input.data as Partial<CandidateProfile>);
-    return { step: input.step ?? 0, completedAt: input.completed ? new Date().toISOString() : null, profile: await mock.getProfile() };
+    return {
+      step: input.step ?? 0,
+      completedAt: input.completed ? new Date().toISOString() : null,
+      profile: await mock.getProfile(),
+    };
   },
   async uploadResume(file: File): Promise<{ file: { id: string; scanStatus: string }; importStatus: string }> {
     const form = new FormData();

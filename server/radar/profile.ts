@@ -84,6 +84,7 @@ export async function loadCandidateProfileForMatch(
   }
 
   const seniorityMap: Record<string, string> = {
+    internship: "Intern",
     entry: "Junior",
     junior: "Junior",
     mid: "Mid-Level",
@@ -100,8 +101,11 @@ export async function loadCandidateProfileForMatch(
     "career-transition": "Mid-Level",
   };
 
-  const experienceLevel = candidateProfile?.experienceLevel?.toLowerCase() ?? "";
-  const seniority = seniorityMap[experienceLevel] ?? candidateProfile?.experienceLevel ?? undefined;
+  const seniorityKey =
+    candidateProfile?.seniority?.toLowerCase() ??
+    candidateProfile?.experienceLevel?.toLowerCase() ??
+    "";
+  const seniority = seniorityMap[seniorityKey] ?? candidateProfile?.seniority ?? candidateProfile?.experienceLevel ?? undefined;
 
   const preferredLocations = [...(candidateProfile?.preferredLocations ?? [])];
   if (candidateProfile?.location && !preferredLocations.includes(candidateProfile.location)) {
@@ -126,8 +130,16 @@ export async function loadCandidateProfileForMatch(
     yearsExperience: candidateProfile?.yearsExperience ?? undefined,
     careerGoals,
     visaNeeded: candidateProfile?.requiresSponsorship ?? undefined,
-    targetCompensationMin: undefined,
+    targetCompensationMin: parseSalaryMin(candidateProfile?.salaryPreference),
   };
+}
+
+function parseSalaryMin(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const digits = value.replace(/[^0-9]/g, "");
+  if (!digits) return undefined;
+  const n = Number(digits);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 /**

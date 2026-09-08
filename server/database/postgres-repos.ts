@@ -2146,12 +2146,34 @@ function createCandidateProfileRepository(): Repositories["candidateProfiles"] {
         const row = (await db.insert(s.candidateProfiles).values(toCandidateProfileValues(input)).returning())[0]!;
         return mapCandidateProfile(row)!;
       }),
-    updateOnboarding: async (tenantId, userId, patch) =>
+    updateOnboarding: async (tenantId, userId, expectedVersion, patch) =>
       withTenant(tenantId, async (db) => {
+        const values = toCandidateProfilePatch(patch) as Record<string, unknown>;
+        delete values.version;
         const row = (
           await db
             .update(s.candidateProfiles)
-            .set(toCandidateProfilePatch(patch))
+            .set({
+              ...values,
+              version: sql`${s.candidateProfiles.version} + 1`,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(s.candidateProfiles.tenantId, tenantId),
+                eq(s.candidateProfiles.userId, userId),
+                isNull(s.candidateProfiles.deletedAt),
+                eq(s.candidateProfiles.version, expectedVersion),
+              ),
+            )
+            .returning()
+        )[0];
+        if (row) return mapCandidateProfile(row)!;
+
+        const existing = (
+          await db
+            .select()
+            .from(s.candidateProfiles)
             .where(
               and(
                 eq(s.candidateProfiles.tenantId, tenantId),
@@ -2159,17 +2181,28 @@ function createCandidateProfileRepository(): Repositories["candidateProfiles"] {
                 isNull(s.candidateProfiles.deletedAt),
               ),
             )
-            .returning()
+            .limit(1)
         )[0];
-        if (!row) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
-        return mapCandidateProfile(row)!;
+        if (!existing) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
+        throw new AppError(
+          "ONBOARDING_STALE",
+          "Onboarding data changed elsewhere. Reload and try again.",
+          409,
+          { expectedVersion, currentVersion: existing.version },
+        );
       }),
     update: async (tenantId, userId, patch) =>
       withTenant(tenantId, async (db) => {
+        const values = toCandidateProfilePatch(patch) as Record<string, unknown>;
+        delete values.version;
         const row = (
           await db
             .update(s.candidateProfiles)
-            .set(toCandidateProfilePatch(patch))
+            .set({
+              ...values,
+              version: sql`${s.candidateProfiles.version} + 1`,
+              updatedAt: new Date(),
+            })
             .where(
               and(
                 eq(s.candidateProfiles.tenantId, tenantId),

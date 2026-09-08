@@ -54,10 +54,18 @@ export interface CandidateProfile {
   preferredLocations?: string[];
   workAuthorization?: string;
   requiresSponsorship?: boolean;
+  targetCompanies?: string[];
+  targetIndustries?: string[];
+  jobTypes?: string[];
+  workplaceModes?: string[];
+  willingToRelocate?: boolean | null;
+  salaryPreference?: string | null;
+  seniority?: string | null;
   onboardingStep?: number;
   onboardingCompletedAt?: string | null;
   modelImprovementOptIn?: boolean;
   resumeImportStatus?: string | null;
+  version?: number;
 }
 
 export type ResumeImportExtraction = {

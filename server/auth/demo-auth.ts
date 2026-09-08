@@ -11,8 +11,20 @@ export const DEMO_USER = {
   tenantPublicId: "ten_deepak",
 } as const;
 
-let cachedRepos: Repositories | null = null;
-let cachedStore: MemoryStoreLike | null = null;
+type DemoGlobals = {
+  __candidarcDemoRepos?: Repositories | null;
+  __candidarcDemoStore?: MemoryStoreLike | null;
+};
+
+const demoGlobals = globalThis as DemoGlobals;
+
+let cachedRepos: Repositories | null = demoGlobals.__candidarcDemoRepos ?? null;
+let cachedStore: MemoryStoreLike | null = demoGlobals.__candidarcDemoStore ?? null;
+
+function persistDemoGlobals() {
+  demoGlobals.__candidarcDemoRepos = cachedRepos;
+  demoGlobals.__candidarcDemoStore = cachedStore;
+}
 
 /**
  * Ensures the demo user/tenant exist for memory-mode login.
@@ -29,6 +41,7 @@ export async function ensureDemoUser(store?: MemoryStoreLike): Promise<{
 
   const repos = cachedRepos?.store === memory ? cachedRepos : new MemoryRepositories(memory);
   cachedRepos = repos;
+  persistDemoGlobals();
 
   let user = await repos.users.findByEmail(DEMO_USER.email);
   if (!user) {
@@ -77,6 +90,70 @@ export async function ensureDemoUser(store?: MemoryStoreLike): Promise<{
     });
   }
 
+  const existingProfile = await repos.candidateProfiles.getByUser(tenant.id, user.id);
+  if (!existingProfile) {
+    await repos.candidateProfiles.upsert({
+      id: newId("cp"),
+      publicId: "cand-deepak-demo",
+      tenantId: tenant.id,
+      userId: user.id,
+      fullName: DEMO_USER.name,
+      preferredName: "Deepak",
+      email: DEMO_USER.email,
+      phone: null,
+      location: "United States",
+      linkedIn: null,
+      github: null,
+      portfolio: null,
+      headline: "AI Software Engineer",
+      summary: "Production inference, retrieval, and evaluation systems.",
+      experienceLevel: "experienced",
+      yearsExperience: 5,
+      targetRoleFamilies: ["AI/ML Engineering", "Backend Platform"],
+      preferredResumeLength: "one-page",
+      careerGoal: "Production AI platform roles",
+      avatarInitials: "DK",
+      remoteOk: true,
+      preferredLocations: ["Remote", "United States"],
+      workAuthorization: "Authorized to work in the United States",
+      requiresSponsorship: false,
+      targetCompanies: [],
+      targetIndustries: ["AI / ML"],
+      jobTypes: ["full-time"],
+      workplaceModes: ["remote", "hybrid"],
+      willingToRelocate: false,
+      salaryPreference: null,
+      seniority: "senior",
+      onboardingStep: 3,
+      onboardingCompletedAt: nowIso(),
+      modelImprovementOptIn: false,
+      sourceResumeFilePublicId: null,
+      resumeImportStatus: "confirmed",
+      resumeImportExtraction: {
+        skills: ["Python", "TypeScript", "Kubernetes"],
+        employment: [
+          {
+            title: "Software Engineer, AI Platform",
+            company: "USAA",
+            bullets: ["Built production inference platforms"],
+          },
+        ],
+        careerProfileMode: "manual",
+      },
+    });
+  } else if (!existingProfile.onboardingCompletedAt) {
+    await repos.candidateProfiles.updateOnboarding(tenant.id, user.id, existingProfile.version, {
+      onboardingStep: 3,
+      onboardingCompletedAt: nowIso(),
+      seniority: existingProfile.seniority ?? "senior",
+      jobTypes: existingProfile.jobTypes?.length ? existingProfile.jobTypes : ["full-time"],
+      workplaceModes: existingProfile.workplaceModes?.length
+        ? existingProfile.workplaceModes
+        : ["remote", "hybrid"],
+      resumeImportStatus: existingProfile.resumeImportStatus ?? "confirmed",
+    });
+  }
+
   return { repos, store: memory, userId: user.id, tenantId: tenant.id };
 }
 
@@ -87,4 +164,5 @@ export function getDemoRepos(): Repositories | null {
 export function setDemoStore(store: MemoryStoreLike) {
   cachedStore = store;
   cachedRepos = new MemoryRepositories(store);
+  persistDemoGlobals();
 }

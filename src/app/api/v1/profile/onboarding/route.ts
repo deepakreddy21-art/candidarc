@@ -16,6 +16,7 @@ export async function GET(request: Request) {
     return jsonOk({
       step: profile.onboardingStep,
       completedAt: profile.onboardingCompletedAt,
+      version: profile.version,
       data: mapProfileToUi(profile),
     });
   } catch (err) {
@@ -36,6 +37,7 @@ export async function PATCH(request: Request) {
     return jsonOk({
       step: profile.onboardingStep,
       completedAt: profile.onboardingCompletedAt,
+      version: profile.version,
       profile: mapProfileToUi(profile),
     });
   } catch (err) {
