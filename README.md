@@ -43,7 +43,35 @@ npm run db:seed
 npm run dev:stack
 ```
 
-## Docs
+## Authentication
+
+### Email / password
+
+Use `/sign-in` and `/sign-up`. Sessions use the HttpOnly `candidarc_session` cookie.
+
+### Google sign-in (optional)
+
+1. Create an OAuth 2.0 Client ID in Google Cloud Console (Web application).
+2. Add authorized JavaScript origins:
+   - Local: `http://localhost:3000`
+   - Production: your public `APP_URL` origin
+3. Add authorized redirect URIs (exact match required):
+   - Local: `http://localhost:3000/api/v1/auth/google/callback`
+   - Production: `https://<your-domain>/api/v1/auth/google/callback`
+4. Copy the client ID and secret into `.env`:
+
+```env
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:3000/api/v1/auth/google/callback
+APP_URL=http://localhost:3000
+```
+
+5. Restart `npm run dev` / `npm run dev:stack`.
+
+When credentials are absent, the app still boots; Google buttons redirect with `GOOGLE_AUTH_NOT_CONFIGURED`.
+Never put `GOOGLE_CLIENT_SECRET` in `NEXT_PUBLIC_*` variables.
+
 
 - [UI architecture](./docs/UI_ARCHITECTURE.md)
 - [Backend architecture](./docs/architecture/BACKEND.md)

@@ -43,6 +43,16 @@ export type SessionRecord = {
   revokedAt: string | null;
 };
 
+export type AuthIdentityRecord = {
+  id: Id;
+  userId: Id;
+  provider: string;
+  providerSubject: string;
+  email: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ApplicationRecord = {
   id: Id;
   publicId: string;
@@ -350,6 +360,7 @@ export interface MemoryStoreLike {
   tenants: Map<string, TenantRecord>;
   memberships: MembershipRecord[];
   sessions: Map<string, SessionRecord>;
+  authIdentities: Map<string, AuthIdentityRecord>;
   applications: Map<string, ApplicationRecord>;
   evidence: Map<string, EvidenceRecord>;
   resumes: Map<string, ResumeRecord>;
@@ -403,6 +414,22 @@ export interface SessionRepository {
   findById(id: string): Promise<SessionRecord | null>;
   findByTokenHash(tokenHash: string): Promise<SessionRecord | null>;
   revoke(id: string): Promise<void>;
+}
+
+export interface AuthIdentityRepository {
+  findByProviderSubject(provider: string, providerSubject: string): Promise<AuthIdentityRecord | null>;
+  findByUserAndProvider(userId: string, provider: string): Promise<AuthIdentityRecord | null>;
+  create(
+    identity: Omit<AuthIdentityRecord, "id" | "createdAt" | "updatedAt"> & { id?: string },
+  ): Promise<AuthIdentityRecord>;
+  touchEmail(id: string, email: string): Promise<AuthIdentityRecord>;
+  /** Atomically create user + free tenant + owner membership + Google identity. */
+  createUserWithGoogleIdentity(input: {
+    provider: string;
+    providerSubject: string;
+    email: string;
+    name: string;
+  }): Promise<{ user: UserRecord; tenant: TenantRecord; identity: AuthIdentityRecord }>;
 }
 
 export interface ApplicationRepository {
@@ -596,6 +623,7 @@ export interface InterviewRepository {
 export type Repositories = {
   users: UserRepository;
   sessions: SessionRepository;
+  authIdentities: AuthIdentityRepository;
   applications: ApplicationRepository;
   evidence: EvidenceRepository;
   resumes: ResumeRepository;
@@ -637,6 +665,7 @@ async function withMemoryClaimLock<T>(key: string, fn: () => Promise<T> | T): Pr
 export class MemoryRepositories implements Repositories {
   readonly users: UserRepository;
   readonly sessions: SessionRepository;
+  readonly authIdentities: AuthIdentityRepository;
   readonly applications: ApplicationRepository;
   readonly evidence: EvidenceRepository;
   readonly resumes: ResumeRepository;
@@ -729,6 +758,109 @@ export class MemoryRepositories implements Repositories {
       async revoke(id) {
         const s = store.sessions.get(id);
         if (s) store.sessions.set(id, { ...s, revokedAt: nowIso() });
+      },
+    };
+
+    this.authIdentities = {
+      async findByProviderSubject(provider, providerSubject) {
+        for (const identity of store.authIdentities.values()) {
+          if (identity.provider === provider && identity.providerSubject === providerSubject) return identity;
+        }
+        return null;
+      },
+      async findByUserAndProvider(userId, provider) {
+        for (const identity of store.authIdentities.values()) {
+          if (identity.userId === userId && identity.provider === provider) return identity;
+        }
+        return null;
+      },
+      async create(input) {
+        for (const identity of store.authIdentities.values()) {
+          if (identity.provider === input.provider && identity.providerSubject === input.providerSubject) {
+            throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          }
+          if (identity.userId === input.userId && identity.provider === input.provider) {
+            throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          }
+        }
+        const record: AuthIdentityRecord = {
+          id: input.id ?? newId("aid"),
+          userId: input.userId,
+          provider: input.provider,
+          providerSubject: input.providerSubject,
+          email: input.email.toLowerCase(),
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        };
+        store.authIdentities.set(record.id, record);
+        return record;
+      },
+      async touchEmail(id, email) {
+        const existing = store.authIdentities.get(id);
+        if (!existing) throw new AppError("AUTH_IDENTITY_NOT_FOUND", "Identity not found", 404);
+        const updated: AuthIdentityRecord = {
+          ...existing,
+          email: email.toLowerCase(),
+          updatedAt: nowIso(),
+        };
+        store.authIdentities.set(id, updated);
+        return updated;
+      },
+      async createUserWithGoogleIdentity(input) {
+        return withMemoryClaimLock(`google-identity:${input.provider}:${input.providerSubject}`, async () => {
+          for (const identity of store.authIdentities.values()) {
+            if (identity.provider === input.provider && identity.providerSubject === input.providerSubject) {
+              throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+            }
+          }
+          for (const user of store.users.values()) {
+            if (user.email.toLowerCase() === input.email.toLowerCase() && !user.deletedAt) {
+              throw new AppError("GOOGLE_ACCOUNT_LINK_REQUIRED", "Email already registered", 409);
+            }
+          }
+          const userId = newId("usr");
+          const tenantId = newId("ten");
+          const user: UserRecord = {
+            id: userId,
+            publicId: newPublicId("usr"),
+            email: input.email.toLowerCase(),
+            emailVerified: true,
+            passwordHash: null,
+            name: input.name,
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+            deletedAt: null,
+          };
+          const tenant: TenantRecord = {
+            id: tenantId,
+            publicId: newPublicId("ten"),
+            name: `${input.name}'s workspace`,
+            plan: "free",
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+          };
+          const membership: MembershipRecord = {
+            id: newId("mem"),
+            tenantId,
+            userId,
+            role: "owner",
+            createdAt: nowIso(),
+          };
+          const identity: AuthIdentityRecord = {
+            id: newId("aid"),
+            userId,
+            provider: input.provider,
+            providerSubject: input.providerSubject,
+            email: input.email.toLowerCase(),
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+          };
+          store.users.set(userId, user);
+          store.tenants.set(tenantId, tenant);
+          store.memberships.push(membership);
+          store.authIdentities.set(identity.id, identity);
+          return { user, tenant, identity };
+        });
       },
     };
 
@@ -1608,6 +1740,7 @@ export function createEmptyMemoryStore(): MemoryStoreLike {
     tenants: new Map(),
     memberships: [],
     sessions: new Map(),
+    authIdentities: new Map(),
     applications: new Map(),
     evidence: new Map(),
     resumes: new Map(),

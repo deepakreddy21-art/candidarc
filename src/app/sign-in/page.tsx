@@ -2,15 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { toast } from "sonner";
 import { Logo } from "@/components/brand/logo";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { AuthDivider, GoogleAuthButton, GoogleAuthErrorBanner } from "@/components/auth/google-auth-button";
 import { product } from "@/config/product";
-import { cn } from "@/lib/utils";
 
 export default function SignInPage() {
   const router = useRouter();
@@ -32,12 +32,14 @@ export default function SignInPage() {
         credentials: "include",
         body: JSON.stringify({ email: email.trim(), password }),
       });
+      const body = (await res.json().catch(() => null)) as
+        | { error?: { message?: string }; redirectTo?: string }
+        | null;
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
         throw new Error(body?.error?.message ?? "Sign in failed");
       }
       toast.success(`Welcome back to ${product.name}`);
-      router.push("/app");
+      router.push(typeof body?.redirectTo === "string" ? body.redirectTo : "/app");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Sign in failed");
     } finally {
@@ -62,6 +64,11 @@ export default function SignInPage() {
         </div>
         <Card>
           <CardContent className="p-6">
+            <Suspense fallback={null}>
+              <GoogleAuthErrorBanner />
+            </Suspense>
+            <GoogleAuthButton />
+            <AuthDivider />
             <form className="space-y-4" onSubmit={onSubmit}>
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
@@ -92,9 +99,6 @@ export default function SignInPage() {
                 Create an account
               </Link>
             </p>
-            <Link href="/onboarding" className={cn(buttonVariants({ variant: "ghost" }), "mt-2 w-full")}>
-              Continue onboarding
-            </Link>
           </CardContent>
         </Card>
       </div>

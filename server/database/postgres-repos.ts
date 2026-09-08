@@ -13,11 +13,24 @@ import {
 import { AppError, type WorkflowStage } from "../domain/types";
 import { STAGE_CLAIM_LEASE_MS } from "../workflows/stages";
 import { withTenant } from "./with-tenant";
+
+function postgresErrorCodes(err: unknown): Set<string> {
+  const codes = new Set<string>();
+  let cursor: unknown = err;
+  for (let depth = 0; depth < 4 && cursor && typeof cursor === "object"; depth += 1) {
+    if ("code" in cursor && (cursor as { code: unknown }).code != null) {
+      codes.add(String((cursor as { code: unknown }).code));
+    }
+    cursor = "cause" in cursor ? (cursor as { cause: unknown }).cause : undefined;
+  }
+  return codes;
+}
 import {
   buildEvidenceMatchMap,
   mapApplication,
   mapAuditFinding,
   mapAuditRun,
+  mapAuthIdentity,
   mapCandidateProfile,
   mapEvidence,
   mapResearchRun,
@@ -49,6 +62,7 @@ type Db = NonNullable<ReturnType<typeof getDb>>;
 export class PostgresRepositories implements Repositories {
   readonly users: Repositories["users"];
   readonly sessions: Repositories["sessions"];
+  readonly authIdentities: Repositories["authIdentities"];
   readonly applications: Repositories["applications"];
   readonly evidence: Repositories["evidence"];
   readonly resumes: Repositories["resumes"];
@@ -166,6 +180,112 @@ export class PostgresRepositories implements Repositories {
         ),
       revoke: async (id) => {
         await db.update(s.sessions).set({ revokedAt: new Date() }).where(eq(s.sessions.id, id));
+      },
+    };
+
+    this.authIdentities = {
+      findByProviderSubject: async (provider, providerSubject) =>
+        mapAuthIdentity(
+          (
+            await db
+              .select()
+              .from(s.authIdentities)
+              .where(
+                and(eq(s.authIdentities.provider, provider), eq(s.authIdentities.providerSubject, providerSubject)),
+              )
+              .limit(1)
+          )[0],
+        ),
+      findByUserAndProvider: async (userId, provider) =>
+        mapAuthIdentity(
+          (
+            await db
+              .select()
+              .from(s.authIdentities)
+              .where(and(eq(s.authIdentities.userId, userId), eq(s.authIdentities.provider, provider)))
+              .limit(1)
+          )[0],
+        ),
+      create: async (input) => {
+        try {
+          return mapAuthIdentity(
+            (
+              await db
+                .insert(s.authIdentities)
+                .values({
+                  id: input.id,
+                  userId: input.userId,
+                  provider: input.provider,
+                  providerSubject: input.providerSubject,
+                  email: input.email.toLowerCase(),
+                })
+                .returning()
+            )[0],
+          )!;
+        } catch (err) {
+          if (postgresErrorCodes(err).has("23505")) {
+            throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          }
+          throw err;
+        }
+      },
+      touchEmail: async (id, email) =>
+        mapAuthIdentity(
+          (
+            await db
+              .update(s.authIdentities)
+              .set({ email: email.toLowerCase(), updatedAt: new Date() })
+              .where(eq(s.authIdentities.id, id))
+              .returning()
+          )[0],
+        )!,
+      createUserWithGoogleIdentity: async (input) => {
+        try {
+          return await db.transaction(async (tx) => {
+            const [userRow] = await tx
+              .insert(s.users)
+              .values({
+                publicId: newId("usr"),
+                email: input.email.toLowerCase(),
+                emailVerified: true,
+                passwordHash: null,
+                name: input.name,
+              })
+              .returning();
+            const [tenantRow] = await tx
+              .insert(s.tenants)
+              .values({
+                publicId: newId("ten"),
+                name: `${input.name}'s workspace`,
+                plan: "free",
+              })
+              .returning();
+            await tx.insert(s.tenantMemberships).values({
+              tenantId: tenantRow!.id,
+              userId: userRow!.id,
+              role: "owner",
+            });
+            const [identityRow] = await tx
+              .insert(s.authIdentities)
+              .values({
+                userId: userRow!.id,
+                provider: input.provider,
+                providerSubject: input.providerSubject,
+                email: input.email.toLowerCase(),
+              })
+              .returning();
+            return {
+              user: mapUser(userRow)!,
+              tenant: mapTenant(tenantRow!),
+              identity: mapAuthIdentity(identityRow)!,
+            };
+          });
+        } catch (err) {
+          if (postgresErrorCodes(err).has("23505")) {
+            throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          }
+          throw err;
+        }
       },
     };
 

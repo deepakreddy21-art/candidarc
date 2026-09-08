@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { toast } from "sonner";
 import { Logo } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { AuthDivider, GoogleAuthButton, GoogleAuthErrorBanner } from "@/components/auth/google-auth-button";
 import { product } from "@/config/product";
 
 export default function SignUpPage() {
@@ -60,6 +61,11 @@ export default function SignUpPage() {
         </div>
         <Card>
           <CardContent className="p-6">
+            <Suspense fallback={null}>
+              <GoogleAuthErrorBanner />
+            </Suspense>
+            <GoogleAuthButton />
+            <AuthDivider />
             <form className="space-y-4" onSubmit={onSubmit}>
               <div className="space-y-2">
                 <Label htmlFor="name">Full name</Label>
