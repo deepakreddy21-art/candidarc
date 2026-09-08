@@ -139,7 +139,7 @@ describe("onboarding route handlers", () => {
           "content-type": "application/json",
           "x-csrf-token": csrf,
         },
-        body: JSON.stringify({ completed: true }),
+        body: JSON.stringify({ completed: true, expectedVersion: 1 }),
       }),
     );
     expect(res.status).toBe(400);
@@ -155,5 +155,58 @@ describe("onboarding route handlers", () => {
     expect(getBody.completedAt).toBeNull();
     const profile = await runtime.repos.candidateProfiles.getByUser(tenant.id, user.id);
     expect(profile?.onboardingCompletedAt ?? null).toBeNull();
+  });
+
+  it("requires expectedVersion on PATCH", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const { PATCH } = await import("../../src/app/api/v1/profile/onboarding/route");
+    const res = await PATCH(
+      new Request("http://localhost:3000/api/v1/profile/onboarding", {
+        method: "PATCH",
+        headers: {
+          cookie,
+          "content-type": "application/json",
+          "x-csrf-token": csrf,
+        },
+        body: JSON.stringify({ step: 1, data: { targetRoles: ["SWE"], seniority: "mid" } }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 409 ONBOARDING_STALE for concurrent same-version patches", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const { GET, PATCH } = await import("../../src/app/api/v1/profile/onboarding/route");
+    const getRes = await GET(
+      new Request("http://localhost:3000/api/v1/profile/onboarding", {
+        headers: { cookie },
+      }),
+    );
+    const { version } = await getRes.json();
+    const body = {
+      step: 1,
+      expectedVersion: version,
+      data: { targetRoles: ["Platform Engineer"], seniority: "senior" },
+    };
+    const [a, b] = await Promise.all([
+      PATCH(
+        new Request("http://localhost:3000/api/v1/profile/onboarding", {
+          method: "PATCH",
+          headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+          body: JSON.stringify({ ...body, data: { ...body.data, targetRoles: ["A"] } }),
+        }),
+      ),
+      PATCH(
+        new Request("http://localhost:3000/api/v1/profile/onboarding", {
+          method: "PATCH",
+          headers: { cookie, "content-type": "application/json", "x-csrf-token": csrf },
+          body: JSON.stringify({ ...body, data: { ...body.data, targetRoles: ["B"] } }),
+        }),
+      ),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([200, 409]);
   });
 });

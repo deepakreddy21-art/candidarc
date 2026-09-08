@@ -67,8 +67,10 @@ describe("onboarding persistence", () => {
     const { repos, userId, tenantId } = await freshUser();
     const service = ProfileService.fromRepos(repos);
     const ctx = context(userId, tenantId, repos);
+    let profile = await service.getOrCreate(ctx);
 
-    await service.updateOnboarding(ctx, {
+    profile = await service.updateOnboarding(ctx, {
+      expectedVersion: profile.version,
       step: 1,
       data: {
         targetRoles: ["Platform Engineer", " platform engineer "],
@@ -76,11 +78,11 @@ describe("onboarding persistence", () => {
         targetCompanies: ["Acme"],
       },
     });
-    let profile = await service.get(ctx);
     expect(profile.onboardingStep).toBe(1);
     expect(profile.targetRoleFamilies).toEqual(["Platform Engineer"]);
 
-    await service.updateOnboarding(ctx, {
+    profile = await service.updateOnboarding(ctx, {
+      expectedVersion: profile.version,
       step: 2,
       data: {
         jobTypes: ["full-time"],
@@ -88,7 +90,6 @@ describe("onboarding persistence", () => {
         preferredLocations: ["Remote"],
       },
     });
-    profile = await service.get(ctx);
     expect(profile.onboardingStep).toBe(2);
     expect(profile.jobTypes).toEqual(["full-time"]);
     expect(profile.workplaceModes).toEqual(["remote"]);
@@ -98,18 +99,23 @@ describe("onboarding persistence", () => {
     const { repos, userId, tenantId } = await freshUser();
     const service = ProfileService.fromRepos(repos);
     const ctx = context(userId, tenantId, repos);
-    await service.getOrCreate(ctx);
-    await expect(service.updateOnboarding(ctx, { completed: true })).rejects.toBeInstanceOf(AppError);
+    const created = await service.getOrCreate(ctx);
+    await expect(
+      service.updateOnboarding(ctx, { completed: true, expectedVersion: created.version }),
+    ).rejects.toBeInstanceOf(AppError);
     const profile = await service.get(ctx);
     expect(profile.onboardingCompletedAt).toBeNull();
+    expect(profile.version).toBe(created.version);
   });
 
   it("completes idempotently after valid career profile", async () => {
     const { repos, userId, tenantId } = await freshUser();
     const service = ProfileService.fromRepos(repos);
     const ctx = context(userId, tenantId, repos);
+    let profile = await service.getOrCreate(ctx);
 
-    await service.updateOnboarding(ctx, {
+    profile = await service.updateOnboarding(ctx, {
+      expectedVersion: profile.version,
       step: 3,
       data: {
         targetRoles: ["ML Engineer"],
@@ -123,11 +129,51 @@ describe("onboarding persistence", () => {
       },
     });
 
-    const first = await service.updateOnboarding(ctx, { completed: true });
+    const first = await service.updateOnboarding(ctx, {
+      expectedVersion: profile.version,
+      completed: true,
+    });
     expect(first.onboardingCompletedAt).toBeTruthy();
     const stamp = first.onboardingCompletedAt;
-    const second = await service.updateOnboarding(ctx, { completed: true });
+    const second = await service.updateOnboarding(ctx, {
+      expectedVersion: first.version,
+      completed: true,
+    });
     expect(second.onboardingCompletedAt).toBe(stamp);
+    expect(second.version).toBe(first.version);
+  });
+
+  it("uses atomic compare-and-swap for concurrent same-version updates", async () => {
+    const { repos, userId, tenantId } = await freshUser();
+    const service = ProfileService.fromRepos(repos);
+    const ctx = context(userId, tenantId, repos);
+    const created = await service.getOrCreate(ctx);
+
+    const results = await Promise.allSettled([
+      service.updateOnboarding(ctx, {
+        expectedVersion: created.version,
+        step: 1,
+        data: { targetRoles: ["Winner Role"], seniority: "senior" },
+      }),
+      service.updateOnboarding(ctx, {
+        expectedVersion: created.version,
+        step: 1,
+        data: { targetRoles: ["Loser Role"], seniority: "mid" },
+      }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+      code: "ONBOARDING_STALE",
+      status: 409,
+    });
+    const finalProfile = await service.get(ctx);
+    expect(finalProfile.targetRoleFamilies).toEqual(
+      (fulfilled[0] as PromiseFulfilledResult<{ targetRoleFamilies: string[] }>).value.targetRoleFamilies,
+    );
   });
 
   it("protects against stale versions", async () => {
@@ -154,7 +200,9 @@ describe("onboarding persistence", () => {
     const b = await freshUser();
     const service = ProfileService.fromRepos(a.repos);
     const ctxA = context(a.userId, a.tenantId, a.repos);
+    const createdA = await service.getOrCreate(ctxA);
     await service.updateOnboarding(ctxA, {
+      expectedVersion: createdA.version,
       step: 1,
       data: { targetRoles: ["Secret Role"], seniority: "senior" },
     });
@@ -171,11 +219,40 @@ describe("onboarding persistence", () => {
       activeTenantId: b.tenantId,
       repos: { applications: b.repos.applications, evidence: b.repos.evidence },
     };
-    await expect(serviceB.updateOnboarding(unauthorized, { step: 1 })).rejects.toBeInstanceOf(AppError);
+    await expect(
+      serviceB.updateOnboarding(unauthorized, { step: 1, expectedVersion: 1 }),
+    ).rejects.toBeInstanceOf(AppError);
   });
 
   it("normalizes duplicate titles", () => {
     expect(normalizeTitleList(["A", " a ", "B", "A"])).toEqual(["A", "B"]);
+  });
+
+  it("resume profile update bumps version so stale onboarding cannot overwrite", async () => {
+    const { repos, userId, tenantId } = await freshUser();
+    const service = ProfileService.fromRepos(repos);
+    const ctx = context(userId, tenantId, repos);
+    const created = await service.getOrCreate(ctx);
+    const afterOnboarding = await service.updateOnboarding(ctx, {
+      expectedVersion: created.version,
+      step: 1,
+      data: { targetRoles: ["Platform Engineer"], seniority: "senior" },
+    });
+    const afterUpload = await repos.candidateProfiles.update(tenantId, userId, {
+      resumeImportStatus: "ready_for_review",
+      fullName: "From Upload",
+    });
+    expect(afterUpload.version).toBe(afterOnboarding.version + 1);
+    await expect(
+      service.updateOnboarding(ctx, {
+        expectedVersion: afterOnboarding.version,
+        step: 1,
+        data: { targetRoles: ["Should Not Win"], seniority: "mid" },
+      }),
+    ).rejects.toMatchObject({ code: "ONBOARDING_STALE", status: 409 });
+    const finalProfile = await service.get(ctx);
+    expect(finalProfile.targetRoleFamilies).toEqual(["Platform Engineer"]);
+    expect(finalProfile.fullName).toBe("From Upload");
   });
 });
 

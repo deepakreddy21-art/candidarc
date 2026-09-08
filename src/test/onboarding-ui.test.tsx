@@ -9,6 +9,7 @@ import {
   validateStepClient,
   emptyOnboardingForm,
 } from "@/components/onboarding/types";
+import { mergeExtractionPreservingPreferences } from "@/lib/onboarding-form-map";
 
 describe("onboarding helpers", () => {
   it("normalizes whitespace and duplicate titles", () => {
@@ -50,6 +51,32 @@ describe("onboarding helpers", () => {
     const payload = formToPayload(form);
     expect(payload.targetRoles).toEqual(["SWE"]);
     expect(payload.seniority).toBe("mid");
+  });
+
+  it("upload extraction merge does not overwrite role or work-preference fields", () => {
+    const form = emptyOnboardingForm();
+    form.targetRoles = ["Platform Engineer"];
+    form.seniority = "senior";
+    form.jobTypes = ["full-time"];
+    form.workplaceModes = ["remote"];
+    form.preferredLocations = ["Austin"];
+    form.fullName = "Keep Me";
+    const merged = mergeExtractionPreservingPreferences(form, {
+      contact: { fullName: "Parsed Name", email: "parsed@example.com" },
+      skills: ["Go"],
+      employment: [{ title: "Parsed", company: "Corp", bullets: [] }],
+      education: [],
+      projects: [],
+      certifications: [],
+      evidence: [],
+    });
+    expect(merged.targetRoles).toEqual(["Platform Engineer"]);
+    expect(merged.seniority).toBe("senior");
+    expect(merged.jobTypes).toEqual(["full-time"]);
+    expect(merged.workplaceModes).toEqual(["remote"]);
+    expect(merged.preferredLocations).toEqual(["Austin"]);
+    expect(merged.fullName).toBe("Keep Me");
+    expect(merged.skills).toContain("Go");
   });
 });
 

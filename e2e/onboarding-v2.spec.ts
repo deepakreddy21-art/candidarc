@@ -99,4 +99,46 @@ test.describe("onboarding v2", () => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     expect(overflow).toBeFalsy();
   });
+
+  test("incomplete authenticated user opening /app is redirected to onboarding", async ({ page }) => {
+    const email = `gate-app-${Date.now()}@example.com`;
+    await signup(page, email);
+    await fillStep1(page);
+    await expectStep(page, 2);
+    const sessionCookie = (await page.context().cookies()).find((c) => c.name === "candidarc_session");
+    expect(sessionCookie?.value).toBeTruthy();
+    const probe = await page.request.get("/api/v1/profile/onboarding");
+    expect(probe.status()).toBe(200);
+    // Authoritative server gate — do not rely on login redirectTo alone.
+    await page.goto("/app");
+    await expect(page).toHaveURL(/\/onboarding/, { timeout: 60_000 });
+    await expectStep(page, 2);
+  });
+
+  test("incomplete authenticated user opening /app/radar is redirected to onboarding", async ({ page }) => {
+    const email = `gate-radar-${Date.now()}@example.com`;
+    await signup(page, email);
+    await fillStep1(page);
+    await page.goto("/app/radar");
+    await expect(page).toHaveURL(/\/onboarding/, { timeout: 60_000 });
+    await expectStep(page, 2);
+  });
+
+  test("direct /app stays blocked until onboarding completion finishes", async ({ page }) => {
+    const email = `gate-finish-${Date.now()}@example.com`;
+    await signup(page, email);
+    await fillStep1(page);
+    await fillStep2(page);
+    await fillStep3Manual(page);
+    await expectStep(page, 4);
+    await page.goto("/app");
+    await expect(page).toHaveURL(/\/onboarding/, { timeout: 60_000 });
+    await expectStep(page, 4);
+    await page.getByRole("button", { name: /finish setup/i }).click();
+    await page.waitForURL(/\/onboarding\/complete/, { timeout: 60_000 });
+    await page.goto("/app");
+    await page.waitForURL(/\/app(?:\/|$)/, { timeout: 60_000 });
+    expect(page.url()).toMatch(/\/app/);
+    expect(page.url()).not.toMatch(/\/onboarding/);
+  });
 });
