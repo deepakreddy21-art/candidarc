@@ -8,7 +8,6 @@ import {
   FileText,
   Home,
   Moon,
-  Plus,
   Radar,
   Search,
   Settings,
@@ -21,17 +20,15 @@ import { useUiStore } from "@/stores/ui";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 const commands = [
-  { id: "new-resume", label: "Tailor a resume", href: "/app/resumes/new", icon: FileText },
-  { id: "home", label: "Go to Home", href: "/app", icon: Home },
   ...(isRadarFeatureEnabled()
     ? [
-        { id: "radar", label: "Find Jobs", href: "/app/radar", icon: Radar },
+        { id: "jobs", label: "Jobs for you", href: "/app/radar", icon: Radar },
         { id: "radar-search", label: "Search jobs", href: "/app/radar/search", icon: Search },
       ]
-    : []),
-  { id: "applications", label: "My Applications", href: "/app/opportunities", icon: Briefcase },
-  { id: "new-app", label: "New application", href: "/app/resumes/new", icon: Plus },
-  { id: "profile", label: "Career Profile", href: "/app/settings/profile", icon: User },
+    : [{ id: "home", label: "Jobs", href: "/app", icon: Home }]),
+  { id: "applications", label: "Applications", href: "/app/opportunities", icon: Briefcase },
+  { id: "new-resume", label: "Tailor a resume", href: "/app/resumes/new", icon: FileText },
+  { id: "profile", label: "Resume / Profile", href: "/app/settings/profile", icon: User },
   { id: "settings", label: "Settings", href: "/app/settings", icon: Settings },
 ];
 
