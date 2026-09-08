@@ -11,8 +11,20 @@ export const DEMO_USER = {
   tenantPublicId: "ten_deepak",
 } as const;
 
-let cachedRepos: Repositories | null = null;
-let cachedStore: MemoryStoreLike | null = null;
+type DemoGlobals = {
+  __candidarcDemoRepos?: Repositories | null;
+  __candidarcDemoStore?: MemoryStoreLike | null;
+};
+
+const demoGlobals = globalThis as DemoGlobals;
+
+let cachedRepos: Repositories | null = demoGlobals.__candidarcDemoRepos ?? null;
+let cachedStore: MemoryStoreLike | null = demoGlobals.__candidarcDemoStore ?? null;
+
+function persistDemoGlobals() {
+  demoGlobals.__candidarcDemoRepos = cachedRepos;
+  demoGlobals.__candidarcDemoStore = cachedStore;
+}
 
 /**
  * Ensures the demo user/tenant exist for memory-mode login.
@@ -29,6 +41,7 @@ export async function ensureDemoUser(store?: MemoryStoreLike): Promise<{
 
   const repos = cachedRepos?.store === memory ? cachedRepos : new MemoryRepositories(memory);
   cachedRepos = repos;
+  persistDemoGlobals();
 
   let user = await repos.users.findByEmail(DEMO_USER.email);
   if (!user) {
@@ -129,7 +142,7 @@ export async function ensureDemoUser(store?: MemoryStoreLike): Promise<{
       },
     });
   } else if (!existingProfile.onboardingCompletedAt) {
-    await repos.candidateProfiles.updateOnboarding(tenant.id, user.id, {
+    await repos.candidateProfiles.updateOnboarding(tenant.id, user.id, existingProfile.version, {
       onboardingStep: 3,
       onboardingCompletedAt: nowIso(),
       seniority: existingProfile.seniority ?? "senior",
@@ -151,4 +164,5 @@ export function getDemoRepos(): Repositories | null {
 export function setDemoStore(store: MemoryStoreLike) {
   cachedStore = store;
   cachedRepos = new MemoryRepositories(store);
+  persistDemoGlobals();
 }
