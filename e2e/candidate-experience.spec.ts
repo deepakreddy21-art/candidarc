@@ -61,7 +61,8 @@ test.describe("candidate experience journey", () => {
 
     await page.goto("/app/opportunities");
     await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();
-    await expect(page.getByTestId("applications-table").or(page.getByTestId("applications-mobile"))).toBeVisible();
+    await expect(page.getByTestId("applications-table")).toBeAttached();
+    await expect(page.getByTestId("applications-mobile")).toBeAttached();
     await expect(page.locator("body")).not.toContainText(/List\/Board|Kanban|Evidence coverage|Final QA/);
   });
 });
