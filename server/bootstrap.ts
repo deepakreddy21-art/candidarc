@@ -158,6 +158,21 @@ export function mapApplicationToUi(app: ApplicationRecord): Application {
     nextAction: app.nextAction,
     archived: app.archived,
     roleFamily: app.roleFamily,
+    candidateStatus: (() => {
+      const raw = app.metadata?.candidateStatus;
+      if (
+        raw === "Saved" ||
+        raw === "Ready to apply" ||
+        raw === "Applied" ||
+        raw === "Interviewing" ||
+        raw === "Offer" ||
+        raw === "Rejected" ||
+        raw === "Withdrawn"
+      ) {
+        return raw;
+      }
+      return undefined;
+    })(),
   };
 }
 

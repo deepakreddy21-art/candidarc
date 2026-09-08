@@ -321,6 +321,15 @@ export interface Application {
   nextAction: string;
   archived: boolean;
   roleFamily: string;
+  /** Candidate-facing application tracker status (presentation). */
+  candidateStatus?:
+    | "Saved"
+    | "Ready to apply"
+    | "Applied"
+    | "Interviewing"
+    | "Offer"
+    | "Rejected"
+    | "Withdrawn";
 }
 
 export interface ActivityEvent {

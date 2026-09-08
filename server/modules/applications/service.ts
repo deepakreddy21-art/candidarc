@@ -112,10 +112,23 @@ export class ApplicationsService {
     deadline: string;
     roleFamily: string;
     nextAction: string;
+    candidateStatus?: string;
   }>) {
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
-    return this.applications.update(tenantId, applicationPublicId, patch);
+    const { candidateStatus, ...rest } = patch;
+    if (candidateStatus === undefined) {
+      return this.applications.update(tenantId, applicationPublicId, rest);
+    }
+    const existing = await this.applications.getByPublicId(tenantId, applicationPublicId);
+    if (!existing) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
+    return this.applications.update(tenantId, applicationPublicId, {
+      ...rest,
+      metadata: {
+        ...(existing.metadata ?? {}),
+        candidateStatus,
+      },
+    });
   }
 
   async archive(ctx: AuthContext, applicationPublicId: string) {
