@@ -45,6 +45,22 @@ export function mapSession(row?: typeof s.sessions.$inferSelect): SessionRecord 
     : null;
 }
 
+export function mapAuthIdentity(
+  row?: typeof s.authIdentities.$inferSelect,
+): import("./repositories").AuthIdentityRecord | null {
+  return row
+    ? {
+        id: row.id,
+        userId: row.userId,
+        provider: row.provider,
+        providerSubject: row.providerSubject,
+        email: row.email,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      }
+    : null;
+}
+
 export function mapApplication(row?: typeof s.applications.$inferSelect): ApplicationRecord | null {
   return row
     ? {

@@ -248,6 +248,26 @@ export const sessions = pgTable(
   ],
 );
 
+export const authIdentities = pgTable(
+  "auth_identities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    providerSubject: text("provider_subject").notNull(),
+    email: text("email").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("auth_identities_provider_subject_uidx").on(t.provider, t.providerSubject),
+    uniqueIndex("auth_identities_user_provider_uidx").on(t.userId, t.provider),
+    index("auth_identities_user_idx").on(t.userId),
+  ],
+);
+
 /* -------------------------------------------------------------------------- */
 /* Candidate & applications                                                   */
 /* -------------------------------------------------------------------------- */
@@ -1815,6 +1835,7 @@ export const schema = {
   tenants,
   tenantMemberships,
   sessions,
+  authIdentities,
   candidateProfiles,
   jobDescriptions,
   applications,
