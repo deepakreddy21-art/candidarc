@@ -172,10 +172,18 @@ export function mapProfileToUi(p: CandidateProfileRecord): CandidateProfile {
     preferredLocations: p.preferredLocations ?? [],
     workAuthorization: p.workAuthorization ?? undefined,
     requiresSponsorship: p.requiresSponsorship ?? undefined,
+    targetCompanies: p.targetCompanies ?? [],
+    targetIndustries: p.targetIndustries ?? [],
+    jobTypes: p.jobTypes ?? [],
+    workplaceModes: p.workplaceModes ?? [],
+    willingToRelocate: p.willingToRelocate ?? null,
+    salaryPreference: p.salaryPreference ?? null,
+    seniority: p.seniority ?? null,
     onboardingStep: p.onboardingStep,
     onboardingCompletedAt: p.onboardingCompletedAt,
     modelImprovementOptIn: p.modelImprovementOptIn,
     resumeImportStatus: p.resumeImportStatus,
+    version: p.version,
   };
 }
 

@@ -253,10 +253,18 @@ export const profileResponseSchema = z.object({
   preferredLocations: z.array(z.string()),
   workAuthorization: z.string().optional(),
   requiresSponsorship: z.boolean().optional(),
+  targetCompanies: z.array(z.string()).optional(),
+  targetIndustries: z.array(z.string()).optional(),
+  jobTypes: z.array(z.string()).optional(),
+  workplaceModes: z.array(z.string()).optional(),
+  willingToRelocate: z.boolean().nullable().optional(),
+  salaryPreference: z.string().nullable().optional(),
+  seniority: z.string().nullable().optional(),
   onboardingStep: z.number(),
   onboardingCompletedAt: z.string().nullable(),
   modelImprovementOptIn: z.boolean(),
   resumeImportStatus: z.string().nullable().optional(),
+  version: z.number().optional(),
 });
 
 export const updateProfileRequestSchema = z.object({
@@ -283,9 +291,80 @@ export const updateProfileRequestSchema = z.object({
 });
 
 export const updateOnboardingRequestSchema = z.object({
-  step: z.number().int().min(0).max(20).optional(),
+  step: z.number().int().min(0).max(3).optional(),
   completed: z.boolean().optional(),
-  data: z.record(z.unknown()).optional(),
+  expectedVersion: z.number().int().min(1).optional(),
+  data: z
+    .object({
+      targetRoles: z.array(z.string().max(120)).max(20).optional(),
+      seniority: z
+        .enum(["internship", "entry", "mid", "senior", "staff", "lead", "executive"])
+        .optional()
+        .nullable(),
+      targetCompanies: z.array(z.string().max(160)).max(30).optional(),
+      targetIndustries: z.array(z.string().max(120)).max(30).optional(),
+      jobTypes: z.array(z.enum(["full-time", "contract", "part-time", "internship"])).max(4).optional(),
+      workplaceModes: z.array(z.enum(["remote", "hybrid", "on-site"])).max(3).optional(),
+      preferredLocations: z.array(z.string().max(160)).max(20).optional(),
+      willingToRelocate: z.boolean().optional().nullable(),
+      workAuthorization: z.string().max(120).optional().nullable(),
+      requiresSponsorship: z.boolean().optional().nullable(),
+      salaryPreference: z.string().max(80).optional().nullable(),
+      fullName: z.string().min(1).max(160).optional(),
+      email: z.union([z.string().email().max(160), z.literal("")]).optional(),
+      phone: z.string().max(40).optional().nullable(),
+      location: z.string().max(160).optional().nullable(),
+      linkedIn: z.string().max(200).optional().nullable(),
+      github: z.string().max(200).optional().nullable(),
+      portfolio: z.string().max(200).optional().nullable(),
+      headline: z.string().max(200).optional().nullable(),
+      summary: z.string().max(4000).optional().nullable(),
+      skills: z.array(z.string().max(80)).max(60).optional(),
+      education: z
+        .array(
+          z.object({
+            school: z.string().max(200).optional(),
+            degree: z.string().max(200).optional(),
+            field: z.string().max(200).optional(),
+            endDate: z.string().max(40).optional(),
+          }),
+        )
+        .max(20)
+        .optional(),
+      certifications: z
+        .array(
+          z.object({
+            name: z.string().max(200),
+            issuer: z.string().max(200).optional(),
+            date: z.string().max(40).optional(),
+          }),
+        )
+        .max(20)
+        .optional(),
+      employment: z
+        .array(
+          z.object({
+            title: z.string().max(160).optional(),
+            company: z.string().max(160).optional(),
+            location: z.string().max(160).optional(),
+            startDate: z.string().max(40).optional(),
+            endDate: z.string().max(40).optional(),
+            bullets: z.array(z.string().max(800)).max(20).optional(),
+          }),
+        )
+        .max(30)
+        .optional(),
+      careerProfileMode: z.enum(["upload", "manual"]).optional(),
+      evidenceNotes: z.string().max(8000).optional(),
+      careerGoal: z.string().max(500).optional(),
+      experienceLevel: z.string().max(80).optional(),
+      resumeLength: z.string().max(40).optional(),
+      modelImprovement: z.boolean().optional(),
+      remoteOk: z.boolean().optional(),
+      yearsExperience: z.number().int().min(0).max(60).optional(),
+    })
+    .strict()
+    .optional(),
 });
 
 /* -------------------------------------------------------------------------- */

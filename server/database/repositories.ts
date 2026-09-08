@@ -339,6 +339,13 @@ export type CandidateProfileRecord = {
   preferredLocations: string[];
   workAuthorization: string | null;
   requiresSponsorship: boolean | null;
+  targetCompanies: string[];
+  targetIndustries: string[];
+  jobTypes: string[];
+  workplaceModes: string[];
+  willingToRelocate: boolean | null;
+  salaryPreference: string | null;
+  seniority: string | null;
   onboardingStep: number;
   onboardingCompletedAt: string | null;
   modelImprovementOptIn: boolean;
@@ -582,27 +589,7 @@ export interface CandidateProfileRepository {
     tenantId: string,
     userId: string,
     patch: Partial<
-      Pick<
-        CandidateProfileRecord,
-        | "onboardingStep"
-        | "onboardingCompletedAt"
-        | "careerGoal"
-        | "fullName"
-        | "email"
-        | "phone"
-        | "location"
-        | "github"
-        | "portfolio"
-        | "experienceLevel"
-        | "yearsExperience"
-        | "targetRoleFamilies"
-        | "preferredResumeLength"
-        | "remoteOk"
-        | "preferredLocations"
-        | "workAuthorization"
-        | "requiresSponsorship"
-        | "modelImprovementOptIn"
-      >
+      Omit<CandidateProfileRecord, "id" | "publicId" | "tenantId" | "userId" | "createdAt" | "updatedAt" | "deletedAt" | "version">
     >,
   ): Promise<CandidateProfileRecord>;
   update(
@@ -1673,6 +1660,10 @@ export class MemoryRepositories implements Repositories {
             userId: existing.userId,
             targetRoleFamilies: input.targetRoleFamilies ?? existing.targetRoleFamilies,
             preferredLocations: input.preferredLocations ?? existing.preferredLocations,
+            targetCompanies: input.targetCompanies ?? existing.targetCompanies,
+            targetIndustries: input.targetIndustries ?? existing.targetIndustries,
+            jobTypes: input.jobTypes ?? existing.jobTypes,
+            workplaceModes: input.workplaceModes ?? existing.workplaceModes,
             version: existing.version + 1,
             updatedAt: nowIso(),
           };

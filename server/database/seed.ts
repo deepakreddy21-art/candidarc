@@ -203,6 +203,23 @@ export function seedDemo(store: MemoryStore): {
     preferredResumeLength: "one-page",
     careerGoal: "CX AI Software Engineer roles focused on production RAG and inference platforms",
     avatarInitials: "DK",
+    remoteOk: true,
+    preferredLocations: ["United States", "Remote"],
+    workAuthorization: "Authorized to work in the United States",
+    requiresSponsorship: false,
+    targetCompanies: [],
+    targetIndustries: ["AI / ML", "Enterprise software"],
+    jobTypes: ["full-time"],
+    workplaceModes: ["remote", "hybrid"],
+    willingToRelocate: false,
+    salaryPreference: null,
+    seniority: "senior",
+    onboardingStep: 3,
+    onboardingCompletedAt: new Date().toISOString(),
+    modelImprovementOptIn: false,
+    sourceResumeFilePublicId: null,
+    resumeImportStatus: "confirmed",
+    resumeImportExtraction: null,
   });
 
   const jdCisco = store.upsertJobDescription({
