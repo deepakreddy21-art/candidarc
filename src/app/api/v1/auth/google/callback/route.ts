@@ -16,6 +16,7 @@ import { getEnv } from "@server/config/env";
 import { ensureCsrfCookie } from "@server/http/csrf";
 import { assertRateLimit } from "@server/http/rate-limit";
 import { logger } from "@server/observability/logger";
+import { resolvePostAuthDestination } from "@server/auth/post-auth-destination";
 
 function redirectResponse(url: string, cookies: string[] = []): Response {
   const headers = new Headers({
@@ -35,8 +36,8 @@ function redirectWithError(_request: Request, code: string): Response {
   return redirectResponse(target.toString(), [clearGoogleOAuthCookieHeader()]);
 }
 
-function redirectSuccess(returnPath: string, sessionCookie: string): Response {
-  const target = new URL(sanitizeReturnPath(returnPath), getEnv().APP_URL);
+function redirectSuccess(destinationPath: string, sessionCookie: string): Response {
+  const target = new URL(sanitizeReturnPath(destinationPath), getEnv().APP_URL);
   const response = redirectResponse(target.toString(), [
     clearGoogleOAuthCookieHeader(),
     sessionCookie,
@@ -96,11 +97,23 @@ export async function GET(request: Request) {
       expiresAt: session.expiresAt.toISOString(),
     });
 
+    const destination = await resolvePostAuthDestination(runtime.repos, {
+      userId: user.id,
+      tenantId: tenant.id,
+      preferredReturnPath: txn.returnPath,
+    });
+
     logger.info(
-      { code: "GOOGLE_AUTH_SUCCESS", requestId, userPublicId: user.publicId },
+      {
+        code: "GOOGLE_AUTH_SUCCESS",
+        requestId,
+        userPublicId: user.publicId,
+        destination: destination.path,
+        destinationReason: destination.reason,
+      },
       "Google authentication succeeded",
     );
-    return redirectSuccess(txn.returnPath, session.cookie);
+    return redirectSuccess(destination.path, session.cookie);
   } catch (error) {
     const code = toSafeGoogleBrowserErrorCode(error);
     logger.warn({ code, requestId }, "Google authentication failed");

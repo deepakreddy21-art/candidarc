@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
@@ -51,17 +51,14 @@ function GoogleGlyph({ className }: { className?: string }) {
 }
 
 export function GoogleAuthButton({
-  nextPath = "/app",
   label = "Continue with Google",
 }: {
-  nextPath?: string;
   label?: string;
 }) {
   const [loading, setLoading] = useState(false);
-  const href = useMemo(() => {
-    const params = new URLSearchParams({ next: nextPath });
-    return `/api/v1/auth/google/start?${params.toString()}`;
-  }, [nextPath]);
+  // Destination after OAuth is decided server-side from onboarding state.
+  // Do not encode signup vs sign-in intent in the start URL.
+  const href = "/api/v1/auth/google/start";
 
   return (
     <Button

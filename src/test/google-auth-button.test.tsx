@@ -1,20 +1,35 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { FormEvent } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { FormEvent } from "react";
 import {
   AuthDivider,
   GoogleAuthButton,
   GoogleAuthErrorBanner,
   googleErrorMessage,
 } from "@/components/auth/google-auth-button";
+import SignInPage from "@/app/sign-in/page";
+import SignUpPage from "@/app/sign-up/page";
 
 const searchParams = new URLSearchParams();
+const push = vi.fn();
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push, replace: vi.fn() }),
   usePathname: () => "/sign-in",
   useSearchParams: () => searchParams,
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
+
+vi.mock("@/components/theme-toggle", () => ({
+  ThemeToggle: () => null,
+}));
+
+vi.mock("@/components/brand/logo", () => ({
+  Logo: () => <span>Logo</span>,
 }));
 
 describe("GoogleAuthButton behavior", () => {
@@ -23,6 +38,7 @@ describe("GoogleAuthButton behavior", () => {
   beforeEach(() => {
     searchParams.delete("google_error");
     assign.mockReset();
+    push.mockReset();
     Object.defineProperty(window, "location", {
       configurable: true,
       value: { assign, href: "http://localhost:3000/sign-in" },
@@ -33,22 +49,27 @@ describe("GoogleAuthButton behavior", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders with an accessible name on sign-in and sign-up next paths", () => {
-    const { rerender } = render(<GoogleAuthButton nextPath="/app" />);
+  it("renders with an accessible name on sign-in and sign-up", () => {
+    const { unmount } = render(<SignInPage />);
     expect(screen.getByRole("button", { name: /continue with google/i })).toBeInTheDocument();
-    rerender(<GoogleAuthButton nextPath="/onboarding" label="Continue with Google" />);
+    expect(screen.queryByRole("link", { name: /continue onboarding/i })).toBeNull();
+    expect(screen.queryByText(/continue onboarding/i)).toBeNull();
+    expect(screen.getByRole("link", { name: /create an account/i })).toBeInTheDocument();
+    unmount();
+
+    render(<SignUpPage />);
     expect(screen.getByRole("button", { name: /continue with google/i })).toBeInTheDocument();
   });
 
-  it("navigates once to the Google start route with the local next path", async () => {
+  it("navigates once to the Google start route without page-specific next intent", async () => {
     const user = userEvent.setup();
-    render(<GoogleAuthButton nextPath="/onboarding" />);
+    render(<GoogleAuthButton />);
     const button = screen.getByRole("button", { name: /continue with google/i });
     await user.click(button);
     await waitFor(() => {
       expect(assign).toHaveBeenCalledTimes(1);
     });
-    expect(assign.mock.calls[0]![0]).toBe("/api/v1/auth/google/start?next=%2Fonboarding");
+    expect(assign.mock.calls[0]![0]).toBe("/api/v1/auth/google/start");
     expect(button).toBeDisabled();
     await user.click(button);
     expect(assign).toHaveBeenCalledTimes(1);
@@ -70,7 +91,7 @@ describe("GoogleAuthButton behavior", () => {
     const onSubmit = vi.fn((event: FormEvent) => event.preventDefault());
     render(
       <div>
-        <GoogleAuthButton nextPath="/app" />
+        <GoogleAuthButton />
         <AuthDivider />
         <form onSubmit={onSubmit}>
           <label htmlFor="email">Email</label>

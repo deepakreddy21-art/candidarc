@@ -23,13 +23,16 @@ import { hashPassword } from "../../server/auth/password";
 import {
   createEmptyMemoryStore,
   MemoryRepositories,
+  newId,
   newPublicId,
+  nowIso,
 } from "../../server/database/repositories";
 import { AppError } from "../../server/domain/types";
 import { googleErrorMessage } from "@/components/auth/google-auth-button";
 import { resetRuntimeForTests, setRuntimeForTests, type Runtime } from "../../server/bootstrap";
 import { CSRF_COOKIE_NAME } from "../../server/http/csrf";
 import { resetRateLimitsForTests } from "../../server/http/rate-limit";
+import { resolvePostAuthDestination } from "../../server/auth/post-auth-destination";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const otherKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -769,7 +772,7 @@ describe("Google OAuth real route journey", () => {
     const { POST: logoutPost } = await import("../../src/app/api/v1/auth/logout/route");
 
     const startRes = await startGet(
-      new Request("http://localhost:3000/api/v1/auth/google/start?next=/onboarding", {
+      new Request("http://localhost:3000/api/v1/auth/google/start?next=/app", {
         headers: { "x-forwarded-for": "203.0.113.10" },
       }),
     );
@@ -1017,5 +1020,357 @@ describe("Google OAuth real route journey", () => {
     expect(conflict.headers.get("location")).toContain("GOOGLE_ACCOUNT_LINK_REQUIRED");
     expect(live.store.sessions.size).toBe(0);
     expect(live.store.authIdentities.size).toBe(0);
+  });
+});
+
+async function seedCandidateProfile(
+  repos: MemoryRepositories,
+  input: {
+    userId: string;
+    tenantId: string;
+    onboardingStep: number;
+    onboardingCompletedAt: string | null;
+  },
+) {
+  return repos.candidateProfiles.upsert({
+    id: newId("cp"),
+    publicId: newPublicId("cp"),
+    tenantId: input.tenantId,
+    userId: input.userId,
+    fullName: "Profile User",
+    preferredName: null,
+    email: "profile@example.com",
+    phone: null,
+    location: null,
+    linkedIn: null,
+    github: null,
+    portfolio: null,
+    headline: null,
+    summary: null,
+    experienceLevel: null,
+    yearsExperience: null,
+    targetRoleFamilies: [],
+    preferredResumeLength: "one-page",
+    careerGoal: null,
+    avatarInitials: "PU",
+    remoteOk: true,
+    preferredLocations: [],
+    workAuthorization: null,
+    requiresSponsorship: null,
+    onboardingStep: input.onboardingStep,
+    onboardingCompletedAt: input.onboardingCompletedAt,
+    modelImprovementOptIn: false,
+    sourceResumeFilePublicId: null,
+    resumeImportStatus: null,
+    resumeImportExtraction: null,
+  });
+}
+
+describe("Post-auth destination policy", () => {
+  beforeEach(async () => {
+    configureGoogleEnv();
+    resetRateLimitsForTests();
+    resetRuntimeForTests();
+    setRuntimeForTests(emptyAuthRuntime());
+    const jwk = await publicJwk();
+    __setGoogleOAuthTestHooks({ jwks: createLocalJWKSet({ keys: [jwk] }) });
+  });
+
+  afterEach(() => {
+    __resetGoogleOAuthTestHooks();
+    resetRuntimeForTests();
+    setRuntimeForTests(null);
+    clearGoogleEnv();
+    resetRateLimitsForTests();
+  });
+
+  async function runGoogleCallback(opts: {
+    next?: string;
+    sub: string;
+    email: string;
+  }): Promise<Response> {
+    const { GET: startGet } = await import("../../src/app/api/v1/auth/google/start/route");
+    const { GET: callbackGet } = await import("../../src/app/api/v1/auth/google/callback/route");
+    const startUrl = opts.next
+      ? `http://localhost:3000/api/v1/auth/google/start?next=${encodeURIComponent(opts.next)}`
+      : "http://localhost:3000/api/v1/auth/google/start";
+    const startRes = await startGet(new Request(startUrl));
+    const txnCookie = cookieHeaderFromSetCookies(collectSetCookies(startRes));
+    const txn = parseGoogleOAuthCookie(txnCookie)!;
+    const idToken = await signIdToken({
+      sub: opts.sub,
+      email: opts.email,
+      email_verified: true,
+      name: "Dest User",
+      nonce: txn.nonce,
+    });
+    __setGoogleOAuthTestHooks({
+      jwks: createLocalJWKSet({ keys: [await publicJwk()] }),
+      fetch: async () =>
+        new Response(JSON.stringify({ id_token: idToken }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+    return callbackGet(
+      new Request(
+        `http://localhost:3000/api/v1/auth/google/callback?code=c&state=${encodeURIComponent(txn.state)}`,
+        { headers: { cookie: txnCookie } },
+      ),
+    );
+  }
+
+  it("sends new Google users to onboarding even when started with next=/app", async () => {
+    const res = await runGoogleCallback({
+      next: "/app",
+      sub: "dest-new-from-signin",
+      email: "dest-new-signin@example.com",
+    });
+    expect(res.headers.get("location")).toBe("http://localhost:3000/onboarding");
+    expect(collectSetCookies(res).some((c) => c.startsWith(`${SESSION_COOKIE_NAME}=`))).toBe(true);
+  });
+
+  it("sends new Google users started from sign-up style start to onboarding", async () => {
+    const res = await runGoogleCallback({
+      sub: "dest-new-from-signup",
+      email: "dest-new-signup@example.com",
+    });
+    expect(res.headers.get("location")).toBe("http://localhost:3000/onboarding");
+  });
+
+  it("sends existing Google users with no profile to onboarding", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    await resolveGoogleSignIn(runtime.repos, {
+      sub: "dest-no-profile",
+      email: "dest-no-profile@example.com",
+      emailVerified: true,
+      name: "No Profile",
+    });
+    const res = await runGoogleCallback({
+      next: "/app",
+      sub: "dest-no-profile",
+      email: "dest-no-profile@example.com",
+    });
+    expect(res.headers.get("location")).toBe("http://localhost:3000/onboarding");
+  });
+
+  it("sends incomplete Google users to onboarding and preserves saved step", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { user, tenant } = await resolveGoogleSignIn(runtime.repos, {
+      sub: "dest-incomplete",
+      email: "dest-incomplete@example.com",
+      emailVerified: true,
+      name: "Incomplete",
+    });
+    await seedCandidateProfile(runtime.repos as MemoryRepositories, {
+      userId: user.id,
+      tenantId: tenant.id,
+      onboardingStep: 2,
+      onboardingCompletedAt: null,
+    });
+    const res = await runGoogleCallback({
+      next: "/app",
+      sub: "dest-incomplete",
+      email: "dest-incomplete@example.com",
+    });
+    expect(res.headers.get("location")).toBe("http://localhost:3000/onboarding");
+    const profile = await runtime.repos.candidateProfiles.getByUser(tenant.id, user.id);
+    expect(profile?.onboardingStep).toBe(2);
+    expect(profile?.onboardingCompletedAt).toBeNull();
+  });
+
+  it("sends completed Google users to /app by default", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { user, tenant } = await resolveGoogleSignIn(runtime.repos, {
+      sub: "dest-complete",
+      email: "dest-complete@example.com",
+      emailVerified: true,
+      name: "Complete",
+    });
+    await seedCandidateProfile(runtime.repos as MemoryRepositories, {
+      userId: user.id,
+      tenantId: tenant.id,
+      onboardingStep: 4,
+      onboardingCompletedAt: nowIso(),
+    });
+    const res = await runGoogleCallback({
+      sub: "dest-complete",
+      email: "dest-complete@example.com",
+    });
+    expect(res.headers.get("location")).toBe("http://localhost:3000/app");
+  });
+
+  it("honors an approved local return path for completed users", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { user, tenant } = await resolveGoogleSignIn(runtime.repos, {
+      sub: "dest-return",
+      email: "dest-return@example.com",
+      emailVerified: true,
+      name: "Return",
+    });
+    await seedCandidateProfile(runtime.repos as MemoryRepositories, {
+      userId: user.id,
+      tenantId: tenant.id,
+      onboardingStep: 4,
+      onboardingCompletedAt: nowIso(),
+    });
+    const res = await runGoogleCallback({
+      next: "/app/settings/profile",
+      sub: "dest-return",
+      email: "dest-return@example.com",
+    });
+    expect(res.headers.get("location")).toBe("http://localhost:3000/app/settings/profile");
+  });
+
+  it("falls back to /app for unsafe return paths when onboarding is complete", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { user, tenant } = await resolveGoogleSignIn(runtime.repos, {
+      sub: "dest-unsafe",
+      email: "dest-unsafe@example.com",
+      emailVerified: true,
+      name: "Unsafe",
+    });
+    await seedCandidateProfile(runtime.repos as MemoryRepositories, {
+      userId: user.id,
+      tenantId: tenant.id,
+      onboardingStep: 4,
+      onboardingCompletedAt: nowIso(),
+    });
+    const res = await runGoogleCallback({
+      next: "https://evil.example",
+      sub: "dest-unsafe",
+      email: "dest-unsafe@example.com",
+    });
+    expect(res.headers.get("location")).toBe("http://localhost:3000/app");
+  });
+
+  it("keeps GOOGLE_ACCOUNT_LINK_REQUIRED without creating a session", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    await runtime.repos.users.create({
+      publicId: newPublicId("usr"),
+      email: "dest-link@example.com",
+      emailVerified: true,
+      passwordHash: await hashPassword("Password!12345"),
+      name: "Password",
+    });
+    const beforeUsers = runtime.store.users.size;
+    const res = await runGoogleCallback({
+      next: "/app",
+      sub: "dest-link-sub",
+      email: "dest-link@example.com",
+    });
+    expect(res.headers.get("location")).toContain("GOOGLE_ACCOUNT_LINK_REQUIRED");
+    expect(runtime.store.sessions.size).toBe(0);
+    expect(runtime.store.authIdentities.size).toBe(0);
+    expect(runtime.store.users.size).toBe(beforeUsers);
+  });
+
+  it("resolvePostAuthDestination ignores onboardingStep as completion proof", async () => {
+    const repos = new MemoryRepositories(createEmptyMemoryStore());
+    const { user, tenant } = await resolveGoogleSignIn(repos, {
+      sub: "policy-step",
+      email: "policy-step@example.com",
+      emailVerified: true,
+      name: "Step",
+    });
+    await seedCandidateProfile(repos, {
+      userId: user.id,
+      tenantId: tenant.id,
+      onboardingStep: 99,
+      onboardingCompletedAt: null,
+    });
+    await expect(
+      resolvePostAuthDestination(repos, {
+        userId: user.id,
+        tenantId: tenant.id,
+        preferredReturnPath: "/app",
+      }),
+    ).resolves.toMatchObject({ path: "/onboarding", reason: "onboarding_incomplete" });
+  });
+});
+
+describe("Password login redirectTo", () => {
+  beforeEach(() => {
+    configureGoogleEnv();
+    resetRateLimitsForTests();
+    resetRuntimeForTests();
+    setRuntimeForTests(emptyAuthRuntime());
+  });
+
+  afterEach(() => {
+    resetRuntimeForTests();
+    setRuntimeForTests(null);
+    clearGoogleEnv();
+    resetRateLimitsForTests();
+  });
+
+  async function createPasswordUser(opts: {
+    email: string;
+    onboardingCompletedAt: string | null;
+    onboardingStep?: number;
+  }) {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const user = await runtime.repos.users.create({
+      publicId: newPublicId("usr"),
+      email: opts.email,
+      emailVerified: true,
+      passwordHash: await hashPassword("Password!12345"),
+      name: "Password User",
+    });
+    const tenant = await runtime.repos.users.createTenant({
+      publicId: newPublicId("ten"),
+      name: "Workspace",
+      plan: "free",
+    });
+    await runtime.repos.users.createMembership({
+      tenantId: tenant.id,
+      userId: user.id,
+      role: "owner",
+    });
+    await seedCandidateProfile(runtime.repos as MemoryRepositories, {
+      userId: user.id,
+      tenantId: tenant.id,
+      onboardingStep: opts.onboardingStep ?? 1,
+      onboardingCompletedAt: opts.onboardingCompletedAt,
+    });
+    return runtime;
+  }
+
+  it("returns /onboarding for incomplete password users", async () => {
+    await createPasswordUser({
+      email: "pw-incomplete@example.com",
+      onboardingCompletedAt: null,
+      onboardingStep: 2,
+    });
+    const { POST: loginPost } = await import("../../src/app/api/v1/auth/login/route");
+    const res = await loginPost(
+      new Request("http://localhost:3000/api/v1/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "pw-incomplete@example.com", password: "Password!12345" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { redirectTo: string };
+    expect(body.redirectTo).toBe("/onboarding");
+  });
+
+  it("returns /app for completed password users", async () => {
+    await createPasswordUser({
+      email: "pw-complete@example.com",
+      onboardingCompletedAt: nowIso(),
+      onboardingStep: 4,
+    });
+    const { POST: loginPost } = await import("../../src/app/api/v1/auth/login/route");
+    const res = await loginPost(
+      new Request("http://localhost:3000/api/v1/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "pw-complete@example.com", password: "Password!12345" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { redirectTo: string };
+    expect(body.redirectTo).toBe("/app");
   });
 });

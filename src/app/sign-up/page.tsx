@@ -64,7 +64,7 @@ export default function SignUpPage() {
             <Suspense fallback={null}>
               <GoogleAuthErrorBanner />
             </Suspense>
-            <GoogleAuthButton nextPath="/onboarding" />
+            <GoogleAuthButton />
             <AuthDivider />
             <form className="space-y-4" onSubmit={onSubmit}>
               <div className="space-y-2">
