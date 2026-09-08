@@ -13,6 +13,18 @@ import {
 import { AppError, type WorkflowStage } from "../domain/types";
 import { STAGE_CLAIM_LEASE_MS } from "../workflows/stages";
 import { withTenant } from "./with-tenant";
+
+function postgresErrorCodes(err: unknown): Set<string> {
+  const codes = new Set<string>();
+  let cursor: unknown = err;
+  for (let depth = 0; depth < 4 && cursor && typeof cursor === "object"; depth += 1) {
+    if ("code" in cursor && (cursor as { code: unknown }).code != null) {
+      codes.add(String((cursor as { code: unknown }).code));
+    }
+    cursor = "cause" in cursor ? (cursor as { cause: unknown }).cause : undefined;
+  }
+  return codes;
+}
 import {
   buildEvidenceMatchMap,
   mapApplication,
@@ -211,8 +223,9 @@ export class PostgresRepositories implements Repositories {
             )[0],
           )!;
         } catch (err) {
-          const code = typeof err === "object" && err && "code" in err ? String((err as { code: unknown }).code) : "";
-          if (code === "23505") throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          if (postgresErrorCodes(err).has("23505")) {
+            throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          }
           throw err;
         }
       },
@@ -268,8 +281,9 @@ export class PostgresRepositories implements Repositories {
             };
           });
         } catch (err) {
-          const code = typeof err === "object" && err && "code" in err ? String((err as { code: unknown }).code) : "";
-          if (code === "23505") throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          if (postgresErrorCodes(err).has("23505")) {
+            throw new AppError("AUTH_IDENTITY_CONFLICT", "Identity already exists", 409);
+          }
           throw err;
         }
       },

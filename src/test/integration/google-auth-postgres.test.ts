@@ -165,6 +165,8 @@ describe("Google auth identities (postgres)", () => {
       }),
     ).rejects.toMatchObject({ code: "AUTH_IDENTITY_CONFLICT" });
 
+    // Prove the losing transaction rolled back even though user/tenant inserts
+    // would have already happened before the identity unique violation.
     expect(await countsForEmail(loserEmail)).toEqual({
       users: 0,
       identities: 0,
