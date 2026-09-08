@@ -162,7 +162,6 @@ export default function OnboardingPage() {
         setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
         const loadedVersion = saved.version ?? saved.data.version;
         versionRef.current = loadedVersion;
-        setVersion(loadedVersion);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           router.replace("/sign-in?next=/onboarding");
