@@ -61,38 +61,30 @@ function legacyRedirect(request: NextRequest): NextResponse | null {
 
 
 export function middleware(request: NextRequest) {
-
   const legacy = legacyRedirect(request);
-
   if (legacy) return legacy;
 
   if (!radarEnabled() && request.nextUrl.pathname.startsWith("/app/radar")) {
     return NextResponse.redirect(new URL("/app", request.url));
   }
 
-  if (request.nextUrl.pathname.startsWith("/app/") || request.nextUrl.pathname === "/app") {
+  const path = request.nextUrl.pathname;
+  const needsAuth =
+    path === "/app" ||
+    path.startsWith("/app/") ||
+    path === "/onboarding" ||
+    path.startsWith("/onboarding/");
 
-    if (!request.cookies.get(SESSION_COOKIE)?.value) {
-
-      const signIn = new URL("/sign-in", request.url);
-
-      signIn.searchParams.set("next", request.nextUrl.pathname);
-
-      return NextResponse.redirect(signIn);
-
-    }
-
+  if (needsAuth && !request.cookies.get(SESSION_COOKIE)?.value) {
+    const signIn = new URL("/sign-in", request.url);
+    signIn.searchParams.set("next", path);
+    return NextResponse.redirect(signIn);
   }
 
   return NextResponse.next();
-
 }
 
-
-
 export const config = {
-
-  matcher: ["/app/:path*"],
-
+  matcher: ["/app/:path*", "/onboarding", "/onboarding/:path*"],
 };
 
