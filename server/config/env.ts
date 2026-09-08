@@ -17,6 +17,10 @@ export const envSchema = z.object({
   SESSION_SECRET: z.string().optional(),
   CSRF_SECRET: z.string().optional(),
   APP_URL: z.string().url().default("http://localhost:3000"),
+  /** Google OAuth/OIDC — optional; missing/blank values disable Google sign-in cleanly. */
+  GOOGLE_CLIENT_ID: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(1).optional()),
+  GOOGLE_CLIENT_SECRET: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(1).optional()),
+  GOOGLE_REDIRECT_URI: z.preprocess((value) => (value === "" ? undefined : value), z.string().url().optional()),
   STORAGE_DRIVER: z.enum(["local", "s3"]).default("local"),
   STORAGE_LOCAL_PATH: z.string().default(".data/storage"),
   S3_ENDPOINT: z.string().optional(),
