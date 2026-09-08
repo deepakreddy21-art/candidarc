@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 
 const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
   GOOGLE_AUTH_NOT_CONFIGURED: "Google sign-in is not available right now.",
+  GOOGLE_AUTH_MISCONFIGURED: "Google sign-in is not available right now.",
+  GOOGLE_RATE_LIMITED: "Too many sign-in attempts. Please wait a moment and try again.",
   GOOGLE_AUTH_CANCELLED: "Google sign-in was cancelled.",
   GOOGLE_OAUTH_DENIED: "Google sign-in was denied.",
   GOOGLE_TXN_INVALID: "Your Google sign-in session expired. Please try again.",

@@ -3,19 +3,53 @@
  * ID tokens are verified with jose + Google JWKS — never hand-rolled crypto.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
-import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
+import {
+  createRemoteJWKSet,
+  errors as joseErrors,
+  jwtVerify,
+  type JWTPayload,
+  type JWTVerifyGetKey,
+} from "jose";
 import { getEnv } from "../config/env";
 import { AppError } from "../domain/types";
 import { logger } from "../observability/logger";
 
 export const GOOGLE_OAUTH_COOKIE = "candidarc_google_oauth";
 export const GOOGLE_AUTH_PROVIDER = "google" as const;
+export const GOOGLE_CALLBACK_PATH = "/api/v1/auth/google/callback";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_JWKS_URL = new URL("https://www.googleapis.com/oauth2/v3/certs");
-const GOOGLE_ISSUERS = new Set(["https://accounts.google.com", "accounts.google.com"]);
+const GOOGLE_ISSUERS = ["https://accounts.google.com", "accounts.google.com"] as const;
 const TXN_TTL_SECONDS = 600;
 const TOKEN_TIMEOUT_MS = 10_000;
+
+/** Browser-safe google_error query values — never put arbitrary AppError codes in redirects. */
+export const SAFE_GOOGLE_BROWSER_ERROR_CODES = new Set([
+  "GOOGLE_AUTH_NOT_CONFIGURED",
+  "GOOGLE_AUTH_MISCONFIGURED",
+  "GOOGLE_RATE_LIMITED",
+  "GOOGLE_AUTH_CANCELLED",
+  "GOOGLE_OAUTH_DENIED",
+  "GOOGLE_TXN_INVALID",
+  "GOOGLE_STATE_MISSING",
+  "GOOGLE_STATE_MISMATCH",
+  "GOOGLE_CODE_MISSING",
+  "GOOGLE_PKCE_MISSING",
+  "GOOGLE_TOKEN_TIMEOUT",
+  "GOOGLE_TOKEN_EXCHANGE_FAILED",
+  "GOOGLE_TOKEN_MALFORMED",
+  "GOOGLE_ID_TOKEN_INVALID",
+  "GOOGLE_ID_TOKEN_EXPIRED",
+  "GOOGLE_ID_TOKEN_ISSUER",
+  "GOOGLE_NONCE_MISMATCH",
+  "GOOGLE_SUB_MISSING",
+  "GOOGLE_EMAIL_MISSING",
+  "GOOGLE_EMAIL_UNVERIFIED",
+  "GOOGLE_ACCOUNT_LINK_REQUIRED",
+  "GOOGLE_ACCOUNT_DISABLED",
+  "GOOGLE_AUTH_FAILED",
+]);
 
 export type GoogleOAuthTxn = {
   state: string;
@@ -46,39 +80,141 @@ type FetchLike = typeof fetch;
 let jwks: JWTVerifyGetKey = createRemoteJWKSet(GOOGLE_JWKS_URL);
 let fetchImpl: FetchLike = fetch;
 
+function assertGoogleTestHooksAllowed(): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("Google OAuth test hooks are only available when NODE_ENV=test");
+  }
+}
+
 /** Test-only: replace JWKS / fetch (never used in production paths). */
 export function __setGoogleOAuthTestHooks(hooks: {
   jwks?: JWTVerifyGetKey;
   fetch?: FetchLike;
 }): void {
+  assertGoogleTestHooksAllowed();
   if (hooks.jwks) jwks = hooks.jwks;
   if (hooks.fetch) fetchImpl = hooks.fetch;
 }
 
 export function __resetGoogleOAuthTestHooks(): void {
+  assertGoogleTestHooksAllowed();
   jwks = createRemoteJWKSet(GOOGLE_JWKS_URL);
   fetchImpl = fetch;
 }
 
-export function isGoogleAuthConfigured(): boolean {
-  const env = getEnv();
-  return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && resolveGoogleRedirectUri());
+function isProductionRuntime(env: ReturnType<typeof getEnv>): boolean {
+  return env.NODE_ENV === "production" || env.APP_MODE === "production";
 }
 
-export function assertGoogleAuthConfigured(): void {
-  if (!isGoogleAuthConfigured()) {
+/**
+ * Validate Google OAuth configuration.
+ * - Neither credential → GOOGLE_AUTH_NOT_CONFIGURED (feature off).
+ * - Either credential → both required, deterministic callback URI, production HTTPS/origin rules.
+ */
+export function validateGoogleAuthConfiguration(): void {
+  const env = getEnv();
+  const clientId = env.GOOGLE_CLIENT_ID;
+  const clientSecret = env.GOOGLE_CLIENT_SECRET;
+
+  if (!clientId && !clientSecret) {
     throw new AppError(
       "GOOGLE_AUTH_NOT_CONFIGURED",
       "Google sign-in is not configured for this environment",
       503,
     );
   }
+  if (!clientId || !clientSecret) {
+    throw new AppError(
+      "GOOGLE_AUTH_MISCONFIGURED",
+      "Google sign-in is misconfigured for this environment",
+      503,
+    );
+  }
+
+  let redirect: URL;
+  try {
+    redirect = new URL(resolveGoogleRedirectUriRaw(env));
+  } catch {
+    throw new AppError(
+      "GOOGLE_AUTH_MISCONFIGURED",
+      "Google sign-in is misconfigured for this environment",
+      503,
+    );
+  }
+
+  if (redirect.pathname !== GOOGLE_CALLBACK_PATH) {
+    throw new AppError(
+      "GOOGLE_AUTH_MISCONFIGURED",
+      "Google sign-in is misconfigured for this environment",
+      503,
+    );
+  }
+
+  if (isProductionRuntime(env)) {
+    if (redirect.protocol !== "https:") {
+      throw new AppError(
+        "GOOGLE_AUTH_MISCONFIGURED",
+        "Google sign-in is misconfigured for this environment",
+        503,
+      );
+    }
+    if (redirect.hostname === "localhost" || redirect.hostname === "127.0.0.1") {
+      throw new AppError(
+        "GOOGLE_AUTH_MISCONFIGURED",
+        "Google sign-in is misconfigured for this environment",
+        503,
+      );
+    }
+    let appOrigin: string;
+    try {
+      appOrigin = new URL(env.APP_URL).origin;
+    } catch {
+      throw new AppError(
+        "GOOGLE_AUTH_MISCONFIGURED",
+        "Google sign-in is misconfigured for this environment",
+        503,
+      );
+    }
+    if (redirect.origin !== appOrigin) {
+      throw new AppError(
+        "GOOGLE_AUTH_MISCONFIGURED",
+        "Google sign-in is misconfigured for this environment",
+        503,
+      );
+    }
+  }
+}
+
+function resolveGoogleRedirectUriRaw(env: ReturnType<typeof getEnv>): string {
+  if (env.GOOGLE_REDIRECT_URI) return env.GOOGLE_REDIRECT_URI;
+  return new URL(GOOGLE_CALLBACK_PATH, env.APP_URL).toString();
+}
+
+export function isGoogleAuthConfigured(): boolean {
+  try {
+    validateGoogleAuthConfiguration();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function assertGoogleAuthConfigured(): void {
+  validateGoogleAuthConfiguration();
 }
 
 export function resolveGoogleRedirectUri(): string {
-  const env = getEnv();
-  if (env.GOOGLE_REDIRECT_URI) return env.GOOGLE_REDIRECT_URI;
-  return new URL("/api/v1/auth/google/callback", env.APP_URL).toString();
+  assertGoogleAuthConfigured();
+  return resolveGoogleRedirectUriRaw(getEnv());
+}
+
+/** Map any failure to a browser-safe google_error code (no provider/token leakage). */
+export function toSafeGoogleBrowserErrorCode(error: unknown): string {
+  if (error instanceof AppError) {
+    if (error.code === "RATE_LIMITED") return "GOOGLE_RATE_LIMITED";
+    if (SAFE_GOOGLE_BROWSER_ERROR_CODES.has(error.code)) return error.code;
+  }
+  return "GOOGLE_AUTH_FAILED";
 }
 
 /** Only same-app relative paths; block open redirects. */
@@ -272,30 +408,86 @@ export async function exchangeGoogleAuthorizationCode(input: {
   return json as GoogleTokenResponse;
 }
 
+function assertAcceptedAudience(payload: JWTPayload, clientId: string): void {
+  const aud = payload.aud;
+  if (typeof aud === "string") {
+    if (aud !== clientId) {
+      throw new AppError("GOOGLE_ID_TOKEN_INVALID", "Could not verify Google sign-in", 401);
+    }
+    return;
+  }
+  if (Array.isArray(aud)) {
+    // Single trusted web client only — reject multi-audience tokens.
+    if (aud.length === 1 && aud[0] === clientId) return;
+    throw new AppError("GOOGLE_ID_TOKEN_INVALID", "Could not verify Google sign-in", 401);
+  }
+  throw new AppError("GOOGLE_ID_TOKEN_INVALID", "Could not verify Google sign-in", 401);
+}
+
+function assertAuthorizedParty(payload: JWTPayload, clientId: string): void {
+  if (payload.azp === undefined) return;
+  if (typeof payload.azp !== "string" || payload.azp !== clientId) {
+    throw new AppError("GOOGLE_ID_TOKEN_INVALID", "Could not verify Google sign-in", 401);
+  }
+}
+
+function mapJoseVerifyError(err: unknown): AppError {
+  const code =
+    err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : "";
+  const claim =
+    err && typeof err === "object" && "claim" in err ? String((err as { claim: unknown }).claim) : "";
+
+  if (
+    err instanceof joseErrors.JWTExpired ||
+    code === "ERR_JWT_EXPIRED" ||
+    (code === "ERR_JWT_CLAIM_VALIDATION_FAILED" && claim === "exp")
+  ) {
+    return new AppError("GOOGLE_ID_TOKEN_EXPIRED", "Google sign-in expired; try again", 401);
+  }
+  if (
+    (err instanceof joseErrors.JWTClaimValidationFailed || code === "ERR_JWT_CLAIM_VALIDATION_FAILED") &&
+    claim === "iss"
+  ) {
+    return new AppError("GOOGLE_ID_TOKEN_ISSUER", "Could not verify Google sign-in", 401);
+  }
+  return new AppError("GOOGLE_ID_TOKEN_INVALID", "Could not verify Google sign-in", 401);
+}
+
 export async function verifyGoogleIdToken(idToken: string, expectedNonce: string): Promise<GoogleIdClaims> {
   assertGoogleAuthConfigured();
   const env = getEnv();
+  const clientId = env.GOOGLE_CLIENT_ID!;
   let payload: JWTPayload;
   try {
     const verified = await jwtVerify(idToken, jwks, {
-      audience: env.GOOGLE_CLIENT_ID!,
+      algorithms: ["RS256"],
+      issuer: [...GOOGLE_ISSUERS],
+      audience: clientId,
       clockTolerance: 5,
     });
     payload = verified.payload;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "verify failed";
-    logger.warn({ code: "GOOGLE_ID_TOKEN_INVALID", reason: message.slice(0, 120) }, "Google ID token rejected");
-    if (/expir/i.test(message)) {
-      throw new AppError("GOOGLE_ID_TOKEN_EXPIRED", "Google sign-in expired; try again", 401);
-    }
-    throw new AppError("GOOGLE_ID_TOKEN_INVALID", "Could not verify Google sign-in", 401);
+    if (err instanceof AppError) throw err;
+    const mapped = mapJoseVerifyError(err);
+    logger.warn(
+      { code: mapped.code, joseCode: err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : undefined },
+      "Google ID token rejected",
+    );
+    throw mapped;
   }
 
-  const issuer = typeof payload.iss === "string" ? payload.iss : "";
-  if (!GOOGLE_ISSUERS.has(issuer)) {
-    throw new AppError("GOOGLE_ID_TOKEN_ISSUER", "Could not verify Google sign-in", 401);
+  try {
+    assertAcceptedAudience(payload, clientId);
+    assertAuthorizedParty(payload, clientId);
+  } catch (err) {
+    if (err instanceof AppError) {
+      logger.warn({ code: err.code }, "Google ID token audience/azp rejected");
+      throw err;
+    }
+    throw err;
   }
-  if (typeof payload.nonce !== "string" || !safeEqual(payload.nonce, expectedNonce)) {
+
+  if (typeof payload.nonce !== "string" || !payload.nonce || !safeEqual(payload.nonce, expectedNonce)) {
     throw new AppError("GOOGLE_NONCE_MISMATCH", "Could not verify Google sign-in", 401);
   }
   if (typeof payload.sub !== "string" || !payload.sub.trim()) {

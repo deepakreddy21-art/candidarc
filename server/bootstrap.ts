@@ -572,4 +572,13 @@ export function resetRuntimeForTests() {
   queueDrainStarted = false;
 }
 
+/** Test-only: install a prebuilt runtime (e.g. empty memory store for route journeys). */
+export function setRuntimeForTests(runtime: Runtime | null) {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("setRuntimeForTests is only available when NODE_ENV=test");
+  }
+  runtimePromise = runtime ? Promise.resolve(runtime) : null;
+  queueDrainStarted = false;
+}
+
 export { getDemoExtras };

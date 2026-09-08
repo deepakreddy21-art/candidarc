@@ -7,6 +7,7 @@ import {
   parseGoogleOAuthCookie,
   requireMatchingState,
   sanitizeReturnPath,
+  toSafeGoogleBrowserErrorCode,
   verifyGoogleIdToken,
 } from "@server/auth/google-oauth";
 import { createSession, hashToken, parseSessionCookie, verifySession } from "@server/auth/session";
@@ -16,22 +17,31 @@ import { ensureCsrfCookie } from "@server/http/csrf";
 import { assertRateLimit } from "@server/http/rate-limit";
 import { logger } from "@server/observability/logger";
 
-function redirectWithError(request: Request, code: string): Response {
+function redirectResponse(url: string, cookies: string[] = []): Response {
+  const headers = new Headers({
+    Location: url,
+    "Cache-Control": "no-store",
+  });
+  for (const cookie of cookies) {
+    headers.append("Set-Cookie", cookie);
+  }
+  return new Response(null, { status: 302, headers });
+}
+
+function redirectWithError(_request: Request, code: string): Response {
+  const safe = toSafeGoogleBrowserErrorCode(new AppError(code, "Google sign-in failed", 400));
   const target = new URL("/sign-in", getEnv().APP_URL);
-  target.searchParams.set("google_error", code);
-  const response = Response.redirect(target.toString(), 302);
-  response.headers.append("Set-Cookie", clearGoogleOAuthCookieHeader());
-  response.headers.set("Cache-Control", "no-store");
-  return response;
+  target.searchParams.set("google_error", safe);
+  return redirectResponse(target.toString(), [clearGoogleOAuthCookieHeader()]);
 }
 
 function redirectSuccess(returnPath: string, sessionCookie: string): Response {
   const target = new URL(sanitizeReturnPath(returnPath), getEnv().APP_URL);
-  const response = Response.redirect(target.toString(), 302);
-  response.headers.append("Set-Cookie", clearGoogleOAuthCookieHeader());
-  response.headers.append("Set-Cookie", sessionCookie);
+  const response = redirectResponse(target.toString(), [
+    clearGoogleOAuthCookieHeader(),
+    sessionCookie,
+  ]);
   ensureCsrfCookie(response);
-  response.headers.set("Cache-Control", "no-store");
   return response;
 }
 
@@ -92,14 +102,8 @@ export async function GET(request: Request) {
     );
     return redirectSuccess(txn.returnPath, session.cookie);
   } catch (error) {
-    const code =
-      error instanceof AppError
-        ? error.code
-        : "GOOGLE_AUTH_FAILED";
-    logger.warn(
-      { code, requestId, status: error instanceof AppError ? error.status : 500 },
-      "Google authentication failed",
-    );
+    const code = toSafeGoogleBrowserErrorCode(error);
+    logger.warn({ code, requestId }, "Google authentication failed");
     return redirectWithError(request, code);
   }
 }
