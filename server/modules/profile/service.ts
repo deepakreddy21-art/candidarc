@@ -271,7 +271,7 @@ export class ProfileService {
     patch: {
       step?: number;
       completed?: boolean;
-      expectedVersion?: number;
+      expectedVersion: number;
       data?: OnboardingStepData;
     },
   ) {
@@ -279,19 +279,22 @@ export class ProfileService {
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
 
-    const current = await this.getOrCreate(ctx);
-
-    if (typeof patch.expectedVersion === "number" && patch.expectedVersion !== current.version) {
-      throw new AppError(
-        "ONBOARDING_STALE",
-        "Onboarding data changed elsewhere. Reload and try again.",
-        409,
-        { expectedVersion: patch.expectedVersion, currentVersion: current.version },
-      );
+    if (typeof patch.expectedVersion !== "number" || !Number.isInteger(patch.expectedVersion) || patch.expectedVersion < 1) {
+      throw new AppError("ONBOARDING_VALIDATION", "expectedVersion is required", 400);
     }
 
-    // Idempotent completion: already done → return as-is (no duplicate writes of evidence/profile).
+    const current = await this.getOrCreate(ctx);
+
+    // Idempotent completion against the already-completed current version.
     if (patch.completed && current.onboardingCompletedAt) {
+      if (patch.expectedVersion !== current.version) {
+        throw new AppError(
+          "ONBOARDING_STALE",
+          "Onboarding data changed elsewhere. Reload and try again.",
+          409,
+          { expectedVersion: patch.expectedVersion, currentVersion: current.version },
+        );
+      }
       return current;
     }
 
@@ -319,27 +322,42 @@ export class ProfileService {
     if (typeof patch.step === "number") onboardingPatch.onboardingStep = patch.step;
     if (patch.data) Object.assign(onboardingPatch, this.applyStepData(patch.data, current));
 
-    let updated = current;
-    if (Object.keys(onboardingPatch).length > 0) {
-      updated = await this.profiles.updateOnboarding(tenantId, user.id, onboardingPatch);
+    const prospective: CandidateProfileRecord = {
+      ...current,
+      ...onboardingPatch,
+    };
+
+    if (patch.completed) {
+      assertCanComplete(prospective);
+      onboardingPatch.onboardingCompletedAt = new Date().toISOString();
+      onboardingPatch.onboardingStep = 3;
+      if (prospective.resumeImportStatus !== "confirmed" && hasManualCareerReady(prospective)) {
+        onboardingPatch.resumeImportStatus = "confirmed";
+      }
     }
+
+    if (Object.keys(onboardingPatch).length === 0) {
+      // No-op write still requires matching version so concurrent writers cannot slip through.
+      if (patch.expectedVersion !== current.version) {
+        throw new AppError(
+          "ONBOARDING_STALE",
+          "Onboarding data changed elsewhere. Reload and try again.",
+          409,
+          { expectedVersion: patch.expectedVersion, currentVersion: current.version },
+        );
+      }
+      return current;
+    }
+
+    const updated = await this.profiles.updateOnboarding(
+      tenantId,
+      user.id,
+      patch.expectedVersion,
+      onboardingPatch,
+    );
 
     if (typeof patch.data?.evidenceNotes === "string" && patch.data.evidenceNotes.trim()) {
       await this.upsertCareerNotesEvidence(tenantId, user.id, updated.id, patch.data.evidenceNotes.trim());
-      updated = (await this.profiles.getByUser(tenantId, user.id)) ?? updated;
-    }
-
-    if (patch.completed) {
-      assertCanComplete(updated);
-      // Mark manual career profile confirmed when completing without upload confirm.
-      const completionPatch: Partial<CandidateProfileRecord> = {
-        onboardingCompletedAt: new Date().toISOString(),
-        onboardingStep: 3,
-      };
-      if (updated.resumeImportStatus !== "confirmed" && hasManualCareerReady(updated)) {
-        completionPatch.resumeImportStatus = "confirmed";
-      }
-      updated = await this.profiles.updateOnboarding(tenantId, user.id, completionPatch);
     }
 
     return updated;

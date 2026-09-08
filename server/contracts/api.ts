@@ -293,7 +293,7 @@ export const updateProfileRequestSchema = z.object({
 export const updateOnboardingRequestSchema = z.object({
   step: z.number().int().min(0).max(3).optional(),
   completed: z.boolean().optional(),
-  expectedVersion: z.number().int().min(1).optional(),
+  expectedVersion: z.number().int().min(1),
   data: z
     .object({
       targetRoles: z.array(z.string().max(120)).max(20).optional(),

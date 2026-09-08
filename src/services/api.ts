@@ -408,7 +408,7 @@ export const api = {
   async updateOnboardingProgress(input: {
     step?: number;
     completed?: boolean;
-    expectedVersion?: number;
+    expectedVersion: number;
     data?: Record<string, unknown>;
   }): Promise<{ step: number; completedAt: string | null; version?: number; profile: CandidateProfile }> {
     const res = await apiFetch<{

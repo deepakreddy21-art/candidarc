@@ -588,6 +588,7 @@ export interface CandidateProfileRepository {
   updateOnboarding(
     tenantId: string,
     userId: string,
+    expectedVersion: number,
     patch: Partial<
       Omit<CandidateProfileRecord, "id" | "publicId" | "tenantId" | "userId" | "createdAt" | "updatedAt" | "deletedAt" | "version">
     >,
@@ -1681,45 +1682,66 @@ export class MemoryRepositories implements Repositories {
         store.candidateProfiles.set(record.id, record);
         return record;
       },
-      async updateOnboarding(tenantId, userId, patch) {
-        let existing: CandidateProfileRecord | null = null;
-        for (const p of store.candidateProfiles.values()) {
-          if (p.tenantId === tenantId && p.userId === userId && !p.deletedAt) {
-            existing = p;
-            break;
+      async updateOnboarding(tenantId, userId, expectedVersion, patch) {
+        return withMemoryClaimLock(`profile:${tenantId}:${userId}`, async () => {
+          let existing: CandidateProfileRecord | null = null;
+          for (const p of store.candidateProfiles.values()) {
+            if (p.tenantId === tenantId && p.userId === userId && !p.deletedAt) {
+              existing = p;
+              break;
+            }
           }
-        }
-        if (!existing) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
-        const updated: CandidateProfileRecord = {
-          ...existing,
-          ...patch,
-          version: existing.version + 1,
-          updatedAt: nowIso(),
-        };
-        store.candidateProfiles.set(existing.id, updated);
-        return updated;
+          if (!existing) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
+          if (existing.version !== expectedVersion) {
+            throw new AppError(
+              "ONBOARDING_STALE",
+              "Onboarding data changed elsewhere. Reload and try again.",
+              409,
+              { expectedVersion, currentVersion: existing.version },
+            );
+          }
+          const updated: CandidateProfileRecord = {
+            ...existing,
+            ...patch,
+            id: existing.id,
+            publicId: existing.publicId,
+            tenantId: existing.tenantId,
+            userId: existing.userId,
+            version: existing.version + 1,
+            updatedAt: nowIso(),
+            deletedAt: existing.deletedAt,
+          };
+          store.candidateProfiles.set(existing.id, updated);
+          return updated;
+        });
       },
       async update(tenantId, userId, patch) {
-        let existing: CandidateProfileRecord | null = null;
-        for (const p of store.candidateProfiles.values()) {
-          if (p.tenantId === tenantId && p.userId === userId && !p.deletedAt) {
-            existing = p;
-            break;
+        return withMemoryClaimLock(`profile:${tenantId}:${userId}`, async () => {
+          let existing: CandidateProfileRecord | null = null;
+          for (const p of store.candidateProfiles.values()) {
+            if (p.tenantId === tenantId && p.userId === userId && !p.deletedAt) {
+              existing = p;
+              break;
+            }
           }
-        }
-        if (!existing) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
-        const updated: CandidateProfileRecord = {
-          ...existing,
-          ...patch,
-          id: existing.id,
-          publicId: existing.publicId,
-          tenantId: existing.tenantId,
-          userId: existing.userId,
-          version: existing.version + 1,
-          updatedAt: nowIso(),
-        };
-        store.candidateProfiles.set(existing.id, updated);
-        return updated;
+          if (!existing) throw new AppError("PROFILE_NOT_FOUND", "Candidate profile not found", 404);
+          const { version: _ignored, ...safePatch } = patch as Partial<CandidateProfileRecord> & {
+            version?: number;
+          };
+          void _ignored;
+          const updated: CandidateProfileRecord = {
+            ...existing,
+            ...safePatch,
+            id: existing.id,
+            publicId: existing.publicId,
+            tenantId: existing.tenantId,
+            userId: existing.userId,
+            version: existing.version + 1,
+            updatedAt: nowIso(),
+          };
+          store.candidateProfiles.set(existing.id, updated);
+          return updated;
+        });
       },
     };
   }

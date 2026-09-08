@@ -14,60 +14,9 @@ import {
   validateStepClient,
   type OnboardingFormState,
 } from "@/components/onboarding/types";
+import { createOnboardingSaveQueue } from "@/lib/onboarding-save-queue";
+import { mergeExtractionPreservingPreferences, profileToForm } from "@/lib/onboarding-form-map";
 import { api, ApiError } from "@/services/api";
-import type { CandidateProfile, ResumeImportExtraction } from "@/types/domain";
-
-function profileToForm(profile: CandidateProfile, extraction: ResumeImportExtraction | null): OnboardingFormState {
-  const base = emptyOnboardingForm();
-  const contact = extraction?.contact ?? {};
-  return {
-    ...base,
-    targetRoles: profile.targetRoleFamilies ?? [],
-    seniority: profile.seniority ?? "",
-    targetCompanies: profile.targetCompanies ?? [],
-    targetIndustries: profile.targetIndustries ?? [],
-    jobTypes: profile.jobTypes ?? [],
-    workplaceModes: profile.workplaceModes ?? [],
-    preferredLocations: profile.preferredLocations ?? [],
-    willingToRelocate: profile.willingToRelocate ?? null,
-    workAuthorization: profile.workAuthorization ?? "",
-    requiresSponsorship: profile.requiresSponsorship ?? null,
-    salaryPreference: profile.salaryPreference ?? "",
-    fullName: profile.fullName || contact.fullName || "",
-    email: profile.email || contact.email || "",
-    phone: profile.phone || contact.phone || "",
-    location: profile.location || contact.location || "",
-    linkedIn: profile.linkedIn || contact.linkedIn || "",
-    github: profile.github || contact.github || "",
-    portfolio: profile.portfolio || contact.portfolio || "",
-    headline: profile.headline || "",
-    summary: profile.summary || "",
-    skills: Array.isArray(extraction?.skills) ? extraction!.skills.filter(Boolean) : [],
-    employment: (extraction?.employment ?? []).map((row) => ({
-      title: row.title,
-      company: row.company,
-      location: row.location,
-      startDate: row.startDate,
-      endDate: row.endDate,
-      bullets: row.bullets ?? [],
-    })),
-    education: (extraction?.education ?? []).map((row) => ({
-      school: row.institution,
-      degree: row.degree,
-      field: row.field,
-      endDate: row.endDate,
-    })),
-    certifications: (extraction?.certifications ?? []).map((name) =>
-      typeof name === "string" ? { name } : { name: "" },
-    ),
-    careerProfileMode:
-      ((extraction as { careerProfileMode?: "upload" | "manual" } | null)?.careerProfileMode as
-        | "upload"
-        | "manual"
-        | undefined) || (profile.resumeImportStatus ? "upload" : ""),
-    evidenceNotes: "",
-  };
-}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -77,7 +26,6 @@ export default function OnboardingPage() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const versionRef = useRef<number | undefined>(undefined);
-  const pendingSave = useRef<Promise<unknown> | null>(null);
   const [form, setForm] = useState<OnboardingFormState>(emptyOnboardingForm);
   const [errors, setErrors] = useState<Partial<Record<string, string>>>({});
   const [importStatus, setImportStatus] = useState<string | null>(null);
@@ -85,39 +33,70 @@ export default function OnboardingPage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const formRef = useRef(form);
   formRef.current = form;
+  const stepRef = useRef(step);
+  stepRef.current = step;
 
-  const persist = useCallback(
-    async (nextForm: OnboardingFormState, nextStep?: number, completed = false) => {
-      setSaving(true);
-      setSaveStatus(null);
-      const run = async () => {
-        try {
-          const result = await api.updateOnboardingProgress({
-            step: nextStep ?? step,
-            completed,
-            data: formToPayload(nextForm),
-          });
-          const nextVersion = result.version ?? result.profile.version;
-          versionRef.current = nextVersion;
-          if (typeof nextStep === "number") setStep(nextStep);
-          setSaveStatus("Saved");
-          return result;
-        } catch (err) {
-          const message = err instanceof ApiError ? err.message : "Could not save progress";
-          toast.error(message);
-          setSaveStatus("Save failed");
-          throw err;
-        } finally {
-          setSaving(false);
+  const handleStale = useCallback(async () => {
+    toast.error("Your profile changed in another tab. Review the latest information before continuing.");
+    try {
+      const saved = await api.getOnboardingProgress();
+      versionRef.current = saved.version ?? saved.data.version;
+      const importState = await api.getResumeImportStatus();
+      setImportStatus(importState.status);
+      setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
+      setSaveStatus("Needs review");
+    } catch {
+      setSaveStatus("Save failed");
+    }
+  }, []);
+
+  const saveQueueRef = useRef<ReturnType<typeof createOnboardingSaveQueue<OnboardingFormState, { version: number }>> | null>(
+    null,
+  );
+  if (!saveQueueRef.current) {
+    saveQueueRef.current = createOnboardingSaveQueue({
+      getExpectedVersion: () => versionRef.current,
+      setVersion: (v) => {
+        versionRef.current = v;
+      },
+      isStaleError: (err) => err instanceof ApiError && err.status === 409,
+      onStale: handleStale,
+      onSavingChange: setSaving,
+      onSaved: () => setSaveStatus("Saved"),
+      onSaveFailed: () => setSaveStatus("Save failed"),
+      save: async (job) => {
+        const result = await api.updateOnboardingProgress({
+          step: job.step ?? stepRef.current,
+          completed: job.completed,
+          expectedVersion: job.expectedVersion,
+          data: formToPayload(job.form),
+        });
+        const nextVersion = result.version ?? result.profile.version;
+        if (typeof nextVersion !== "number") {
+          throw new ApiError("Server did not return an onboarding version", 500);
         }
-      };
-      const promise = run();
-      pendingSave.current = promise.finally(() => {
-        if (pendingSave.current === promise) pendingSave.current = null;
-      });
-      return promise;
+        if (typeof job.step === "number") setStep(job.step);
+        return { version: nextVersion, profile: result.profile };
+      },
+    });
+  }
+  const saveQueue = saveQueueRef.current;
+
+  const enqueueSave = useCallback(
+    (request: { form: OnboardingFormState; step?: number; completed?: boolean }) =>
+      saveQueue.enqueue(request).catch(() => undefined),
+    [saveQueue],
+  );
+
+  const flushQueue = useCallback(
+    async (request?: { form: OnboardingFormState; step?: number; completed?: boolean }) => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
+      await saveQueue.flush(request ?? { form: formRef.current, step: stepRef.current });
     },
-    [step],
+    [saveQueue],
   );
 
   function patchForm(patch: Partial<OnboardingFormState>) {
@@ -126,26 +105,17 @@ export default function OnboardingPage() {
       formRef.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        void persist(next).catch(() => undefined);
+        void enqueueSave({ form: formRef.current });
       }, 700);
       return next;
     });
     setErrors({});
   }
 
-  async function flushPersist(
-    nextForm: OnboardingFormState,
-    nextStep?: number,
-    completed = false,
-  ) {
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-    }
-    if (pendingSave.current) {
-      await pendingSave.current.catch(() => undefined);
-    }
-    return persist(nextForm, nextStep, completed);
+  async function syncVersionFromServer() {
+    const saved = await api.getOnboardingProgress();
+    versionRef.current = saved.version ?? saved.data.version;
+    return saved;
   }
 
   useEffect(() => {
@@ -158,10 +128,11 @@ export default function OnboardingPage() {
         }
         const importState = await api.getResumeImportStatus();
         setImportStatus(importState.status);
-        setForm(profileToForm(saved.data, importState.extraction));
+        const nextForm = profileToForm(saved.data, importState.extraction);
+        formRef.current = nextForm;
+        setForm(nextForm);
         setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
-        const loadedVersion = saved.version ?? saved.data.version;
-        versionRef.current = loadedVersion;
+        versionRef.current = saved.version ?? saved.data.version;
       } catch (err) {
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           router.replace("/sign-in?next=/onboarding");
@@ -180,64 +151,28 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (!importStatus || ["ready_for_review", "confirmed", "failed"].includes(importStatus)) return;
     const timer = setInterval(() => {
-      void api.getResumeImportStatus().then((state) => {
-        setImportStatus(state.status);
-        if (state.extraction) {
-          setForm((prev) => {
-            const mapped = profileToForm(
-              {
-                id: "",
-                fullName: prev.fullName,
-                preferredName: "",
-                email: prev.email,
-                phone: prev.phone,
-                location: prev.location,
-                linkedIn: prev.linkedIn,
-                github: prev.github,
-                portfolio: prev.portfolio,
-                headline: prev.headline,
-                summary: prev.summary,
-                experienceLevel: "experienced",
-                yearsExperience: 0,
-                targetRoleFamilies: prev.targetRoles,
-                preferredResumeLength: "one-page",
-                careerGoal: "",
-                avatarInitials: "",
-                preferredLocations: prev.preferredLocations,
-                seniority: prev.seniority,
-                targetCompanies: prev.targetCompanies,
-                targetIndustries: prev.targetIndustries,
-                jobTypes: prev.jobTypes,
-                workplaceModes: prev.workplaceModes,
-                willingToRelocate: prev.willingToRelocate,
-                workAuthorization: prev.workAuthorization,
-                requiresSponsorship: prev.requiresSponsorship ?? undefined,
-                salaryPreference: prev.salaryPreference,
-              },
-              state.extraction,
-            );
-            return {
-              ...mapped,
-              careerProfileMode: "upload",
-              targetRoles: prev.targetRoles,
-              seniority: prev.seniority,
-              targetCompanies: prev.targetCompanies,
-              targetIndustries: prev.targetIndustries,
-              jobTypes: prev.jobTypes,
-              workplaceModes: prev.workplaceModes,
-              preferredLocations: prev.preferredLocations,
-              willingToRelocate: prev.willingToRelocate,
-              workAuthorization: prev.workAuthorization,
-              requiresSponsorship: prev.requiresSponsorship,
-              salaryPreference: prev.salaryPreference,
-            };
-          });
-        }
-        if (state.status === "ready_for_review") setStatusMessage("Resume ready — review the details below");
-        if (state.status === "failed") {
-          setStatusMessage(state.extraction?.error ?? "Resume parsing failed");
-        }
-      });
+      void api
+        .getResumeImportStatus()
+        .then(async (state) => {
+          setImportStatus(state.status);
+          try {
+            await syncVersionFromServer();
+          } catch {
+            /* keep local version until next successful save */
+          }
+          if (state.extraction) {
+            setForm((prev) => {
+              const next = mergeExtractionPreservingPreferences(prev, state.extraction!);
+              formRef.current = next;
+              return next;
+            });
+          }
+          if (state.status === "ready_for_review") setStatusMessage("Resume ready — review the details below");
+          if (state.status === "failed") {
+            setStatusMessage(state.extraction?.error ?? "Resume parsing failed");
+          }
+        })
+        .catch(() => undefined);
     }, 1500);
     return () => clearInterval(timer);
   }, [importStatus]);
@@ -246,9 +181,11 @@ export default function OnboardingPage() {
     setUploading(true);
     setStatusMessage("Uploading…");
     try {
+      await flushQueue({ form: formRef.current, step: stepRef.current });
       const result = await api.uploadResume(file);
       setImportStatus(result.importStatus);
       setStatusMessage("Upload received — analyzing…");
+      await syncVersionFromServer();
       patchForm({ careerProfileMode: "upload" });
     } catch (err) {
       setStatusMessage(err instanceof ApiError ? err.message : "Upload failed");
@@ -260,12 +197,20 @@ export default function OnboardingPage() {
 
   async function handleConfirmImport() {
     try {
+      await flushQueue({ form: formRef.current, step: stepRef.current });
       const result = await api.confirmResumeImport();
       setImportStatus("confirmed");
-      setForm(profileToForm(result.profile, result.extraction));
+      const nextForm = profileToForm(result.profile, result.extraction);
+      formRef.current = nextForm;
+      setForm(nextForm);
+      versionRef.current = result.profile.version;
       setStatusMessage("Career profile confirmed");
       toast.success("Career details confirmed");
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        await handleStale();
+        return;
+      }
       toast.error(err instanceof ApiError ? err.message : "Could not confirm resume");
     }
   }
@@ -286,32 +231,39 @@ export default function OnboardingPage() {
 
     if (step < 3) {
       try {
-        await flushPersist(current, step + 1);
-      } catch {
-        return;
+        await flushQueue({ form: current, step: step + 1 });
+      } catch (err) {
+        if (!(err instanceof ApiError && err.status === 409)) {
+          toast.error(err instanceof ApiError ? err.message : "Could not save progress");
+        }
       }
       return;
     }
 
     try {
-      await flushPersist(current, 3, true);
+      await flushQueue({ form: current, step: 3, completed: true });
       router.push("/onboarding/complete");
-    } catch {
-      return;
+    } catch (err) {
+      if (!(err instanceof ApiError && err.status === 409)) {
+        toast.error(err instanceof ApiError ? err.message : "Could not finish setup");
+      }
     }
   }
 
   async function handleBack() {
     if (step === 0) return;
     try {
-      await flushPersist(formRef.current, step - 1);
-    } catch {
-      setStep(step - 1);
+      await flushQueue({ form: formRef.current, step: step - 1 });
+    } catch (err) {
+      if (!(err instanceof ApiError && err.status === 409)) {
+        toast.error(err instanceof ApiError ? err.message : "Could not save progress");
+      }
     }
   }
 
   async function handleLogout() {
     try {
+      await flushQueue({ form: formRef.current, step: stepRef.current }).catch(() => undefined);
       const csrf = document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
       await fetch("/api/v1/auth/logout", {
         method: "POST",
@@ -360,7 +312,11 @@ export default function OnboardingPage() {
           form={form}
           importStatus={importStatus}
           onEditStep={(next) => {
-            void flushPersist(formRef.current, next).catch(() => setStep(next));
+            void flushQueue({ form: formRef.current, step: next }).catch((err) => {
+              if (!(err instanceof ApiError && err.status === 409)) {
+                toast.error(err instanceof ApiError ? err.message : "Could not save progress");
+              }
+            });
           }}
         />
       ) : null}
