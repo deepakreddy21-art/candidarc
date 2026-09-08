@@ -76,7 +76,6 @@ export default function OnboardingPage() {
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [step, setStep] = useState(0);
-  const [version, setVersion] = useState<number | undefined>();
   const versionRef = useRef<number | undefined>(undefined);
   const pendingSave = useRef<Promise<unknown> | null>(null);
   const [form, setForm] = useState<OnboardingFormState>(emptyOnboardingForm);
@@ -100,7 +99,6 @@ export default function OnboardingPage() {
           });
           const nextVersion = result.version ?? result.profile.version;
           versionRef.current = nextVersion;
-          setVersion(nextVersion);
           if (typeof nextStep === "number") setStep(nextStep);
           setSaveStatus("Saved");
           return result;
