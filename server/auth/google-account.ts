@@ -41,6 +41,27 @@ export async function resolveGoogleSignIn(
 
   const emailOwner = await repos.users.findByEmail(claims.email);
   if (emailOwner) {
+    // Concurrent signup for the same Google sub may have just created the email/user.
+    // Re-check provider subject before treating this as a password-account collision.
+    const racedIdentity = await repos.authIdentities.findByProviderSubject(
+      GOOGLE_AUTH_PROVIDER,
+      claims.sub,
+    );
+    if (racedIdentity) {
+      const user = await repos.users.findById(racedIdentity.userId);
+      if (user && !user.deletedAt) {
+        await repos.authIdentities.touchEmail(racedIdentity.id, claims.email);
+        const memberships = await repos.users.listMemberships(user.id);
+        const tenant = memberships[0]?.tenant;
+        if (tenant) {
+          logger.info(
+            { code: "GOOGLE_SIGN_IN_RACE_RESOLVED", correlationId, userPublicId: user.publicId },
+            "Google concurrent create resolved to existing identity after email check",
+          );
+          return { user, tenant, created: false };
+        }
+      }
+    }
     logger.info(
       { code: "GOOGLE_ACCOUNT_LINK_REQUIRED", correlationId, emailDomain: claims.email.split("@")[1] },
       "Google email matches existing account — link required",
