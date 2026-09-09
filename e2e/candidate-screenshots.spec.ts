@@ -5,19 +5,48 @@ import { join } from "node:path";
 /**
  * Capture candidate-experience screenshots at required widths.
  * Artifacts land in candidate-screenshots/ (gitignored).
+ *
+ * Defect 6 matrix (1440 + 390): normal jobs, empty jobs, radar retry, resume upload/parse
+ * failures, tailoring failure, PDF-render failure, application conflict, successful preview.
  */
 const widths = [1440, 1024, 768, 390] as const;
 const outDir = join(process.cwd(), "candidate-screenshots");
+
+async function signInDemo(page: import("@playwright/test").Page) {
+  await page.goto("/sign-in");
+  await page.getByLabel(/email/i).fill("deepak@candidarc.dev");
+  await page.getByLabel(/password/i).fill("CandidArc!Demo1");
+  await page.getByRole("button", { name: /sign in|log in/i }).click();
+  await page.waitForURL(/\/app/, { timeout: 60_000 });
+}
+
+async function signUpForOnboarding(page: import("@playwright/test").Page) {
+  const email = `screens-${Date.now()}@example.com`;
+  await page.goto("/sign-up");
+  await page.locator("#name").fill("Harbor Screenshot Tester");
+  await page.locator("#email").fill(email);
+  await page.locator("#password").fill("OnboardTest!123");
+  await page.getByRole("button", { name: /create|sign up|register/i }).click();
+  await page.waitForURL(/\/onboarding/, { timeout: 60_000 });
+  await expect(page.locator("header").getByText(/step 1 of 4/i)).toBeVisible({ timeout: 30_000 });
+  await page.locator("#target-roles").click();
+  await page.locator("#target-roles").type("Platform Engineer", { delay: 10 });
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Senior", exact: true }).click();
+  await page.getByRole("button", { name: /^continue$/i }).click();
+  await expect(page.locator("header").getByText(/step 2 of 4/i)).toBeVisible();
+  await page.getByRole("group", { name: /job types/i }).getByRole("button", { name: "Full-time" }).click();
+  await page.getByRole("group", { name: /workplace modes/i }).getByRole("button", { name: "Remote" }).click();
+  await page.getByRole("button", { name: /^continue$/i }).click();
+  await expect(page.locator("header").getByText(/step 3 of 4/i)).toBeVisible();
+  await page.getByRole("button", { name: /upload a resume/i }).click();
+}
 
 test.describe("candidate screenshots", () => {
   test("capture jobs, detail, filters, resume, applications states", async ({ page }) => {
     mkdirSync(outDir, { recursive: true });
 
-    await page.goto("/sign-in");
-    await page.getByLabel(/email/i).fill("deepak@candidarc.dev");
-    await page.getByLabel(/password/i).fill("CandidArc!Demo1");
-    await page.getByRole("button", { name: /sign in|log in/i }).click();
-    await page.waitForURL(/\/app/, { timeout: 60_000 });
+    await signInDemo(page);
 
     for (const width of widths) {
       await page.setViewportSize({ width, height: width < 768 ? 844 : 900 });
@@ -49,6 +78,8 @@ test.describe("candidate screenshots", () => {
     if (await continueWithout.isVisible().catch(() => false)) await continueWithout.click();
     await expect(page.getByText(/Download|PDF|Word|ready/i).first()).toBeVisible({ timeout: 90_000 });
     await page.screenshot({ path: join(outDir, "resume-result-1440.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(outDir, "resume-result-390.png"), fullPage: true });
 
     await page.goto("/app/opportunities");
     await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();
@@ -134,5 +165,100 @@ test.describe("candidate screenshots", () => {
       await page.screenshot({ path: join(outDir, "application-version-conflict-390.png"), fullPage: true });
     }
     await page.unroute("**/api/v1/applications/**");
+
+    // PDF render failure (fictional Northwind Labs workflow)
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.route("**/api/v1/resumes/workflows/wf_pdf_fail_demo", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          workflowId: "wf_pdf_fail_demo",
+          applicationId: "app_pdf_fail_demo",
+          status: "failed",
+          message: "PDF render failed — fictional Harbor Systems demo error.",
+          error: "PDF_RENDER_FAILED",
+          pipelineStage: "failed",
+          downloads: { pdfReady: false, docxReady: false },
+        }),
+      });
+    });
+    await page.goto("/app/resumes/wf_pdf_fail_demo");
+    await expect(page.getByRole("button", { name: /retry/i }).first()).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: join(outDir, "pdf-render-failure-1440.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(outDir, "pdf-render-failure-390.png"), fullPage: true });
+    await page.unroute("**/api/v1/resumes/workflows/wf_pdf_fail_demo");
+
+    // Onboarding resume upload failure + Retry affordance (fictional data only)
+    await signUpForOnboarding(page);
+    await page.route("**/api/v1/profile/resume/upload", async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "UPLOAD_FAILED", message: "Upload failed — fictional Harbor Systems demo error." },
+        }),
+      });
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "northwind-labs-resume.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4 fictional"),
+    });
+    await expect(page.getByText(/upload failed|could not upload/i).first()).toBeVisible({ timeout: 15_000 });
+    await page.screenshot({ path: join(outDir, "resume-upload-failure-1440.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(outDir, "resume-upload-failure-390.png"), fullPage: true });
+    await page.unroute("**/api/v1/profile/resume/upload");
+
+    // Parsing failure with Retry (mock import status after upload succeeds)
+    await page.route("**/api/v1/profile/resume/upload", async (route) => {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          file: { id: "file_parse_fail_demo", purpose: "resume-import", mimeType: "application/pdf", size: 128 },
+          importStatus: "extracting",
+        }),
+      });
+    });
+    await page.route("**/api/v1/profile/resume/import", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "failed",
+          extraction: {
+            errorCode: "PARSE_FAILED",
+            error: "Could not structure résumé content — fictional Northwind Labs demo error.",
+            usable: false,
+            employment: [],
+            skills: [],
+            education: [],
+          },
+        }),
+      });
+    });
+    await page.reload();
+    await expect(page.locator("header").getByText(/step 3 of 4/i)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: /upload a resume/i }).click();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "harbor-systems-resume.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4 fictional"),
+    });
+    await expect(page.getByRole("button", { name: /^retry$/i })).toBeVisible({ timeout: 30_000 });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.screenshot({ path: join(outDir, "resume-parse-failure-1440.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(outDir, "resume-parse-failure-390.png"), fullPage: true });
+    await page.unroute("**/api/v1/profile/resume/upload");
+    await page.unroute("**/api/v1/profile/resume/import");
   });
 });
