@@ -525,6 +525,7 @@ export const api = {
       roleFamily: string;
       nextAction: string;
       candidateStatus: Application["candidateStatus"];
+      expectedVersion: number;
     }>,
   ): Promise<Application> {
     const res = await apiFetch<{ application: Application }>(`/applications/${id}`, {

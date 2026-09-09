@@ -82,6 +82,10 @@ export class ApplicationsService {
       stage: "RESEARCH_QUEUED",
       workflowStage: "RESEARCH_QUEUED",
       nextAction: "Wait for research",
+      metadata: {
+        ...(app.metadata ?? {}),
+        customerWorkflowPublicId: workflow.publicId,
+      },
     });
 
     logger.info(
@@ -89,7 +93,12 @@ export class ApplicationsService {
       "application created",
     );
 
-    return { application: { ...app, stage: "RESEARCH_QUEUED" as const, workflowStage: "RESEARCH_QUEUED" as const }, workflow };
+    const refreshed = (await this.applications.getByPublicId(tenantId, app.publicId)) ?? {
+      ...app,
+      stage: "RESEARCH_QUEUED" as const,
+      workflowStage: "RESEARCH_QUEUED" as const,
+    };
+    return { application: refreshed, workflow };
   }
 
   async list(ctx: AuthContext, includeArchived = false) {
@@ -113,15 +122,51 @@ export class ApplicationsService {
     roleFamily: string;
     nextAction: string;
     candidateStatus?: string;
+    expectedVersion?: number;
   }>) {
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
-    const { candidateStatus, ...rest } = patch;
+    const { candidateStatus, expectedVersion, ...rest } = patch;
     if (candidateStatus === undefined) {
       return this.applications.update(tenantId, applicationPublicId, rest);
     }
     const existing = await this.applications.getByPublicId(tenantId, applicationPublicId);
     if (!existing) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
+
+    const allowed = new Set([
+      "Saved",
+      "Ready to apply",
+      "Applied",
+      "Interviewing",
+      "Offer",
+      "Rejected",
+      "Withdrawn",
+    ]);
+    if (!allowed.has(candidateStatus)) {
+      throw new AppError("INVALID_STATUS", "Unsupported application status", 400);
+    }
+
+    // Idempotent: same status with matching version is a no-op success.
+    const currentStatus =
+      typeof existing.metadata?.candidateStatus === "string"
+        ? existing.metadata.candidateStatus
+        : undefined;
+    if (
+      currentStatus === candidateStatus &&
+      (expectedVersion === undefined || expectedVersion === existing.version)
+    ) {
+      return existing;
+    }
+
+    if (expectedVersion !== undefined && existing.version !== expectedVersion) {
+      throw new AppError(
+        "APPLICATION_VERSION_CONFLICT",
+        "Application was updated elsewhere. Reload and try again.",
+        409,
+        { expectedVersion, currentVersion: existing.version, application: existing },
+      );
+    }
+
     return this.applications.update(tenantId, applicationPublicId, {
       ...rest,
       metadata: {

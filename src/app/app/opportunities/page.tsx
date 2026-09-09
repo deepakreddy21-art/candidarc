@@ -23,7 +23,7 @@ import {
   type CandidateApplicationStatus,
 } from "@/lib/application-presentation";
 import { cn, formatRelative } from "@/lib/utils";
-import { api } from "@/services/api";
+import { api, ApiError } from "@/services/api";
 import type { Application } from "@/types/domain";
 
 type Row = Application & { candidateStatus: CandidateApplicationStatus };
@@ -63,11 +63,58 @@ export default function OpportunitiesPage() {
   }, [apps, query, statusFilter]);
 
   async function updateStatus(id: string, candidateStatus: CandidateApplicationStatus) {
+    const current = apps.find((a) => a.id === id);
+    const previousStatus = current?.candidateStatus;
     setApps((prev) => prev.map((a) => (a.id === id ? { ...a, candidateStatus } : a)));
     try {
-      await api.updateApplication(id, { candidateStatus });
+      const updated = await api.updateApplication(id, {
+        candidateStatus,
+        expectedVersion: current?.version,
+      });
+      setApps((prev) =>
+        prev.map((a) =>
+          a.id === id
+            ? {
+                ...a,
+                ...updated,
+                candidateStatus: defaultCandidateStatus({
+                  ...updated,
+                  candidateStatus: updated.candidateStatus ?? candidateStatus,
+                }),
+              }
+            : a,
+        ),
+      );
       toast.success("Status updated");
     } catch (err) {
+      // Keep the candidate's selection visible; offer reload on conflict.
+      if (err instanceof ApiError && err.status === 409) {
+        toast.error("Status changed in another tab. Reload or retry with the latest version.", {
+          action: {
+            label: "Reload",
+            onClick: () => {
+              void api.listApplications().then((items) => {
+                setApps(
+                  items
+                    .filter((a) => !a.archived)
+                    .map((a) => ({
+                      ...a,
+                      candidateStatus: defaultCandidateStatus({
+                        ...a,
+                        candidateStatus: a.candidateStatus,
+                      }),
+                    })),
+                );
+              });
+            },
+          },
+        });
+        // Keep the candidate's unsaved selection visible for retry.
+        return;
+      }
+      setApps((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, candidateStatus: previousStatus ?? a.candidateStatus } : a)),
+      );
       toast.error(err instanceof Error ? err.message : "Could not update status");
     }
   }
@@ -187,8 +234,8 @@ export default function OpportunitiesPage() {
                       <td className="px-3 py-3">
                         <div className="flex flex-wrap gap-2">
                           <span className="text-foreground-secondary">{next}</span>
-                          {app.resumeId ? (
-                            <Link href={`/app/resumes/${app.id}`} className="text-accent hover:underline">
+                          {app.workflowId || app.resumeId ? (
+                            <Link href={`/app/resumes/${app.workflowId ?? app.resumeId}`} className="text-accent hover:underline">
                               View resume
                             </Link>
                           ) : null}
@@ -258,7 +305,7 @@ export default function OpportunitiesPage() {
                   <div className={cn("flex flex-wrap gap-3 text-sm")}>
                     <span className="text-foreground-secondary">{next}</span>
                     {app.resumeId ? (
-                      <Link href={`/app/resumes/${app.id}`} className="text-accent">
+                      <Link href={`/app/resumes/${app.workflowId ?? app.resumeId}`} className="text-accent">
                         View resume
                       </Link>
                     ) : null}

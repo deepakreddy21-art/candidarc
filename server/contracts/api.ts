@@ -30,6 +30,8 @@ export const updateApplicationRequestSchema = z.object({
   candidateStatus: z
     .enum(["Saved", "Ready to apply", "Applied", "Interviewing", "Offer", "Rejected", "Withdrawn"])
     .optional(),
+  /** Optimistic concurrency token — required when changing candidateStatus. */
+  expectedVersion: z.number().int().positive().optional(),
 });
 
 export const applicationResponseSchema = z.object({

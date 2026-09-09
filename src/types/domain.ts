@@ -335,6 +335,10 @@ export interface Application {
     | "Offer"
     | "Rejected"
     | "Withdrawn";
+  /** Optimistic concurrency token for status updates. */
+  version?: number;
+  /** Latest customer resume workflow public id for deep links. */
+  workflowId?: string;
 }
 
 export interface ActivityEvent {

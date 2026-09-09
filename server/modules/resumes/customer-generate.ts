@@ -222,12 +222,27 @@ export class CustomerGenerateService {
       message: "Customer resume generation queued",
       payload: { customerFacing: true, autoAdvanceAudits: true, cycleBase: 0 },
     });
+    await this.repos.applications.update(tenantId, app.publicId, {
+      metadata: {
+        ...app.metadata,
+        customerFacing: true,
+        customerWorkflowPublicId: workflow.publicId,
+      },
+    });
     return { workflowId: workflow.publicId, applicationId: app.publicId, status: "queued" as const };
   }
 
   async getCustomerWorkflow(ctx: AuthContext, workflowId: string) {
     const { tenantId, user } = this.tenant(ctx);
-    const requested = await this.repos.workflows.getByPublicId(tenantId, workflowId);
+    let requested = await this.repos.workflows.getByPublicId(tenantId, workflowId);
+    // Deep-link compatibility: Applications may historically link by application public id.
+    if (!requested) {
+      const byApp = await this.repos.applications.getByPublicId(tenantId, workflowId);
+      if (byApp) {
+        const runs = await this.repos.workflows.listByApplication(tenantId, byApp.publicId);
+        requested = runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null;
+      }
+    }
     if (!requested) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
     const app = await this.repos.applications.getByPublicId(tenantId, requested.applicationPublicId);
     if (!app || app.metadata?.customerFacing !== true) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
@@ -604,7 +619,13 @@ export class CustomerGenerateService {
       stage: "RESEARCH_QUEUED",
       workflowStage: "RESEARCH_QUEUED",
       status: "researching",
-      metadata: { ...app.metadata, customerFiles: undefined, refinementInstruction: input.instruction, enhancementAvailable: false },
+      metadata: {
+        ...app.metadata,
+        customerFiles: undefined,
+        refinementInstruction: input.instruction,
+        enhancementAvailable: false,
+        customerWorkflowPublicId: workflow.publicId,
+      },
     });
     return { workflowId: workflow.publicId, applicationId: app.publicId, status: "queued" as const };
   }
