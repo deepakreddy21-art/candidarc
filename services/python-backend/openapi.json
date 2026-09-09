@@ -2440,6 +2440,87 @@
         "title": "ResumeItem",
         "type": "object"
       },
+      "ResumeParseCertification": {
+        "additionalProperties": false,
+        "properties": {
+          "credential_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Id"
+          },
+          "credential_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Url"
+          },
+          "expiration_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiration Date"
+          },
+          "issue_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue Date"
+          },
+          "issuer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeParseProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ResumeParseCertification",
+        "type": "object"
+      },
       "ResumeParseContact": {
         "additionalProperties": false,
         "properties": {
@@ -2453,6 +2534,26 @@
               }
             ],
             "title": "Email"
+          },
+          "emails": {
+            "items": {
+              "maxLength": 320,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Emails",
+            "type": "array"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name"
           },
           "full_name": {
             "anyOf": [
@@ -2476,6 +2577,17 @@
             ],
             "title": "Github"
           },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name"
+          },
           "linkedin": {
             "anyOf": [
               {
@@ -2498,6 +2610,26 @@
             ],
             "title": "Location"
           },
+          "middle_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Middle Name"
+          },
+          "other_urls": {
+            "items": {
+              "maxLength": 512,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Other Urls",
+            "type": "array"
+          },
           "phone": {
             "anyOf": [
               {
@@ -2509,6 +2641,15 @@
             ],
             "title": "Phone"
           },
+          "phones": {
+            "items": {
+              "maxLength": 64,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Phones",
+            "type": "array"
+          },
           "portfolio": {
             "anyOf": [
               {
@@ -2519,6 +2660,16 @@
               }
             ],
             "title": "Portfolio"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeParseProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ResumeParseContact",
@@ -2560,6 +2711,28 @@
             ],
             "title": "Field"
           },
+          "gpa": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpa"
+          },
+          "honors": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Honors"
+          },
           "institution": {
             "anyOf": [
               {
@@ -2570,6 +2743,38 @@
               }
             ],
             "title": "Institution"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeParseProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
           }
         },
         "title": "ResumeParseEducation",
@@ -2609,6 +2814,17 @@
             ],
             "title": "End Date"
           },
+          "is_current": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Current"
+          },
           "location": {
             "anyOf": [
               {
@@ -2620,6 +2836,29 @@
             ],
             "title": "Location"
           },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeParseProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_order": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Order"
+          },
           "start_date": {
             "anyOf": [
               {
@@ -2630,6 +2869,15 @@
               }
             ],
             "title": "Start Date"
+          },
+          "technologies": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Technologies",
+            "type": "array"
           },
           "title": {
             "anyOf": [
@@ -2681,6 +2929,15 @@
       "ResumeParseProject": {
         "additionalProperties": false,
         "properties": {
+          "bullets": {
+            "items": {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Bullets",
+            "type": "array"
+          },
           "description": {
             "anyOf": [
               {
@@ -2691,6 +2948,17 @@
               }
             ],
             "title": "Description"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
           },
           "name": {
             "anyOf": [
@@ -2703,6 +2971,60 @@
             ],
             "title": "Name"
           },
+          "organization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeParseProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Url"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
           "technologies": {
             "items": {
               "maxLength": 128,
@@ -2711,9 +3033,183 @@
             "maxItems": 40,
             "title": "Technologies",
             "type": "array"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
           }
         },
         "title": "ResumeParseProject",
+        "type": "object"
+      },
+      "ResumeParseProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "default": "medium",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Confidence",
+            "type": "string"
+          },
+          "extracted_or_normalized": {
+            "default": "extracted",
+            "enum": [
+              "extracted",
+              "normalized"
+            ],
+            "title": "Extracted Or Normalized",
+            "type": "string"
+          },
+          "location_hint": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Hint"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "source_text": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Text"
+          },
+          "warnings": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "title": "ResumeParseProvenance",
+        "type": "object"
+      },
+      "ResumeParsePublication": {
+        "additionalProperties": false,
+        "properties": {
+          "authors": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Authors",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "doi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doi"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeParseProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Date"
+          },
+          "publisher": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher"
+          },
+          "title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "ResumeParsePublication",
         "type": "object"
       },
       "ResumeParseRequest": {
@@ -2753,6 +3249,14 @@
       "ResumeParseResponse": {
         "additionalProperties": false,
         "properties": {
+          "certification_entries": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeParseCertification"
+            },
+            "maxItems": 40,
+            "title": "Certification Entries",
+            "type": "array"
+          },
           "certifications": {
             "items": {
               "maxLength": 256,
@@ -2834,12 +3338,46 @@
             ],
             "title": "Page Count"
           },
+          "professional_summary": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Professional Summary"
+          },
           "projects": {
             "items": {
               "$ref": "#/components/schemas/ResumeParseProject"
             },
             "maxItems": 20,
             "title": "Projects",
+            "type": "array"
+          },
+          "publications": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeParsePublication"
+            },
+            "maxItems": 40,
+            "title": "Publications",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 2,
+            "default": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "skill_groups": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeParseSkillGroup"
+            },
+            "maxItems": 40,
+            "title": "Skill Groups",
             "type": "array"
           },
           "skills": {
@@ -2881,6 +3419,31 @@
           "text"
         ],
         "title": "ResumeParseResponse",
+        "type": "object"
+      },
+      "ResumeParseSkillGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Category",
+            "type": "string"
+          },
+          "skills": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "title": "ResumeParseSkillGroup",
         "type": "object"
       },
       "ResumeSection-Input": {

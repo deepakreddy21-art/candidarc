@@ -55,15 +55,80 @@ def test_professional_experience_pdf_structures_roles(client: TestClient, auth_h
     response = _parse(client, auth_headers, ctx, "resume.pdf", "application/pdf", raw)
     assert response.status_code == 200, response.text
     body = response.json()
+    assert body.get("schema_version") == 2
     assert len(body["employment"]) >= 2
     employers = {row.get("employer") for row in body["employment"]}
     assert "Harbor Systems" in employers or any("Harbor" in (e or "") for e in employers)
     assert any(row.get("title") for row in body["employment"])
     assert any(row.get("bullets") for row in body["employment"])
+    assert any(row.get("is_current") for row in body["employment"])
     assert any("TypeScript" in s or "Kubernetes" in s for s in body["skills"])
     assert body["education"]
     assert body["contact"]["email"]
+    assert body["contact"].get("first_name") or body["contact"].get("full_name")
+    # Do not attach global skills onto every employer.
+    for job in body["employment"]:
+        assert set(job.get("technologies") or []).issubset(
+            {t for t in (job.get("technologies") or [])} | set()
+        )
+        for tech in job.get("technologies") or []:
+            assert any(tech.lower() in (b or "").lower() for b in (job.get("bullets") or []))
     assert body["usable"] is True
+
+
+def test_legacy_doc_unsupported(client: TestClient, auth_headers: dict[str, str], ctx: RequestContext):
+    response = _parse(
+        client,
+        auth_headers,
+        ctx,
+        "resume.doc",
+        "application/msword",
+        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32,
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "LEGACY_DOC_UNSUPPORTED"
+    assert "docx" in response.json()["detail"]["message"].lower()
+
+
+def test_rich_resume_publications_and_certs(client: TestClient, auth_headers: dict[str, str], ctx: RequestContext):
+    rich = """Maria Elena Vasquez-Smith
+maria.vasquez@example.com | (555) 010-9988 | Austin, TX
+
+PROFESSIONAL SUMMARY
+Platform engineer focused on reliable data systems.
+
+PROFESSIONAL EXPERIENCE
+Staff Engineer | Riverbend Analytics | Austin, TX
+Mar 2022 - Present
+- Led migration of batch pipelines to Apache Spark on AWS
+
+PROJECTS
+Campus Lab Scheduler
+- Built a Next.js scheduling board
+- Stack: TypeScript, PostgreSQL
+
+EDUCATION
+M.S. Computer Science | Hillcrest Institute | 2018 | GPA: 3.8
+
+SKILLS
+Languages: TypeScript, Python, SQL
+
+CERTIFICATIONS
+AWS Solutions Architect Associate | Amazon | 2021
+
+PUBLICATIONS
+Vasquez-Smith, M. Reliable Batch Pipelines. Journal of Systems Practice (2022). doi:10.1000/josp.2022.001
+"""
+    response = _parse(client, auth_headers, ctx, "rich.txt", "text/plain", rich.encode("utf-8"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["schema_version"] == 2
+    assert body["professional_summary"]
+    assert body["publications"]
+    assert body["certification_entries"]
+    assert body["contact"]["full_name"]
+    assert "TypeScript" in body["skills"] or any("TypeScript" in g.get("skills", []) for g in body.get("skill_groups", []))
+
 
 
 def test_work_history_heading(client: TestClient, auth_headers: dict[str, str], ctx: RequestContext):

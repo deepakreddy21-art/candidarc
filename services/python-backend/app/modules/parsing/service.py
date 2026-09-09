@@ -11,12 +11,16 @@ from typing import Any
 
 from app.domain.schemas import (
     JobParseResponse,
+    ResumeParseCertification,
     ResumeParseContact,
     ResumeParseEducation,
     ResumeParseEmployment,
     ResumeParseEvidence,
     ResumeParseProject,
+    ResumeParseProvenance,
+    ResumeParsePublication,
     ResumeParseResponse,
+    ResumeParseSkillGroup,
 )
 from app.modules.guardrails.service import INJECTION_MARKERS, KNOWN_TECH_HINTS
 from app.modules.parsing.structure import structure_resume_text
@@ -42,22 +46,44 @@ def _decode_base64_strict(content_base64: str) -> bytes:
     return raw
 
 
+def _map_provenance(raw: dict[str, Any] | None) -> ResumeParseProvenance | None:
+    if not raw:
+        return None
+    return ResumeParseProvenance(
+        source_text=raw.get("source_text"),
+        page_number=raw.get("page_number"),
+        location_hint=raw.get("location_hint"),
+        confidence=raw.get("confidence") or "medium",
+        warnings=list(raw.get("warnings") or [])[:20],
+        extracted_or_normalized=raw.get("extracted_or_normalized") or "extracted",
+    )
+
+
 def _with_structure(text: str, page_count: int | None, warnings: list[str]) -> ResumeParseResponse:
     structured = structure_resume_text(text, warnings)
     contact_raw = structured.get("contact") or {}
     return ResumeParseResponse(
+        schema_version=2,
         text=text[:500_000],
         page_count=page_count if page_count is not None else structured.get("page_count"),
         warnings=list(structured.get("warnings") or warnings),
         contact=ResumeParseContact(
             full_name=contact_raw.get("full_name"),
+            first_name=contact_raw.get("first_name"),
+            middle_name=contact_raw.get("middle_name"),
+            last_name=contact_raw.get("last_name"),
             email=contact_raw.get("email"),
+            emails=list(contact_raw.get("emails") or [])[:10],
             phone=contact_raw.get("phone"),
+            phones=list(contact_raw.get("phones") or [])[:10],
             location=contact_raw.get("location"),
             linkedin=contact_raw.get("linkedin"),
             github=contact_raw.get("github"),
             portfolio=contact_raw.get("portfolio"),
+            other_urls=list(contact_raw.get("other_urls") or [])[:20],
+            provenance=_map_provenance(contact_raw.get("provenance")),
         ),
+        professional_summary=structured.get("professional_summary"),
         employment=[
             ResumeParseEmployment(
                 title=item.get("title"),
@@ -65,7 +91,11 @@ def _with_structure(text: str, page_count: int | None, warnings: list[str]) -> R
                 location=item.get("location"),
                 start_date=item.get("start_date"),
                 end_date=item.get("end_date"),
+                is_current=item.get("is_current"),
                 bullets=list(item.get("bullets") or [])[:40],
+                technologies=list(item.get("technologies") or [])[:40],
+                source_order=item.get("source_order"),
+                provenance=_map_provenance(item.get("provenance")),
             )
             for item in structured.get("employment") or []
         ],
@@ -74,20 +104,65 @@ def _with_structure(text: str, page_count: int | None, warnings: list[str]) -> R
                 institution=item.get("institution"),
                 degree=item.get("degree"),
                 field=item.get("field"),
+                location=item.get("location"),
+                start_date=item.get("start_date"),
                 end_date=item.get("end_date"),
+                gpa=item.get("gpa"),
+                honors=item.get("honors"),
+                provenance=_map_provenance(item.get("provenance")),
             )
             for item in structured.get("education") or []
         ],
         projects=[
             ResumeParseProject(
                 name=item.get("name"),
+                role=item.get("role"),
+                organization=item.get("organization"),
+                start_date=item.get("start_date"),
+                end_date=item.get("end_date"),
                 description=item.get("description"),
+                bullets=list(item.get("bullets") or [])[:40],
                 technologies=list(item.get("technologies") or [])[:40],
+                url=item.get("url"),
+                repo_url=item.get("repo_url"),
+                provenance=_map_provenance(item.get("provenance")),
             )
             for item in structured.get("projects") or []
         ],
         skills=list(structured.get("skills") or [])[:200],
+        skill_groups=[
+            ResumeParseSkillGroup(category=g.get("category") or "Skills", skills=list(g.get("skills") or [])[:100])
+            for g in structured.get("skill_groups") or []
+            if g.get("category")
+        ],
         certifications=list(structured.get("certifications") or [])[:40],
+        certification_entries=[
+            ResumeParseCertification(
+                name=item.get("name") or "Certification",
+                issuer=item.get("issuer"),
+                issue_date=item.get("issue_date"),
+                expiration_date=item.get("expiration_date"),
+                credential_id=item.get("credential_id"),
+                credential_url=item.get("credential_url"),
+                provenance=_map_provenance(item.get("provenance")),
+            )
+            for item in structured.get("certification_entries") or []
+            if item.get("name")
+        ],
+        publications=[
+            ResumeParsePublication(
+                title=item.get("title") or "Publication",
+                authors=list(item.get("authors") or [])[:40],
+                publisher=item.get("publisher"),
+                publication_date=item.get("publication_date"),
+                doi=item.get("doi"),
+                url=item.get("url"),
+                description=item.get("description"),
+                provenance=_map_provenance(item.get("provenance")),
+            )
+            for item in structured.get("publications") or []
+            if item.get("title")
+        ],
         evidence=[
             ResumeParseEvidence(
                 title=item.get("title") or "Evidence",
@@ -266,9 +341,16 @@ def parse_resume_bytes_sync(filename: str, content_type: str, content_base64: st
     lowered = filename.lower()
     ctype = content_type.lower()
 
+    if lowered.endswith(".doc") and not lowered.endswith(".docx"):
+        raise ValueError("LEGACY_DOC_UNSUPPORTED")
+    if "msword" in ctype and "officedocument" not in ctype and not lowered.endswith(".docx"):
+        raise ValueError("LEGACY_DOC_UNSUPPORTED")
+
     if "pdf" in ctype or lowered.endswith(".pdf"):
         return _parse_pdf(raw)
-    if "word" in ctype or "officedocument" in ctype or lowered.endswith(".docx"):
+    if "officedocument" in ctype or lowered.endswith(".docx"):
+        return _parse_docx(raw)
+    if "word" in ctype and lowered.endswith(".docx"):
         return _parse_docx(raw)
     if ctype.startswith("text/") or lowered.endswith(".txt"):
         return _parse_txt(raw)
