@@ -45,6 +45,10 @@ export default function OnboardingPage() {
       versionRef.current = saved.version ?? saved.data.version;
       const importState = await api.getResumeImportStatus();
       setImportStatus(importState.status);
+      setImportErrorCode(importState.extraction?.errorCode ?? null);
+      const nextForm = profileToForm(saved.data, importState.extraction);
+      formRef.current = nextForm;
+      setForm(nextForm);
       setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
       setSaveStatus("Needs review");
     } catch {
@@ -182,6 +186,7 @@ export default function OnboardingPage() {
           }
           if (state.status === "ready_for_review") {
             setStatusMessage("Resume ready — review the details below, then Continue");
+            setSaveStatus(null);
           }
           if (state.status === "failed") {
             setStatusMessage(state.extraction?.error ?? "Resume parsing failed");
