@@ -12,7 +12,6 @@ import { DbWorkflowEngine } from "../../server/workflows/engine";
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
 import { RadarService } from "../../server/radar/service";
 import { getSharedCatalog, seedDemoCatalog } from "../../server/radar/catalog";
-import { AppError } from "../../server/domain/types";
 
 function authFor(userId: string, tenantId: string, repos: Repositories, email: string = DEMO_USER.email): AuthContext {
   return {
@@ -80,129 +79,8 @@ describe("opportunity brief cache isolation", () => {
     const job = [...catalog.canonicalJobs.values()][0];
     expect(job).toBeTruthy();
 
-    const storeA = createEmptyMemoryStore();
-    const storeB = createEmptyMemoryStore();
-    const a = await ensureDemoUser(storeA);
-    const b = await ensureDemoUser(storeB);
-
-    await a.repos.candidateProfiles.upsert({
-      id: newId("cp"),
-      publicId: newId("cpp"),
-      tenantId: a.tenantId,
-      userId: a.userId,
-      fullName: "User A",
-      preferredName: null,
-      email: "a@example.com",
-      phone: null,
-      location: null,
-      linkedIn: null,
-      github: null,
-      portfolio: null,
-      headline: null,
-      summary: null,
-      experienceLevel: null,
-      yearsExperience: 8,
-      targetRoleFamilies: ["Platform"],
-      preferredResumeLength: "one-page",
-      careerGoal: "Platform leadership",
-      avatarInitials: "UA",
-      remoteOk: true,
-      preferredLocations: [],
-      workAuthorization: null,
-      requiresSponsorship: null,
-      targetCompanies: [],
-      targetIndustries: [],
-      jobTypes: [],
-      workplaceModes: [],
-      willingToRelocate: null,
-      salaryPreference: null,
-      seniority: "senior",
-      onboardingStep: 3,
-      onboardingCompletedAt: new Date().toISOString(),
-      modelImprovementOptIn: false,
-      sourceResumeFilePublicId: null,
-      resumeImportStatus: "confirmed",
-      resumeImportExtraction: {
-        skills: ["TypeScript", "Kubernetes"],
-        employment: [],
-        education: [],
-        projects: [],
-        certifications: [],
-        evidence: [],
-        rawText: "",
-        parseWarnings: [],
-      },
-    });
-
-    await b.repos.candidateProfiles.upsert({
-      id: newId("cp"),
-      publicId: newId("cpp"),
-      tenantId: b.tenantId,
-      userId: b.userId,
-      fullName: "User B",
-      preferredName: null,
-      email: "b@example.com",
-      phone: null,
-      location: null,
-      linkedIn: null,
-      github: null,
-      portfolio: null,
-      headline: null,
-      summary: null,
-      experienceLevel: null,
-      yearsExperience: 1,
-      targetRoleFamilies: ["Design"],
-      preferredResumeLength: "one-page",
-      careerGoal: "Product design",
-      avatarInitials: "UB",
-      remoteOk: true,
-      preferredLocations: [],
-      workAuthorization: null,
-      requiresSponsorship: null,
-      targetCompanies: [],
-      targetIndustries: [],
-      jobTypes: [],
-      workplaceModes: [],
-      willingToRelocate: null,
-      salaryPreference: null,
-      seniority: "entry",
-      onboardingStep: 3,
-      onboardingCompletedAt: new Date().toISOString(),
-      modelImprovementOptIn: false,
-      sourceResumeFilePublicId: null,
-      resumeImportStatus: "confirmed",
-      resumeImportExtraction: {
-        skills: ["Figma"],
-        employment: [],
-        education: [],
-        projects: [],
-        certifications: [],
-        evidence: [],
-        rawText: "",
-        parseWarnings: [],
-      },
-    });
-
-    // Single service instance — previously keyed only by jobId (cross-user leak).
-    const service = new RadarService(catalog, undefined, a.repos);
-    // Swap repos per call by constructing with a shared cache map via one service that
-    // uses getProfileForMatch from its repos — use two services that share the same Map:
-    const shared = new RadarService(catalog, undefined, a.repos);
-    const authA = authFor(a.userId, a.tenantId, a.repos, "a@example.com");
-    const briefA1 = await shared.getOpportunityBrief(authA, job!.publicId);
-    expect(briefA1.cached).toBe(false);
-    const briefA2 = await shared.getOpportunityBrief(authA, job!.publicId);
-    expect(briefA2.cached).toBe(true);
-
-    // Inject B's repos into a second service that shares no cache — proves separation.
-    // To prove same-Map isolation, attach B through a wrapper service that uses B repos
-    // but we need same cachedBriefs Map. Expose via creating service then overwriting repos is hard.
-    // Practical approach: spy that B's first fetch is uncached even after A was cached,
-    // using a custom RadarService subclass... Simpler: put both profiles in one store.
-    
     const sharedStore = createEmptyMemoryStore();
     const sharedDemo = await ensureDemoUser(sharedStore);
-    const tenantB = newId("ten");
     const userB = newId("usr");
     await sharedDemo.repos.users.create({
       id: userB,
@@ -212,7 +90,6 @@ describe("opportunity brief cache isolation", () => {
       passwordHash: "x",
       name: "Iso B",
     });
-    // Create tenant B via createTenant
     const tenB = await sharedDemo.repos.users.createTenant({
       publicId: newId("tep"),
       name: "Tenant B",
@@ -271,7 +148,6 @@ describe("opportunity brief cache isolation", () => {
         parseWarnings: [],
       },
     });
-    // Also ensure A profile on sharedDemo
     await sharedDemo.repos.candidateProfiles.upsert({
       id: newId("cp"),
       publicId: newId("cpp"),
@@ -333,9 +209,6 @@ describe("opportunity brief cache isolation", () => {
     const b1 = await iso.getOpportunityBrief(bCtx, job!.publicId);
     expect(b1.cached).toBe(false);
     expect(b1.skillsAlignment.join(" ")).not.toEqual(a1.skillsAlignment.join(" "));
-
-    void AppError;
-    void tenantB;
   });
 });
 
