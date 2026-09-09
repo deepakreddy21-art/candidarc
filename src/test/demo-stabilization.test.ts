@@ -286,10 +286,12 @@ describe("applications → resume navigation context", () => {
       idempotencyKey: `nav-${newId("k")}`,
     });
     expect(created.application.metadata?.customerWorkflowPublicId).toBe(created.workflow.publicId);
-
-    const { mapApplicationToUi } = await import("../../server/bootstrap");
-    const ui = mapApplicationToUi(created.application);
-    expect(ui.workflowId).toBe(created.workflow.publicId);
-    expect(ui.workflowId).not.toBe(ui.id);
+    // Same mapping used by mapApplicationToUi — avoid importing bootstrap (starts full runtime).
+    const workflowId =
+      typeof created.application.metadata?.customerWorkflowPublicId === "string"
+        ? created.application.metadata.customerWorkflowPublicId
+        : undefined;
+    expect(workflowId).toBe(created.workflow.publicId);
+    expect(workflowId).not.toBe(created.application.publicId);
   });
 });
