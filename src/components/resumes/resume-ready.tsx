@@ -1,14 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Download, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { ResumeDocument } from "@/types/resume-document";
 import { buildResumeDocument } from "@/lib/resume-document";
-import type { ResumeSection } from "@/types/domain";
 import { ResumePreview } from "./resume-preview";
 import { RefinePanel } from "./refine-panel";
 import { VersionHistory } from "./version-history";
@@ -20,7 +20,9 @@ type ReadyData = {
   resume?: {
     versionLabel: string;
     previewHtml?: string;
-    sections?: ResumeSection[];
+    /** Canonical document including contact — preferred over reconstructing from sections. */
+    document?: ResumeDocument;
+    sections?: unknown[];
     role?: string;
     company?: string;
     candidateName?: string;
@@ -43,14 +45,17 @@ export function ResumeReady({ data }: { data: ReadyData }) {
   const router = useRouter();
   const [enhancing, setEnhancing] = useState(false);
 
-  const resumeDoc = data.resume?.sections?.length
-    ? buildResumeDocument({
-        sections: data.resume.sections,
-        candidateName: data.resume.candidateName ?? "Candidate",
-        role: data.resume.role ?? "Target role",
-        company: data.resume.company ?? "Target company",
-      })
-    : null;
+  const resumeDoc = useMemo(() => {
+    if (data.resume?.document) return data.resume.document;
+    const sections = data.resume?.sections;
+    if (!Array.isArray(sections) || sections.length === 0) return null;
+    return buildResumeDocument({
+      sections,
+      candidateName: data.resume?.candidateName ?? "Candidate",
+      role: data.resume?.role ?? "",
+      company: data.resume?.company ?? "",
+    });
+  }, [data.resume]);
 
   async function enhance() {
     setEnhancing(true);

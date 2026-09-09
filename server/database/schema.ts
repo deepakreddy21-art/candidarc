@@ -721,7 +721,7 @@ export const resumes = pgTable(
       .notNull()
       .references(() => applications.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
-    templateId: text("template_id").notNull().default("alumni-clean"),
+    templateId: text("template_id").notNull().default("candidarc-ats-v1"),
     length: text("length").notNull().default("one-page"),
     currentVersionId: uuid("current_version_id"),
     version: version(),

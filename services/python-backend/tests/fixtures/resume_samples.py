@@ -138,34 +138,68 @@ def encrypted_pdf(password: str = "secret") -> bytes:
 
 
 def two_column_text_pdf() -> bytes:
-    """Two-column resume represented in column-major extract order (left then right).
+    """Genuine two-column PDF: left and right text at different X with overlapping Y.
 
-    Many text-layer PDFs extract this way; content includes both employment and skills.
+    Left column (x≈50) holds contact + employment; right column (x≈320) holds skills/education.
+    Extractors that ignore position may interleave lines — structure tests assert associations.
     """
-    left_column = """Jordan Blake
-jordan.blake@example.com | Seattle, WA
+    left = [
+        "Jordan Blake",
+        "jordan.blake@example.com",
+        "PROFESSIONAL EXPERIENCE",
+        "Platform Engineer | Harbor Systems",
+        "Jan 2021 - Present",
+        "- Built Kubernetes pipelines",
+        "Software Engineer | Northwind Labs",
+        "Jun 2018 - Dec 2020",
+        "- Designed REST APIs in TypeScript",
+    ]
+    right = [
+        "SKILLS",
+        "TypeScript Kubernetes AWS React",
+        "EDUCATION",
+        "B.S. Computer Science",
+        "Cascadia University 2018",
+        "CERTIFICATIONS",
+        "AWS Solutions Architect Associate",
+    ]
 
-PROFESSIONAL EXPERIENCE
+    def escape(line: str) -> str:
+        return line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")[:48]
 
-Platform Engineer | Harbor Systems | Seattle, WA
-Jan 2021 - Present
-- Built Kubernetes-based deployment pipelines for 12 services
-- Reduced mean recovery time from 45 minutes to 8 minutes
-
-Software Engineer | Northwind Labs
-Jun 2018 - Dec 2020
-- Designed REST APIs in TypeScript and Node.js
-"""
-    right_column = """SKILLS
-TypeScript, Node.js, Kubernetes, PostgreSQL, AWS, React
-
-EDUCATION
-B.S. Computer Science | Cascadia University | 2018
-
-CERTIFICATIONS
-AWS Solutions Architect Associate
-"""
-    return text_to_simple_pdf(left_column + "\n" + right_column)
+    ops: list[str] = []
+    y = 750
+    for line in left:
+        ops.append(f"BT /F1 9 Tf 50 {y} Td ({escape(line)}) Tj ET")
+        y -= 16
+    y = 750
+    for line in right:
+        ops.append(f"BT /F1 9 Tf 320 {y} Td ({escape(line)}) Tj ET")
+        y -= 16
+    stream = "\n".join(ops)
+    objects = [
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+        "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj",
+        f"4 0 obj << /Length {len(stream)} >> stream\n{stream}\nendstream endobj",
+        "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+    ]
+    pdf = ["%PDF-1.4"]
+    offsets = [0]
+    for obj in objects:
+        offsets.append(sum(len(x) + 1 for x in pdf))
+        pdf.append(obj)
+    xref_pos = sum(len(x) + 1 for x in pdf)
+    pdf.append("xref")
+    pdf.append(f"0 {len(objects) + 1}")
+    pdf.append("0000000000 65535 f ")
+    for off in offsets[1:]:
+        pdf.append(f"{off:010d} 00000 n ")
+    pdf.append(f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>")
+    pdf.append("startxref")
+    pdf.append(str(xref_pos))
+    pdf.append("%%EOF")
+    return ("\n".join(pdf) + "\n").encode("latin-1", errors="replace")
 
 
 def b64(data: bytes) -> str:

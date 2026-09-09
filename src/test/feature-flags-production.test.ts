@@ -68,8 +68,8 @@ describe("object storage document paths", () => {
         tenantId: "tenant",
         applicationId: "app_test",
       });
-      expect(rendered.pdfBuffer.length).toBeGreaterThan(0);
-      expect(rendered.docxBuffer.length).toBeGreaterThan(0);
+      expect(rendered.pdfBuffer!.length).toBeGreaterThan(0);
+      expect(rendered.docxBuffer!.length).toBeGreaterThan(0);
       expect("pdfPath" in rendered).toBe(false);
 
       const key = "generated/user/app_test/rv_test/resume.pdf";

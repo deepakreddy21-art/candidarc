@@ -24,7 +24,7 @@ import { getStorage } from "./storage";
 import { DbWorkflowEngine } from "./workflows/engine";
 import { getQueueAdapter, type QueueAdapter } from "./workflows/queues";
 import { ResumePipeline } from "./workflows/resume-pipeline";
-import { handleWorkflowJobExhausted, type WorkflowJobPayload } from "./workflows/failure-handler";
+import { handleWorkflowJobExhausted, CUSTOMER_DOCUMENT_FAILURE_MESSAGE, type WorkflowJobPayload } from "./workflows/failure-handler";
 import { stageMatchesJobClaim } from "./workflows/stages";
 import { logger } from "./observability/logger";
 import { AppError } from "./domain/types";
@@ -42,7 +42,7 @@ import { RadarService } from "./radar/service";
 import { registerRadarQueueHandlers } from "./radar/queues";
 import { CopilotService } from "./copilot/service";
 import { CustomerGenerateService } from "./modules/resumes/customer-generate";
-import { renderPdfAndDocx } from "./resumes/document-renderer";
+import { PdfRenderFailedError, renderPdfAndDocx } from "./resumes/document-renderer";
 
 export type RuntimeServices = {
   applications: ApplicationsService;
@@ -367,7 +367,15 @@ async function buildRuntime(): Promise<Runtime> {
   }
 
   queue.registerHandler("pdf-rendering", async (job) => {
-    const payload = job.payload as { tenantId?: string; applicationId?: string; applicationPublicId?: string; versionId?: string; versionPublicId?: string; ownerUserId?: string };
+    const payload = job.payload as {
+      tenantId?: string;
+      applicationId?: string;
+      applicationPublicId?: string;
+      versionId?: string;
+      versionPublicId?: string;
+      ownerUserId?: string;
+      formats?: Array<"pdf" | "docx">;
+    };
     const tenantId = payload.tenantId;
     const applicationPublicId = payload.applicationId ?? payload.applicationPublicId;
     const versionPublicId = payload.versionId ?? payload.versionPublicId;
@@ -377,6 +385,18 @@ async function buildRuntime(): Promise<Runtime> {
     const app = await repos.applications.getByPublicId(tenantId, applicationPublicId);
     const version = await repos.resumes.getVersion(tenantId, versionPublicId);
     if (!app || !version) throw new Error("Document rendering source not found");
+    const existingFiles =
+      app.metadata?.customerFiles && typeof app.metadata.customerFiles === "object"
+        ? (app.metadata.customerFiles as Record<string, unknown>)
+        : {};
+    const priorPending = Array.isArray(existingFiles.pendingFormats)
+      ? (existingFiles.pendingFormats as unknown[]).filter((f): f is "pdf" | "docx" => f === "pdf" || f === "docx")
+      : [];
+    const formats = payload.formats?.length
+      ? payload.formats
+      : priorPending.length
+        ? priorPending
+        : (["pdf", "docx"] as Array<"pdf" | "docx">);
     const rendered = await renderPdfAndDocx({
       resumeVersion: version,
       candidateName: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : "Candidate",
@@ -384,6 +404,7 @@ async function buildRuntime(): Promise<Runtime> {
       company: app.company,
       tenantId,
       applicationId: app.publicId,
+      formats,
       contact: {
         name: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : undefined,
         email: typeof app.metadata?.candidateEmail === "string" ? app.metadata.candidateEmail : undefined,
@@ -399,22 +420,20 @@ async function buildRuntime(): Promise<Runtime> {
     const pdfStorageKey = `generated/${ownerSegment}/${applicationPublicId}/${versionSegment}/resume.pdf`;
     const docxStorageKey = `generated/${ownerSegment}/${applicationPublicId}/${versionSegment}/resume.docx`;
     const storage = getStorage();
-    await Promise.all([
-      storage.putObject({
+
+    const nextFiles: Record<string, unknown> = { ...existingFiles };
+    if (typeof rendered.pageCount === "number" && rendered.pageCount > 0) {
+      nextFiles.pageCount = rendered.pageCount;
+    }
+
+    if (rendered.pdfBuffer) {
+      await storage.putObject({
         tenantId,
         key: pdfStorageKey,
         body: rendered.pdfBuffer,
         contentType: "application/pdf",
-      }),
-      storage.putObject({
-        tenantId,
-        key: docxStorageKey,
-        body: rendered.docxBuffer,
-        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      }),
-    ]);
-    await Promise.all([
-      repos.files.create({
+      });
+      await repos.files.create({
         id: newId("sf"),
         publicId: rendered.pdfFileId,
         tenantId,
@@ -425,8 +444,22 @@ async function buildRuntime(): Promise<Runtime> {
         size: rendered.pdfBuffer.byteLength,
         scanStatus: "clean",
         retentionState: "active",
-      }),
-      repos.files.create({
+      });
+      nextFiles.pdfFileId = rendered.pdfFileId;
+      nextFiles.pdfStorageKey = pdfStorageKey;
+      nextFiles.pdfError = undefined;
+    } else if (formats.includes("pdf")) {
+      nextFiles.pdfError = rendered.pdfError ?? "PDF_RENDER_FAILED";
+    }
+
+    if (rendered.docxBuffer) {
+      await storage.putObject({
+        tenantId,
+        key: docxStorageKey,
+        body: rendered.docxBuffer,
+        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+      await repos.files.create({
         id: newId("sf"),
         publicId: rendered.docxFileId,
         tenantId,
@@ -437,31 +470,107 @@ async function buildRuntime(): Promise<Runtime> {
         size: rendered.docxBuffer.byteLength,
         scanStatus: "clean",
         retentionState: "active",
-      }),
-    ]);
+      });
+      nextFiles.docxFileId = rendered.docxFileId;
+      nextFiles.docxStorageKey = docxStorageKey;
+      nextFiles.docxError = undefined;
+    } else if (formats.includes("docx")) {
+      nextFiles.docxError = rendered.docxError ?? "DOCX_RENDER_FAILED";
+    }
+
+    const pendingFormats: Array<"pdf" | "docx"> = [];
+    if (formats.includes("pdf") && !rendered.pdfBuffer) pendingFormats.push("pdf");
+    if (formats.includes("docx") && !rendered.docxBuffer) pendingFormats.push("docx");
+    nextFiles.pendingFormats = pendingFormats.length ? pendingFormats : undefined;
+
     const finals = Array.isArray(app.metadata?.customerFinalVersions)
       ? app.metadata.customerFinalVersions.filter((item): item is string => typeof item === "string")
       : [];
+    const pdfReady = Boolean(nextFiles.pdfStorageKey) && !nextFiles.pdfError;
+    const docxReady = Boolean(nextFiles.docxStorageKey) && !nextFiles.docxError;
+    const bothReady = pdfReady && docxReady;
+
+    if (bothReady) {
+      await repos.applications.update(tenantId, app.publicId, {
+        status: "ready",
+        stage: "FINAL_READY",
+        workflowStage: "FINAL_READY",
+        nextAction: "Download resume",
+        metadata: {
+          ...app.metadata,
+          documentRenderFailed: undefined,
+          customerError: undefined,
+          documentRenderErrorClass: undefined,
+          documentRenderFailedAt: undefined,
+          failedAtStage: undefined,
+          customerFiles: nextFiles,
+          customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
+        },
+      });
+      logger.info({ jobId: job.id, applicationPublicId, versionPublicId, pageCount: rendered.pageCount }, "resume documents rendered");
+      return;
+    }
+
+    const anyReady = pdfReady || docxReady;
+    if (anyReady && pendingFormats.length) {
+      await repos.applications.update(tenantId, app.publicId, {
+        status: "ready",
+        stage: "FINAL_READY",
+        workflowStage: "FINAL_READY",
+        nextAction: "Preparing downloads",
+        metadata: {
+          ...app.metadata,
+          documentRenderFailed: undefined,
+          customerError: undefined,
+          documentRenderErrorClass: undefined,
+          documentRenderFailedAt: undefined,
+          failedAtStage: undefined,
+          customerFiles: nextFiles,
+          customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
+        },
+      });
+      await queue.enqueue(
+        "pdf-rendering",
+        "customer-resume.render.retry",
+        {
+          tenantId,
+          applicationId: applicationPublicId,
+          applicationPublicId,
+          versionId: versionPublicId,
+          versionPublicId,
+          ownerUserId: app.ownerUserId ?? payload.ownerUserId,
+          formats: pendingFormats,
+        },
+        {
+          idempotencyKey: `customer-render-retry:${applicationPublicId}:${versionPublicId}:${pendingFormats.sort().join("+")}`,
+          delayMs: 5_000,
+        },
+      );
+      throw new PdfRenderFailedError(rendered.pdfError ?? "PDF_RENDER_FAILED", {
+        pendingFormats,
+        partialSuccess: true,
+        docxError: rendered.docxError,
+      });
+    }
+
+    const errorClass = rendered.pdfError ?? rendered.docxError ?? "PDF_RENDER_FAILED";
     await repos.applications.update(tenantId, app.publicId, {
-      status: "ready",
-      nextAction: "Download resume",
+      status: "failed",
+      stage: "FAILED",
+      workflowStage: "FAILED",
+      nextAction: "Retry Generation",
       metadata: {
         ...app.metadata,
-        documentRenderFailed: undefined,
-        customerError: undefined,
-        documentRenderErrorClass: undefined,
-        documentRenderFailedAt: undefined,
-        customerFiles: {
-          pdfFileId: rendered.pdfFileId,
-          docxFileId: rendered.docxFileId,
-          pdfStorageKey,
-          docxStorageKey,
-          pageCount: rendered.pageCount,
-        },
+        documentRenderFailed: true,
+        customerError: CUSTOMER_DOCUMENT_FAILURE_MESSAGE,
+        documentRenderErrorClass: errorClass,
+        documentRenderFailedAt: new Date().toISOString(),
+        failedAtStage: "FINAL_QA_RUNNING",
+        customerFiles: nextFiles,
         customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
       },
     });
-    logger.info({ jobId: job.id, applicationPublicId, versionPublicId }, "resume documents rendered");
+    throw new PdfRenderFailedError(errorClass, { pendingFormats });
   });
 
   const storage = getStorage();
@@ -505,12 +614,21 @@ async function buildRuntime(): Promise<Runtime> {
         const hydrated = await radarStore.hydrateCatalog();
         radar.catalog.applyHydratedSnapshot(hydrated);
         radar.index.reindexAll();
-        if (hydrated.jobs.length > 0 || (hydrated.savedJobs?.length ?? 0) > 0) {
+        if (
+          hydrated.jobs.length > 0 ||
+          (hydrated.savedJobs?.length ?? 0) > 0 ||
+          (hydrated.hiddenJobs?.length ?? 0) > 0 ||
+          (hydrated.savedSearches?.length ?? 0) > 0 ||
+          (hydrated.alerts?.length ?? 0) > 0
+        ) {
           logger.info(
             {
               jobs: hydrated.jobs.length,
               companies: hydrated.companies.length,
               savedJobs: hydrated.savedJobs?.length ?? 0,
+              hiddenJobs: hydrated.hiddenJobs?.length ?? 0,
+              savedSearches: hydrated.savedSearches?.length ?? 0,
+              alerts: hydrated.alerts?.length ?? 0,
             },
             "radar catalog hydrated from postgres",
           );

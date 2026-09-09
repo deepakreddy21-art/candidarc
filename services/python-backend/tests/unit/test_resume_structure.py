@@ -148,10 +148,27 @@ def test_two_column_pdf_extracts_employment(
 ):
     from tests.fixtures.resume_samples import two_column_text_pdf
 
-    response = _parse(client, auth_headers, ctx, "two-col.pdf", "application/pdf", two_column_text_pdf())
+    pdf_bytes = two_column_text_pdf()
+    # Genuine positioning: distinct X coordinates present in the content stream.
+    assert b"50 " in pdf_bytes and b"320 " in pdf_bytes
+    assert b"Td" in pdf_bytes or b"Tm" in pdf_bytes
+
+    response = _parse(client, auth_headers, ctx, "two-col.pdf", "application/pdf", pdf_bytes)
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["usable"] is True
-    assert len(body["employment"]) >= 1
-    assert any("Harbor" in (row.get("employer") or "") for row in body["employment"])
+    assert body.get("employment"), "must not report empty-success"
+    assert len(body["employment"]) >= 2
+    harbor = next(row for row in body["employment"] if "Harbor" in (row.get("employer") or ""))
+    northwind = next(row for row in body["employment"] if "Northwind" in (row.get("employer") or ""))
+    assert "Platform" in (harbor.get("title") or "")
+    assert "Software" in (northwind.get("title") or "")
+    # Employer/title must not be swapped across columns.
+    assert "Harbor" not in (northwind.get("title") or "")
+    assert "Northwind" not in (harbor.get("title") or "")
+    assert harbor.get("start_date") and "2021" in (harbor.get("start_date") or "")
+    assert northwind.get("start_date") and "2018" in (northwind.get("start_date") or "")
     assert body["skills"]
+    assert body["education"]
+    assert any("Cascadia" in (row.get("institution") or "") or "Cascadia" in (row.get("degree") or "") for row in body["education"])
+    assert body["text"].strip()

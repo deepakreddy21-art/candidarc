@@ -103,6 +103,91 @@ def _with_structure(text: str, page_count: int | None, warnings: list[str]) -> R
     )
 
 
+def _reconstruct_column_text(page: Any) -> str | None:
+    """Rebuild reading order from positioned PDF text when multiple X columns exist.
+
+    Resumes often place experience on the left and skills/education on the right with
+    overlapping Y ranges. Default pypdf line-reading interleaves columns and swaps
+    employer/title associations. Column-major (left then right) preserves structure.
+    """
+    fragments: list[tuple[float, float, str]] = []
+
+    def visitor(text: str, _cm: Any, tm: Any, _font_dict: Any, _font_size: Any) -> None:
+        if not text or not str(text).strip():
+            return
+        try:
+            x = float(tm[4])
+            y = float(tm[5])
+        except (TypeError, ValueError, IndexError):
+            return
+        fragments.append((x, y, str(text)))
+
+    try:
+        page.extract_text(visitor_text=visitor)
+    except TypeError:
+        return None
+    except Exception:
+        return None
+
+    if len(fragments) < 4:
+        return None
+
+    xs = sorted({round(x / 10.0) * 10.0 for x, _y, _t in fragments})
+    if len(xs) < 2:
+        return None
+    # Detect a gap large enough to indicate distinct columns (≈1.5").
+    gaps = [(xs[i + 1] - xs[i], i) for i in range(len(xs) - 1)]
+    widest_gap, gap_idx = max(gaps, key=lambda item: item[0])
+    if widest_gap < 80:
+        return None
+    split_x = (xs[gap_idx] + xs[gap_idx + 1]) / 2.0
+
+    left = [(x, y, t) for x, y, t in fragments if x < split_x]
+    right = [(x, y, t) for x, y, t in fragments if x >= split_x]
+    if not left or not right:
+        return None
+
+    # Overlapping vertical ranges required for a genuine two-column layout.
+    left_ys = [y for _x, y, _t in left]
+    right_ys = [y for _x, y, _t in right]
+    if max(left_ys) < min(right_ys) or max(right_ys) < min(left_ys):
+        return None
+
+    def column_lines(items: list[tuple[float, float, str]]) -> list[str]:
+        # Top-to-bottom, then left-to-right within a line band.
+        ordered = sorted(items, key=lambda row: (-row[1], row[0]))
+        lines: list[str] = []
+        band_y: float | None = None
+        band: list[str] = []
+        for _x, y, text in ordered:
+            cleaned = text.replace("\r", "").strip("\n")
+            if not cleaned.strip():
+                continue
+            if band_y is None or abs(y - band_y) <= 3:
+                band.append(cleaned)
+                band_y = y if band_y is None else band_y
+            else:
+                lines.append("".join(band).strip())
+                band = [cleaned]
+                band_y = y
+        if band:
+            lines.append("".join(band).strip())
+        return [ln for ln in lines if ln]
+
+    left_text = "\n".join(column_lines(left))
+    right_text = "\n".join(column_lines(right))
+    if not left_text or not right_text:
+        return None
+    return f"{left_text}\n\n{right_text}".strip()
+
+
+def _extract_pdf_page_text(page: Any) -> str:
+    reconstructed = _reconstruct_column_text(page)
+    if reconstructed:
+        return reconstructed
+    return page.extract_text() or ""
+
+
 def _parse_pdf(raw: bytes) -> ResumeParseResponse:
     from pypdf import PdfReader
     from pypdf.errors import FileNotDecryptedError, PdfReadError
@@ -136,7 +221,7 @@ def _parse_pdf(raw: bytes) -> ResumeParseResponse:
     if page_count > MAX_PDF_PAGES:
         raise ValueError("PDF_PAGE_LIMIT_EXCEEDED")
     try:
-        pages = [page.extract_text() or "" for page in reader.pages]
+        pages = [_extract_pdf_page_text(page) for page in reader.pages]
     except Exception as exc:
         raise ValueError("CORRUPT_PDF") from exc
     text = "\n".join(pages).strip()

@@ -9,19 +9,33 @@ import {
 import { chromium } from "playwright";
 import { newId } from "../database/repositories";
 import type { ResumeDocument, ResumeDocumentSection } from "@/types/resume-document";
+import { CANDIDARC_ATS_V1_TEMPLATE } from "@/types/resume-document";
 import {
+  analyzeRenderedPdf,
   buildResumeDocument,
+  measurePdfPageCount,
   resumeDocumentPlainText,
   validateResumeLayout,
   verifyPdfContainsCanonicalContent,
 } from "./resume-document";
 import { renderResumeDocumentHtml } from "./resume-html-renderer";
 import { createExtractableTextPdf } from "./extractable-pdf";
+import { AppError } from "../domain/types";
 
 type ResumeVersionLike = { publicId: string; sections: unknown[] };
 
 export { buildResumeDocument, resumeDocumentPlainText, validateResumeLayout, verifyPdfContainsCanonicalContent };
 export { createExtractableTextPdf, wrapPdfLines, toPdfSafeText } from "./extractable-pdf";
+export { analyzeRenderedPdf, measurePdfPageCount } from "./resume-document";
+export { CANDIDARC_ATS_V1_TEMPLATE, CANDIDARC_ATS_V1_TEMPLATE_ID } from "@/types/resume-document";
+
+/** Typed, retryable Chromium/PDF print failure — never silently swapped for crude text PDF. */
+export class PdfRenderFailedError extends AppError {
+  constructor(message = "PDF rendering failed", details?: unknown) {
+    super("PDF_RENDER_FAILED", message, 503, details, true);
+    this.name = "PdfRenderFailedError";
+  }
+}
 
 function legacyDocument(lines: string[]) {
   return buildResumeDocument({
@@ -70,7 +84,14 @@ function sectionParagraphs(section: ResumeDocumentSection): Paragraph[] {
 }
 
 function contactRuns(doc: ResumeDocument): TextRun[] {
-  const parts = [doc.contact.email, doc.contact.phone, doc.contact.location].filter(Boolean) as string[];
+  const parts = [
+    doc.contact.email,
+    doc.contact.phone,
+    doc.contact.location,
+    doc.contact.linkedIn,
+    doc.contact.github,
+    doc.contact.portfolio,
+  ].filter(Boolean) as string[];
   return parts.length ? [new TextRun({ text: parts.join(" · "), size: 20 })] : [];
 }
 
@@ -101,18 +122,19 @@ export async function renderDocxFromDocument(doc: ResumeDocument): Promise<Buffe
   if (contactRuns(doc).length) {
     children.push(new Paragraph({ children: contactRuns(doc), spacing: { after: 60 } }));
   }
-  for (const link of [linkParagraph("LinkedIn", doc.contact.linkedIn), linkParagraph("GitHub", doc.contact.github), linkParagraph("Portfolio", doc.contact.portfolio)]) {
+  for (const link of [
+    linkParagraph("LinkedIn", doc.contact.linkedIn),
+    linkParagraph("GitHub", doc.contact.github),
+    linkParagraph("Portfolio", doc.contact.portfolio),
+  ]) {
     if (link) children.push(link);
   }
-  children.push(
-    new Paragraph({
-      children: [new TextRun({ text: `${doc.metadata.role} · ${doc.metadata.company}`, size: 20, italics: true })],
-      spacing: { after: 120 },
-    }),
-  );
+  // Target role/company intentionally omitted from résumé body (CandidArc ATS v1).
   for (const section of doc.sections) children.push(...sectionParagraphs(section));
 
   const document = new Document({
+    creator: CANDIDARC_ATS_V1_TEMPLATE,
+    title: `${doc.contact.name} — ${CANDIDARC_ATS_V1_TEMPLATE}`,
     sections: [
       {
         properties: { page: { margin: { top: 720, right: 720, bottom: 720, left: 720 } } },
@@ -134,7 +156,7 @@ export async function renderPdfFromHtml(html: string): Promise<Buffer> {
     await page.setContent(html, { waitUntil: "load" });
     const bodyText = (await page.locator("body").innerText()).trim();
     if (bodyText.length < 8) {
-      throw new Error("Resume HTML rendered empty before PDF export");
+      throw new PdfRenderFailedError("Resume HTML rendered empty before PDF export");
     }
     const pdf = await page.pdf({
       format: "Letter",
@@ -143,33 +165,65 @@ export async function renderPdfFromHtml(html: string): Promise<Buffer> {
       margin: { top: "0.55in", right: "0.6in", bottom: "0.55in", left: "0.6in" },
     });
     return Buffer.from(pdf);
+  } catch (error) {
+    if (error instanceof PdfRenderFailedError) throw error;
+    throw new PdfRenderFailedError(
+      error instanceof Error ? error.message : "Chromium PDF export failed",
+      error,
+    );
   } finally {
     await browser.close();
   }
 }
 
-/** Always-extractable text PDF used when Chromium print output lacks a text layer. */
+/**
+ * Render CandidArc ATS v1 PDF via Chromium.
+ * Does not silently substitute a crude plain-text PDF on failure.
+ */
 export async function renderPdfFromDocument(doc: ResumeDocument): Promise<Buffer> {
   const html = renderResumeDocumentHtml(doc, { preview: false });
+  let pdf: Buffer;
   try {
-    const pdf = await renderPdfFromHtml(html);
-    const verification = await verifyPdfContainsCanonicalContent(pdf, doc);
-    if (verification.ok) return pdf;
-  } catch {
-    /* Fall through to extractable text PDF */
+    pdf = await renderPdfFromHtml(html);
+  } catch (error) {
+    if (error instanceof PdfRenderFailedError) throw error;
+    throw new PdfRenderFailedError(
+      error instanceof Error ? error.message : "Chromium PDF export failed",
+      error,
+    );
   }
-  const fallback = createExtractableTextPdf(resumeDocumentPlainText(doc));
-  const fallbackCheck = await verifyPdfContainsCanonicalContent(fallback, doc);
-  if (!fallbackCheck.ok) {
-    throw new Error(`PDF content verification failed: missing ${fallbackCheck.missing.join(", ")}`);
+
+  const analysis = await analyzeRenderedPdf(pdf, doc);
+  if (!analysis.ok || analysis.missing.length > 0) {
+    throw new PdfRenderFailedError(
+      `PDF_RENDER_FAILED: content verification failed (${analysis.missing.slice(0, 5).join(", ") || analysis.warnings.join("; ")})`,
+      analysis,
+    );
   }
-  return fallback;
+  return pdf;
 }
 
 export function previewHtmlFromDocument(doc: ResumeDocument): string {
   return renderResumeDocumentHtml(doc, { preview: true });
 }
 
+export type RenderArtifactsResult = {
+  pdfBuffer: Buffer | null;
+  docxBuffer: Buffer | null;
+  pdfFileId: string;
+  docxFileId: string;
+  pageCount: number;
+  document: ResumeDocument;
+  layout: ReturnType<typeof validateResumeLayout>;
+  plainText: string;
+  pdfError?: string;
+  docxError?: string;
+};
+
+/**
+ * Render PDF and DOCX independently from one canonical ResumeDocument.
+ * A failure in one format does not discard the other.
+ */
 export async function renderPdfAndDocx(input: {
   resumeVersion: ResumeVersionLike;
   candidateName: string;
@@ -178,7 +232,9 @@ export async function renderPdfAndDocx(input: {
   tenantId?: string;
   applicationId?: string;
   contact?: Partial<ResumeDocument["contact"]>;
-}) {
+  /** When set, only regenerate the listed formats (retry failed artifact only). */
+  formats?: Array<"pdf" | "docx">;
+}): Promise<RenderArtifactsResult> {
   const document = buildResumeDocument({
     sections: input.resumeVersion.sections,
     candidateName: input.candidateName,
@@ -186,22 +242,54 @@ export async function renderPdfAndDocx(input: {
     company: input.company,
     contact: input.contact,
   });
-  const layout = validateResumeLayout(document);
+
+  const formats = input.formats?.length ? input.formats : (["pdf", "docx"] as Array<"pdf" | "docx">);
+  const wantPdf = formats.includes("pdf");
+  const wantDocx = formats.includes("docx");
 
   const pdfFileId = newId("file_pdf");
   const docxFileId = newId("file_docx");
 
-  const [pdfBuffer, docxBuffer] = await Promise.all([
-    renderPdfFromDocument(document),
-    renderDocxFromDocument(document),
-  ]);
+  let pdfBuffer: Buffer | null = null;
+  let docxBuffer: Buffer | null = null;
+  let pdfError: string | undefined;
+  let docxError: string | undefined;
 
-  const verification = await verifyPdfContainsCanonicalContent(pdfBuffer, document);
-  if (!verification.ok) {
-    throw new Error(`PDF content verification failed: missing ${verification.missing.join(", ")}`);
+  if (wantPdf) {
+    try {
+      pdfBuffer = await renderPdfFromDocument(document);
+    } catch {
+      pdfError = "PDF_RENDER_FAILED";
+    }
   }
 
-  const pageCount = layout.pageCountEstimate;
+  if (wantDocx) {
+    try {
+      docxBuffer = await renderDocxFromDocument(document);
+    } catch (error) {
+      docxError = error instanceof Error ? error.message.slice(0, 200) : "DOCX_RENDER_FAILED";
+    }
+  }
+
+  if (wantPdf && !pdfBuffer && wantDocx && !docxBuffer) {
+    throw new PdfRenderFailedError("PDF_RENDER_FAILED", { pdfError, docxError });
+  }
+  if (wantPdf && !pdfBuffer && !wantDocx) {
+    throw new PdfRenderFailedError(pdfError ?? "PDF_RENDER_FAILED");
+  }
+  if (wantDocx && !docxBuffer && !wantPdf) {
+    throw new AppError("DOCX_RENDER_FAILED", docxError ?? "DOCX rendering failed", 503, undefined, true);
+  }
+
+  const pageCount = pdfBuffer ? await measurePdfPageCount(pdfBuffer) : 0;
+  const analysis = pdfBuffer ? await analyzeRenderedPdf(pdfBuffer, document) : null;
+  const layout = validateResumeLayout(document, pageCount || undefined);
+  if (analysis) {
+    layout.blankPageIndexes = analysis.blankPageIndexes;
+    layout.clippedText = analysis.clippedText;
+    layout.unnoticedThirdPage = analysis.unnoticedThirdPage;
+    layout.warnings = [...layout.warnings, ...analysis.warnings.filter((w) => !layout.warnings.includes(w))];
+  }
 
   return {
     pdfBuffer,
@@ -212,5 +300,7 @@ export async function renderPdfAndDocx(input: {
     document,
     layout,
     plainText: resumeDocumentPlainText(document),
+    pdfError,
+    docxError,
   };
 }

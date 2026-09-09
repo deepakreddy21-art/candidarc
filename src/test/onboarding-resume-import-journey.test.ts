@@ -33,7 +33,9 @@ import {
   WORK_HISTORY_RESUME,
   imageOnlyPdf,
   textToSimplePdf,
+  twoColumnTextPdf,
 } from "./fixtures/resume-samples";
+import { validateStepClient, emptyOnboardingForm } from "@/components/onboarding/types";
 
 const backendRoot = path.resolve(process.cwd(), "services/python-backend");
 const win = process.platform === "win32";
@@ -414,6 +416,196 @@ describe("onboarding resume import journey (real FastAPI)", () => {
       careerProfileMode: "upload" as const,
     };
     expect(validateStepClient(2, formState, "ready_for_review")).toBeNull();
+  }, 60_000);
+
+  /**
+   * Production path exercised (no duplicated mapper):
+   * POST upload → LocalFilesystemStorage → InProcessQueue (malware scan + resume.extract)
+   * → PythonIntelligenceClient → FastAPI /v1/resumes/parse → mapPythonResumeParseToExtraction
+   * → GET import (review) → POST confirm → GET onboarding/import (persisted profile + evidence).
+   */
+  it("two-column PDF full path: correct employer/title, skills/education, no re-ask, idempotent confirm", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf, tenant, user } = await seedAuthedUser(runtime);
+
+    const pdf = twoColumnTextPdf();
+    const form = new FormData();
+    form.append(
+      "file",
+      new File([Uint8Array.from(pdf)], "jordan-two-col.pdf", { type: "application/pdf" }),
+    );
+
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    const uploadRes = await upload(
+      new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+        method: "POST",
+        headers: { cookie, "x-csrf-token": csrf },
+        body: form,
+      }),
+    );
+    expect(uploadRes.status).toBe(201);
+
+    const importBody = await waitImportReady(cookie);
+    expect(importBody.status).toBe("ready_for_review");
+    expect(importBody.extraction.usable).not.toBe(false);
+    expect(importBody.extraction.employment.length).toBeGreaterThanOrEqual(2);
+
+    const harbor = importBody.extraction.employment.find((j: { company?: string }) =>
+      /harbor/i.test(j.company ?? ""),
+    );
+    const northwind = importBody.extraction.employment.find((j: { company?: string }) =>
+      /northwind/i.test(j.company ?? ""),
+    );
+    expect(harbor).toBeTruthy();
+    expect(northwind).toBeTruthy();
+    expect(harbor.title).toMatch(/platform/i);
+    expect(northwind.title).toMatch(/software/i);
+    expect(harbor.startDate).toMatch(/2021/i);
+    expect(northwind.startDate).toMatch(/2018/i);
+
+    const skillBlob = (importBody.extraction.skills ?? []).join(" ");
+    expect(skillBlob).toMatch(/TypeScript/i);
+    expect(skillBlob).toMatch(/Kubernetes/i);
+    expect(importBody.extraction.education?.length).toBeGreaterThan(0);
+    const educationBlob = (importBody.extraction.education ?? [])
+      .map((row: { institution?: string; degree?: string }) => `${row.institution ?? ""} ${row.degree ?? ""}`)
+      .join(" ");
+    expect(educationBlob).toMatch(/cascadia|computer science/i);
+    expect(importBody.extraction.contact?.email).toMatch(/jordan\.blake@example\.com/i);
+
+    const reviewForm = {
+      ...emptyOnboardingForm(),
+      fullName: importBody.extraction.contact?.fullName ?? "Jordan Blake",
+      skills: importBody.extraction.skills,
+      employment: (importBody.extraction.employment ?? []).map(
+        (row: { title?: string; company?: string; location?: string; startDate?: string; endDate?: string; bullets?: string[] }) => ({
+          title: row.title,
+          company: row.company,
+          location: row.location,
+          startDate: row.startDate,
+          endDate: row.endDate,
+          bullets: row.bullets ?? [],
+        }),
+      ),
+      education: (importBody.extraction.education ?? []).map(
+        (row: { institution?: string; degree?: string }) => ({
+          school: row.institution,
+          degree: row.degree,
+        }),
+      ),
+      careerProfileMode: "upload" as const,
+    };
+    expect(validateStepClient(2, reviewForm, "ready_for_review")).toBeNull();
+
+    const { POST: confirm } = await import("../../src/app/api/v1/profile/resume/confirm/route");
+    const confirmRes = await confirm(
+      new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+        method: "POST",
+        headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(confirmRes.status).toBe(200);
+    const confirmed = await confirmRes.json();
+    expect(confirmed.profile.resumeImportStatus ?? "confirmed").toBeTruthy();
+
+    const confirmAgain = await confirm(
+      new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+        method: "POST",
+        headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(confirmAgain.status).toBe(200);
+
+    const { GET: getOnboarding } = await import("../../src/app/api/v1/profile/onboarding/route");
+    const onboard = await getOnboarding(
+      new Request("http://localhost:3000/api/v1/profile/onboarding", { headers: { cookie } }),
+    );
+    expect(onboard.status).toBe(200);
+    const onboardBody = await onboard.json();
+    expect(onboardBody.data.fullName || importBody.extraction.contact?.fullName).toBeTruthy();
+
+    const { GET: getImport } = await import("../../src/app/api/v1/profile/resume/import/route");
+    const persisted = await (await getImport(
+      new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }),
+    )).json();
+    expect(persisted.status).toBe("confirmed");
+    expect(persisted.extraction.employment.length).toBeGreaterThanOrEqual(2);
+
+    const evidence = await runtime.repos.evidence.list(tenant.id, { ownerUserId: user.id });
+    const imported = evidence.filter(
+      (row) => row.payload && (row.payload as { source?: string }).source === "resume-import",
+    );
+    expect(imported.length).toBeGreaterThanOrEqual(2);
+    expect(imported.some((row) => /harbor/i.test(row.organization ?? ""))).toBe(true);
+    expect(imported.some((row) => /northwind/i.test(row.organization ?? ""))).toBe(true);
+
+    // Re-upload + confirm remains idempotent (replacement import, then stable double-confirm)
+    const form2 = new FormData();
+    form2.append(
+      "file",
+      new File([Uint8Array.from(pdf)], "jordan-two-col-again.pdf", { type: "application/pdf" }),
+    );
+    expect(
+      (
+        await upload(
+          new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf },
+            body: form2,
+          }),
+        )
+      ).status,
+    ).toBe(201);
+    const reimport = await waitImportReady(cookie);
+    expect(reimport.status).toBe("ready_for_review");
+    expect(
+      (
+        await confirm(
+          new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" },
+            body: JSON.stringify({}),
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await confirm(
+          new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" },
+            body: JSON.stringify({}),
+          }),
+        )
+      ).status,
+    ).toBe(200);
+  }, 90_000);
+
+  it("two-column path rejects empty extraction as failed (not ready_for_review success)", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const form = new FormData();
+    form.append("file", new File([Uint8Array.from(imageOnlyPdf())], "empty-two-col-scan.pdf", { type: "application/pdf" }));
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    expect(
+      (
+        await upload(
+          new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf },
+            body: form,
+          }),
+        )
+      ).status,
+    ).toBe(201);
+    const body = await waitImportReady(cookie);
+    expect(body.status).toBe("failed");
+    expect(body.extraction.errorCode).toBe("IMAGE_ONLY_PDF_OCR_REQUIRED");
+    expect(body.extraction.usable).not.toBe(true);
+    expect(body.extraction.employment ?? []).toHaveLength(0);
   }, 60_000);
 
   it("tenant isolation: other tenant cannot read import status file", async () => {

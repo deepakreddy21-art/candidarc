@@ -1359,7 +1359,7 @@ export class ResumePipeline {
         applicationId: run.applicationId,
         applicationPublicId: run.applicationPublicId,
         title: `${run.applicationPublicId} resume`,
-        templateId: "alumni-clean",
+        templateId: "candidarc-ats-v1",
         length: "one-page",
         currentVersionPublicId: null,
       });

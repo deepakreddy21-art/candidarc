@@ -77,22 +77,6 @@ function contactFromMetadata(metadata?: Record<string, unknown>) {
   };
 }
 
-function previewHtml(
-  version: ResumeVersionRecord,
-  candidateName: string,
-  role: string,
-  company: string,
-  metadata?: Record<string, unknown>,
-): string {
-  const document = buildResumeDocument({
-    sections: version.sections,
-    candidateName,
-    role,
-    company,
-    contact: contactFromMetadata(metadata),
-  });
-  return previewHtmlFromDocument(document);
-}
 
 type CustomerFilesMeta = {
   pdfFileId?: string;
@@ -100,6 +84,10 @@ type CustomerFilesMeta = {
   pdfStorageKey?: string;
   docxStorageKey?: string;
   pageCount?: number;
+  pdfError?: string;
+  docxError?: string;
+  /** Formats still needing a retry (independent of résumé version regeneration). */
+  pendingFormats?: Array<"pdf" | "docx">;
 };
 
 function hasUnansweredTechQuestionsLocal(questions: TechQuestion[]): boolean {
@@ -335,21 +323,24 @@ export class CustomerGenerateService {
           aiRoleAlignment: breakdown.jobAlignment ?? current.score,
           aiAtsReadability: breakdown.atsCompatibility,
         });
+        const canonicalDocument = buildResumeDocument({
+          sections: current.sections,
+          candidateName:
+            typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
+          role: currentApp.role,
+          company: currentApp.company,
+          contact: contactFromMetadata(currentApp.metadata),
+        });
         response.resume = {
           versionId: current.publicId,
           versionLabel: `Version ${customerNumber}`,
-          previewHtml: previewHtml(
-            current,
-            typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
-            currentApp.role,
-            currentApp.company,
-            currentApp.metadata,
-          ),
+          document: canonicalDocument,
+          previewHtml: previewHtmlFromDocument(canonicalDocument),
           sections: current.sections,
           createdAt: current.createdAt,
           role: currentApp.role,
           company: currentApp.company,
-          candidateName: typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
+          candidateName: canonicalDocument.contact.name,
         };
         response.versions = finalVersions.map((version, index) => ({
           id: version.publicId,
@@ -396,6 +387,82 @@ export class CustomerGenerateService {
     if (app.ownerUserId && app.ownerUserId !== user.id) {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
+
+    const files = (app.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
+    const pendingFormats = Array.isArray(files.pendingFormats)
+      ? files.pendingFormats.filter((f): f is "pdf" | "docx" => f === "pdf" || f === "docx")
+      : [];
+    const hasFinalVersion =
+      Array.isArray(app.metadata?.customerFinalVersions) &&
+      (app.metadata.customerFinalVersions as unknown[]).some((id) => typeof id === "string");
+    const documentOnlyRetry =
+      Boolean(app.metadata?.documentRenderFailed) &&
+      hasFinalVersion &&
+      (pendingFormats.length > 0 ||
+        Boolean(files.pdfError) ||
+        Boolean(files.docxError) ||
+        Boolean(files.pdfStorageKey) ||
+        Boolean(files.docxStorageKey));
+
+    // Retry failed PDF/DOCX only — do not regenerate résumé content, version, or billing.
+    if (documentOnlyRetry) {
+      const resume = await this.repos.resumes.getByApplication(tenantId, app.publicId);
+      const versions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
+      const finalIds = (app.metadata?.customerFinalVersions ?? []) as string[];
+      const version =
+        versions.find((item) => finalIds.includes(item.publicId)) ?? versions.at(-1) ?? null;
+      if (!version) {
+        throw new AppError("RESUME_VERSION_NOT_FOUND", "No résumé version available to re-render", 404);
+      }
+      const formats: Array<"pdf" | "docx"> =
+        pendingFormats.length > 0
+          ? pendingFormats
+          : [
+              ...(files.pdfError || !files.pdfStorageKey ? (["pdf"] as const) : []),
+              ...(files.docxError || !files.docxStorageKey ? (["docx"] as const) : []),
+            ];
+      if (!formats.length) {
+        throw new AppError("WORKFLOW_NOT_RETRYABLE", "No failed document formats to retry", 409);
+      }
+      const { getRuntime } = await import("../../bootstrap");
+      const runtime = await getRuntime();
+      await runtime.queue.enqueue(
+        "pdf-rendering",
+        "customer-resume.render",
+        {
+          tenantId,
+          applicationId: app.publicId,
+          applicationPublicId: app.publicId,
+          versionId: version.publicId,
+          versionPublicId: version.publicId,
+          workflowId: run.publicId,
+          workflowPublicId: run.publicId,
+          workflowRunId: run.id,
+          ownerUserId: app.ownerUserId,
+          formats,
+        },
+        { idempotencyKey: `customer-render-retry:${app.publicId}:${version.publicId}:${formats.join(",")}:${Date.now()}` },
+      );
+      await this.repos.applications.update(tenantId, app.publicId, {
+        status: "resume",
+        nextAction: "Preparing resume documents",
+        metadata: {
+          ...app.metadata,
+          documentRenderFailed: undefined,
+          customerError: undefined,
+          documentRenderErrorClass: undefined,
+          documentRenderFailedAt: undefined,
+          customerFiles: {
+            ...files,
+            pendingFormats: formats,
+            pdfError: formats.includes("pdf") ? undefined : files.pdfError,
+            docxError: formats.includes("docx") ? undefined : files.docxError,
+          },
+        },
+      });
+      return { workflowId: run.publicId, applicationId: app.publicId, status: "queued" as const };
+    }
+
     const retryable =
       run.status === "failed" ||
       run.stage === "FAILED" ||
