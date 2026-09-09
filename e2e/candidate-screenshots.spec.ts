@@ -100,7 +100,7 @@ test.describe("candidate screenshots", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.route("**/api/v1/jobs/search**", (route) => route.abort());
     await page.goto("/app/radar");
-    await expect(page.getByRole("button", { name: /retry/i })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: /try again|retry/i })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: join(outDir, "radar-load-failure-1440.png"), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: join(outDir, "radar-load-failure-390.png"), fullPage: true });

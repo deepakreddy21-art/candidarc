@@ -19,6 +19,7 @@ import {
   verifyPdfContainsCanonicalContent,
 } from "./resume-document";
 import { renderResumeDocumentHtml } from "./resume-html-renderer";
+import { createExtractableTextPdf } from "./extractable-pdf";
 import { AppError } from "../domain/types";
 
 type ResumeVersionLike = { publicId: string; sections: unknown[] };
@@ -177,29 +178,30 @@ export async function renderPdfFromHtml(html: string): Promise<Buffer> {
 
 /**
  * Render CandidArc ATS v1 PDF via Chromium.
- * Does not silently substitute a crude plain-text PDF on failure.
+ * On Chromium failure, attempt a verified text-layer fallback that must pass
+ * the same canonical content checks — never return an unverified crude PDF.
  */
 export async function renderPdfFromDocument(doc: ResumeDocument): Promise<Buffer> {
   const html = renderResumeDocumentHtml(doc, { preview: false });
-  let pdf: Buffer;
   try {
-    pdf = await renderPdfFromHtml(html);
-  } catch (error) {
-    if (error instanceof PdfRenderFailedError) throw error;
+    const pdf = await renderPdfFromHtml(html);
+    const analysis = await analyzeRenderedPdf(pdf, doc);
+    if (analysis.ok && analysis.missing.length === 0) return pdf;
+    throw new Error(
+      `Chromium PDF failed content verification: ${analysis.missing.slice(0, 5).join(", ") || analysis.warnings.join("; ")}`,
+    );
+  } catch (chromiumError) {
+    const plain = resumeDocumentPlainText(doc);
+    const fallback = await createExtractableTextPdf(plain);
+    const analysis = await analyzeRenderedPdf(fallback, doc);
+    if (analysis.ok && analysis.missing.length === 0) {
+      return fallback;
+    }
     throw new PdfRenderFailedError(
-      error instanceof Error ? error.message : "Chromium PDF export failed",
-      error,
+      chromiumError instanceof Error ? chromiumError.message : "PDF render failed",
+      { chromiumError, fallbackMissing: analysis.missing, fallbackWarnings: analysis.warnings },
     );
   }
-
-  const analysis = await analyzeRenderedPdf(pdf, doc);
-  if (!analysis.ok || analysis.missing.length > 0) {
-    throw new PdfRenderFailedError(
-      `PDF_RENDER_FAILED: content verification failed (${analysis.missing.slice(0, 5).join(", ") || analysis.warnings.join("; ")})`,
-      analysis,
-    );
-  }
-  return pdf;
 }
 
 export function previewHtmlFromDocument(doc: ResumeDocument): string {

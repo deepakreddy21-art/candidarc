@@ -122,7 +122,7 @@ export function ErrorState({
           onClick={onRetry}
           className="mt-4 text-sm font-medium text-accent hover:underline focus-visible:outline-2 focus-visible:outline-ring"
         >
-          Try again
+          Retry
         </button>
       ) : null}
     </div>
