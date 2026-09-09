@@ -105,6 +105,14 @@ function isObviouslyPublicExfilUrl(raw: string): boolean {
 export function assertSafeRuntime(env: Env): void {
   const unsafe: string[] = [];
   const production = env.APP_MODE === "production";
+  // Postgres/multiprocess cannot share an in-process queue across web + worker.
+  if (env.CANDIDARC_DATA_MODE === "postgres" && env.QUEUE_BACKEND === "inprocess") {
+    throw new Error(
+      "Incompatible configuration: CANDIDARC_DATA_MODE=postgres requires QUEUE_BACKEND=redis (and a worker). " +
+        "In-process queues only drain inside the Next.js process when CANDIDARC_DATA_MODE=memory. " +
+        "Use QUEUE_BACKEND=redis with `npm run worker` / `npm run dev`, or switch to memory mode for local demo.",
+    );
+  }
   if (production) {
     if (env.CANDIDARC_DATA_MODE === "memory") unsafe.push("CANDIDARC_DATA_MODE=memory");
     if (env.AI_MODE !== "live") unsafe.push("AI_MODE must be live");

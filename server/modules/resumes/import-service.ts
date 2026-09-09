@@ -96,6 +96,20 @@ export class ResumeImportService {
 
       : "";
 
+    if (ext === ".doc") {
+
+      throw new AppError(
+
+        "LEGACY_DOC_UNSUPPORTED",
+
+        "Legacy .doc Word files are not supported. Open the file in Microsoft Word and Save As DOCX (.docx), then upload again.",
+
+        400,
+
+      );
+
+    }
+
     if (!ALLOWED_RESUME_EXTENSIONS.has(ext)) {
 
       throw new AppError("INVALID_FILE_TYPE", "Only PDF and DOCX resumes are supported", 400);
@@ -149,6 +163,48 @@ export class ResumeImportService {
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
 
     this.validateUpload(input);
+
+    try {
+
+      const ready = await getPythonIntelligenceClient().ready();
+
+      if (!ready) {
+
+        throw new AppError(
+
+          "RESUME_PARSE_PIPELINE_UNAVAILABLE",
+
+          "Resume parsing is unavailable. Start the complete demo with `npm run dev` (Next.js + FastAPI + worker), then retry. Web-only: `npm run dev:web`.",
+
+          503,
+
+          undefined,
+
+          true,
+
+        );
+
+      }
+
+    } catch (err) {
+
+      if (err instanceof AppError) throw err;
+
+      throw new AppError(
+
+        "RESUME_PARSE_PIPELINE_UNAVAILABLE",
+
+        "Resume parsing is unavailable. Start the complete demo with `npm run dev` (Next.js + FastAPI + worker), then retry. Web-only: `npm run dev:web`.",
+
+        503,
+
+        undefined,
+
+        true,
+
+      );
+
+    }
 
     await this.profiles.getOrCreate(ctx);
 

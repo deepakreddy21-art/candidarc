@@ -4,27 +4,35 @@ Candidate-owned career intelligence — Radar freshness, Career Evidence, sequen
 
 Primary areas: **Today · Radar · Opportunities · Career Evidence**. Settings live in the user menu.
 
-## Quick start (Phase 1 UI + Phase 2 memory backend)
+## Quick start (complete local demo)
+
+The **canonical** local command starts Next.js, FastAPI (resume parse), and the queue worker together. PDF/DOCX import does **not** require OpenAI or Anthropic keys in demo/mock mode.
 
 ```bash
 npm install
+# one-time Python backend setup (if needed):
+#   cd services/python-backend && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt && .venv/Scripts/pip install -e .
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). FastAPI listens on [http://127.0.0.1:8090/docs](http://127.0.0.1:8090/docs).
 
 Default data mode is **memory** (no Docker). Demo login:
 
 - Email: `deepak@candidarc.dev`
 - Password: `CandidArc!Demo1`
 
+> **Important:** `npm run dev` is the full stack. Use `npm run dev:web` only when you intentionally want Next.js without FastAPI/worker (resume upload will fail with `RESUME_PARSE_PIPELINE_UNAVAILABLE`).
+
 ## Scripts
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Next.js web + `/api/v1` (auto queue drain in memory mode) |
-| `npm run dev:stack` | Web + dedicated worker process |
-| `npm run worker` | Background worker only |
+| `npm run dev` | **Complete demo:** FastAPI + Next.js + worker |
+| `npm run dev:web` | Next.js web only (no parse pipeline) |
+| `npm run dev:stack` | Alias of `npm run dev` |
+| `npm run dev:python` | FastAPI alone |
+| `npm run worker` | Background worker alone |
 | `npm run typecheck` | TypeScript |
 | `npm run lint` | ESLint |
 | `npm test` | Vitest |
@@ -34,13 +42,19 @@ Default data mode is **memory** (no Docker). Demo login:
 
 ## Postgres / Redis / MinIO (optional)
 
+PostgreSQL mode **requires** `QUEUE_BACKEND=redis` and a running worker. An in-process queue cannot be shared across Next.js and a separate worker.
+
 ```bash
 docker compose up -d
 cp .env.example .env
-# set CANDIDARC_DATA_MODE=postgres and DATABASE_URL
+# set:
+#   CANDIDARC_DATA_MODE=postgres
+#   DATABASE_URL=postgres://...
+#   QUEUE_BACKEND=redis
+#   REDIS_URL=redis://127.0.0.1:6379
 npm run db:migrate
 npm run db:seed
-npm run dev:stack
+npm run dev
 ```
 
 ## Authentication
@@ -67,7 +81,7 @@ GOOGLE_REDIRECT_URI=http://localhost:3000/api/v1/auth/google/callback
 APP_URL=http://localhost:3000
 ```
 
-5. Restart `npm run dev` / `npm run dev:stack`.
+5. Restart `npm run dev`.
 
 When credentials are absent, the app still boots; Google buttons redirect with `GOOGLE_AUTH_NOT_CONFIGURED`.
 Never put `GOOGLE_CLIENT_SECRET` in `NEXT_PUBLIC_*` variables.

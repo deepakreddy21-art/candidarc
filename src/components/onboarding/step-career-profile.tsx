@@ -39,17 +39,22 @@ function statusLabel(status: string | null): string {
 
 function importSummary(form: OnboardingFormState): string {
   const roles = form.employment.filter((row) => row.title?.trim() || row.company?.trim()).length;
+  const projects = (form as { projects?: Array<{ name?: string }> }).projects?.filter((row) => row.name?.trim()).length ?? 0;
   const skills = form.skills.length;
   const education = form.education.filter((row) => row.school?.trim() || row.degree?.trim()).length;
   const certs = form.certifications.filter((row) => row.name?.trim()).length;
+  const publications =
+    (form as { publications?: Array<{ title?: string }> }).publications?.filter((row) => row.title?.trim()).length ?? 0;
   const parts = [
     roles ? `${roles} role${roles === 1 ? "" : "s"}` : null,
-    skills ? `${skills} skill${skills === 1 ? "" : "s"}` : null,
+    projects ? `${projects} project${projects === 1 ? "" : "s"}` : null,
     education ? `${education} education entr${education === 1 ? "y" : "ies"}` : null,
+    skills ? `${skills} skill${skills === 1 ? "" : "s"}` : null,
     certs ? `${certs} certification${certs === 1 ? "" : "s"}` : null,
+    publications ? `${publications} publication${publications === 1 ? "" : "s"}` : null,
   ].filter(Boolean);
-  if (!parts.length) return "We extracted some details — review and edit anything that looks off.";
-  return `Imported ${parts.join(", ")}.`;
+  if (!parts.length) return "We imported your résumé — review and edit anything that looks off.";
+  return `We imported your résumé: ${parts.join(", ")}.`;
 }
 
 export function StepCareerProfile({

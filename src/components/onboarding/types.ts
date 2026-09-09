@@ -218,9 +218,12 @@ export function validateStepClient(
     const hasSkills = normalizeList(form.skills).length > 0;
     const hasEducation = form.education.some((row) => row.school?.trim() || row.degree?.trim());
     const hasCerts = form.certifications.some((row) => row.name?.trim());
+    const hasProjects = Boolean(
+      (form as { projects?: Array<{ name?: string }> }).projects?.some((row) => row.name?.trim()),
+    );
     const hasNotes = Boolean(form.evidenceNotes.trim());
-    if (hasEmployment || hasSkills || hasEducation || hasCerts || hasNotes) return null;
-    return "Add employment, education, skills, or upload a resume";
+    if (hasEmployment || hasSkills || hasEducation || hasCerts || hasProjects || hasNotes) return null;
+    return "Add employment, projects, education, skills, or upload a resume";
   }
   return null;
 }

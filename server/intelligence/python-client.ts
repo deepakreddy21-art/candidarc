@@ -143,6 +143,8 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
       INVALID_PDF_MAGIC: "This file does not look like a valid PDF.",
       INVALID_DOCX_MAGIC: "This file does not look like a valid DOCX.",
       UNSUPPORTED_DOCUMENT_TYPE: "Only PDF and DOCX resumes are supported.",
+      LEGACY_DOC_UNSUPPORTED:
+        "Legacy .doc Word files are not supported. Open the file in Microsoft Word and Save As DOCX (.docx), then upload again.",
       INVALID_BASE64: "Resume upload was corrupted in transit. Please try again.",
       DOCX_ZIP_BOMB_SUSPECTED: "This DOCX could not be opened safely.",
     };

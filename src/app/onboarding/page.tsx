@@ -193,9 +193,8 @@ export default function OnboardingPage() {
             setImportErrorCode(state.extraction?.errorCode ?? "PARSE_FAILED");
           }
         } catch (err) {
-          setImportStatus("failed");
-          setImportErrorCode("IMPORT_STATUS_FAILED");
-          setStatusMessage(err instanceof ApiError ? err.message : "Could not check import status");
+          // Transient status polling failures must not mark the import as terminal.
+          setStatusMessage(err instanceof ApiError ? err.message : "Could not check import status — retrying…");
         }
       })();
     }, 1500);
@@ -208,13 +207,10 @@ export default function OnboardingPage() {
     setImportErrorCode(null);
     try {
       await flushQueue({ form: formRef.current, step: stepRef.current });
-      // Clear prior draft extraction before replacement so old roles cannot mix in.
+      // Keep confirmed/draft form values visible until the new extraction is ready.
+      // Server stages a new draft; failed upload/parse must not wipe prior profile data.
       patchForm({
         careerProfileMode: "upload",
-        employment: [],
-        education: [],
-        skills: [],
-        certifications: [],
       });
       const result = await api.uploadResume(file);
       setImportStatus(result.importStatus);

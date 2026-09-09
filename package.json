@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "node scripts/dev-stack.mjs",
     "dev:web": "next dev --turbopack",
     "dev:worker": "tsx server/worker/main.ts",
     "dev:stack": "node scripts/dev-stack.mjs",
