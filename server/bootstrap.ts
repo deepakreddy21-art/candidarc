@@ -29,6 +29,7 @@ import { handleWorkflowJobExhausted, type WorkflowJobPayload } from "./workflows
 import { stageMatchesJobClaim } from "./workflows/stages";
 import { logger } from "./observability/logger";
 import type { WorkflowStage as BackendStage } from "./domain/types";
+import { AppError } from "./domain/types";
 import type {
   Application,
   ApplicationStatus,
@@ -396,6 +397,30 @@ async function buildRuntime(): Promise<Runtime> {
   const pipeline = ResumePipeline.fromRepos(repos, engine, queue);
 
   queue.onExhaustedRetries(async (job, error) => {
+    if (
+      (job.queue === "document-parsing" && job.name === "resume.extract") ||
+      (job.queue === "maintenance" && job.name === "files.malware_scan")
+    ) {
+      const payload = job.payload as { tenantId?: string; filePublicId?: string };
+      if (payload.tenantId && payload.filePublicId) {
+        const importService = ResumeImportService.fromRepos(repos, getStorage(), queue);
+        const code =
+          error instanceof AppError
+            ? error.code
+            : job.queue === "maintenance"
+              ? "MALWARE_SCAN_FAILED"
+              : "PARSE_FAILED";
+        await importService.markImportFailed(
+          payload.tenantId,
+          payload.filePublicId,
+          code,
+          job.queue === "maintenance"
+            ? "Security scanning could not finish. Please try uploading again."
+            : "We couldn’t finish reading your resume. Please try again or enter details manually.",
+        );
+      }
+      return;
+    }
     await handleWorkflowJobExhausted(repos, engine, job, error);
   });
 
