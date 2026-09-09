@@ -172,6 +172,7 @@ export interface RadarStore extends RadarCatalogStore, RadarUserStore {
     sources: JobSource[];
     jobs: CanonicalJob[];
     sightings: JobSighting[];
+    savedJobs?: SavedJob[];
   }>;
 
   /** Sync memory catalog to persistence (write-through). */

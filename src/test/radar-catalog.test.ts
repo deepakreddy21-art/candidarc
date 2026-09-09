@@ -72,7 +72,7 @@ describe("radar tenant isolation", () => {
       activeTenantId: a.tenantId,
     };
 
-    service.save(authA, job.publicId);
+    await service.save(authA, job.publicId);
     expect([...catalog.savedJobs.values()].some((s) => s.userId === a.userId && s.canonicalJobId === job.id)).toBe(true);
     expect([...catalog.savedJobs.values()].some((s) => s.userId === "usr_other")).toBe(false);
 

@@ -19,6 +19,7 @@ import type {
   JobSearchQuery,
   SavedSearch,
 } from "./types";
+import type { RadarStore } from "./persistence/types";
 
 /** Interaction types for job interactions tracking */
 export type JobInteractionType =
@@ -60,15 +61,18 @@ export class RadarService {
   readonly index: RadarSearchIndex;
   private readonly repos?: Repositories;
   private cachedBriefs = new Map<string, OpportunityBrief>();
+  private readonly store?: RadarStore;
 
   constructor(
     catalog: CanonicalJobCatalog = getSharedCatalog(),
     private readonly applications?: ApplicationsService,
     repos?: Repositories,
     private readonly customerGenerate?: CustomerGenerateService,
+    store?: RadarStore,
   ) {
     this.catalog = catalog;
     this.repos = repos;
+    this.store = store;
     this.index = new RadarSearchIndex(catalog);
     this.index.reindexAll();
   }
@@ -77,8 +81,9 @@ export class RadarService {
     applications?: ApplicationsService,
     repos?: Repositories,
     customerGenerate?: CustomerGenerateService,
+    store?: RadarStore,
   ) {
-    return new RadarService(getSharedCatalog(), applications, repos, customerGenerate);
+    return new RadarService(getSharedCatalog(), applications, repos, customerGenerate, store);
   }
 
   private tenantAndUser(ctx: AuthContext) {
@@ -146,14 +151,22 @@ export class RadarService {
     return { job, history: this.catalog.getHistory(jobId) };
   }
 
-  save(ctx: AuthContext, jobId: string) {
+  async save(ctx: AuthContext, jobId: string) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
-    return this.catalog.saveJob(tenantId, userId, jobId);
+    const saved = this.catalog.saveJob(tenantId, userId, jobId);
+    if (this.store) {
+      await this.store.saveJob(saved);
+    }
+    return saved;
   }
 
-  unsave(ctx: AuthContext, jobId: string) {
+  async unsave(ctx: AuthContext, jobId: string) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
     this.catalog.unsaveJob(tenantId, userId, jobId);
+    if (this.store) {
+      const job = this.catalog.getJob(jobId);
+      if (job) await this.store.unsaveJob(tenantId, userId, job.id);
+    }
     return { ok: true };
   }
 
@@ -413,30 +426,37 @@ export class RadarService {
    * Lazy generates and caches the brief.
    */
   async getOpportunityBrief(ctx: AuthContext, jobId: string): Promise<OpportunityBrief> {
-    requireUser(ctx);
+    const { tenantId, userId } = this.tenantAndUser(ctx);
 
     const job = this.catalog.getJob(jobId);
     if (!job) throw new AppError("JOB_NOT_FOUND", "Job not found", 404);
 
-    // Check cache
-    const cacheKey = `${jobId}:${job.updatedAt}`;
+    // Load profile for personalization — MUST participate in cache identity.
+    const profile = await this.getProfileForMatch(ctx);
+    const BRIEF_ALGO_VERSION = "opportunity-brief-v2";
+    const profileRevision = [
+      profile.skills.slice().sort().join(","),
+      (profile.careerGoals ?? []).slice().sort().join(","),
+      (profile.preferredLocations ?? []).slice().sort().join(","),
+      profile.seniority ?? "",
+      String(profile.yearsExperience ?? ""),
+      String(profile.targetCompensationMin ?? ""),
+      String(profile.remoteOk ?? ""),
+    ].join("|");
+
+    // Candidate-specific briefs must never be shared across tenants/users/profiles.
+    const cacheKey = `${tenantId}:${userId}:${jobId}:${job.updatedAt}:${profileRevision}:${BRIEF_ALGO_VERSION}`;
     const cached = this.cachedBriefs.get(cacheKey);
     if (cached) {
       return { ...cached, cached: true };
     }
 
-    // Load profile for personalization
-    const profile = await this.getProfileForMatch(ctx);
-
-    // Import brief generator (lazy load)
     const { generateOpportunityBrief } = await import("./opportunity-brief");
 
     const brief = await generateOpportunityBrief(job, profile, this.catalog);
 
-    // Cache the result
     this.cachedBriefs.set(cacheKey, brief);
 
-    // Limit cache size
     if (this.cachedBriefs.size > 100) {
       const oldest = this.cachedBriefs.keys().next().value;
       if (oldest) this.cachedBriefs.delete(oldest);

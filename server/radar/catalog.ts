@@ -766,10 +766,21 @@ export class CanonicalJobCatalog {
       jobs = jobs.filter((j) => j.locations.some((l) => l.toLowerCase().includes(loc)));
     }
 
-    if (query.remote === true) {
+    if (query.remotePolicy) {
+      jobs = jobs.filter((j) => j.remotePolicy === query.remotePolicy);
+    } else if (query.remote === true) {
       jobs = jobs.filter((j) => j.remotePolicy === "remote" || j.remotePolicy === "hybrid");
     } else if (query.remote === false) {
       jobs = jobs.filter((j) => j.remotePolicy === "onsite");
+    }
+
+    if (query.savedOnly && opts?.tenantId && opts?.userId) {
+      const savedIds = new Set(
+        [...this.savedJobs.values()]
+          .filter((s) => s.tenantId === opts.tenantId && s.userId === opts.userId)
+          .map((s) => s.canonicalJobId),
+      );
+      jobs = jobs.filter((j) => savedIds.has(j.id));
     }
 
     if (query.employmentType) {
@@ -1077,6 +1088,39 @@ export class CanonicalJobCatalog {
 
   private tenantKey(tenantId: string, userId: string, jobId: string) {
     return `${tenantId}:${userId}:${jobId}`;
+  }
+
+  /**
+   * Apply a persistence snapshot into the in-memory catalog (postgres hydrate).
+   * Existing keys are overwritten so restart recovers durable state.
+   */
+  applyHydratedSnapshot(input: {
+    companies?: Company[];
+    sources?: JobSource[];
+    jobs?: CanonicalJob[];
+    sightings?: JobSighting[];
+    savedJobs?: SavedJob[];
+  }): void {
+    for (const company of input.companies ?? []) {
+      this.companies.set(company.id, company);
+    }
+    for (const source of input.sources ?? []) {
+      this.sources.set(source.id, source);
+    }
+    for (const job of input.jobs ?? []) {
+      this.canonicalJobs.set(job.id, job);
+    }
+    for (const sighting of input.sightings ?? []) {
+      this.sightings.set(sighting.id, sighting);
+      if (sighting.sourceId && sighting.sourceListingId) {
+        this.listingIndex.set(`${sighting.sourceId}:${sighting.sourceListingId}`, sighting.id);
+      }
+    }
+    for (const saved of input.savedJobs ?? []) {
+      const key = this.tenantKey(saved.tenantId, saved.userId, saved.canonicalJobId);
+      this.savedJobs.set(key, saved);
+    }
+    this.indexedAt = nowIso();
   }
 
   saveJob(tenantId: string, userId: string, jobPublicId: string): SavedJob {

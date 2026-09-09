@@ -216,6 +216,7 @@ export class PostgresRadarStore implements RadarStore {
     const [row] = await this.db
       .insert(schema.radarCanonicalJobs)
       .values({
+        id: job.id,
         publicId: job.publicId,
         companyId: job.companyId,
         companyName: job.companyName,
@@ -251,7 +252,7 @@ export class PostgresRadarStore implements RadarStore {
         classification: job.classification,
         classificationConfidence: String(job.classificationConfidence),
         confidence: String(job.confidence),
-        primarySourceId: job.primarySourceId,
+        primarySourceId: job.primarySourceId || null,
         repostCount: job.repostCount,
         companyDirect: job.companyDirect,
         demoData: job.demoData ?? false,
@@ -1164,12 +1165,14 @@ export class PostgresRadarStore implements RadarStore {
     sources: JobSource[];
     jobs: CanonicalJob[];
     sightings: JobSighting[];
+    savedJobs: SavedJob[];
   }> {
-    const [companies, sources, jobs, sightings] = await Promise.all([
+    const [companies, sources, jobs, sightings, savedJobs] = await Promise.all([
       this.db.select().from(schema.radarCompanies),
       this.db.select().from(schema.radarJobSources),
       this.db.select().from(schema.radarCanonicalJobs),
       this.db.select().from(schema.radarJobSightings),
+      this.db.select().from(schema.radarSavedJobs),
     ]);
 
     return {
@@ -1177,7 +1180,28 @@ export class PostgresRadarStore implements RadarStore {
       sources: sources.map((s) => this.mapSource(s)),
       jobs: jobs.map((j) => this.mapJob(j)),
       sightings: sightings.map((s) => this.mapSighting(s)),
+      savedJobs: savedJobs.map((s) => this.mapSavedJob(s)),
     };
+  }
+
+  async syncCatalog(catalog: {
+    companies: Company[];
+    sources: JobSource[];
+    jobs: CanonicalJob[];
+    sightings: JobSighting[];
+  }): Promise<void> {
+    for (const company of catalog.companies) {
+      await this.upsertCompany(company);
+    }
+    for (const source of catalog.sources) {
+      await this.upsertSource(source);
+    }
+    for (const job of catalog.jobs) {
+      await this.upsertJob(job);
+    }
+    for (const sighting of catalog.sightings) {
+      await this.upsertSighting(sighting);
+    }
   }
 }
 

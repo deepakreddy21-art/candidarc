@@ -149,12 +149,11 @@ export function RadarFeed() {
         sort: filters.sort,
         limit: 20,
       });
-      const nextJobs = filters.tab === "saved" ? result.jobs.filter((job) => job.saved) : result.jobs;
-      setJobs(nextJobs);
-      setTotal(filters.tab === "saved" ? nextJobs.length : result.total);
+      setJobs(result.jobs);
+      setTotal(result.total);
       setLastUpdated(new Date().toISOString());
       setSelectedId((current) =>
-        current && nextJobs.some((job) => job.id === current) ? current : nextJobs[0]?.id,
+        current && result.jobs.some((job) => job.id === current) ? current : result.jobs[0]?.id,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load jobs");

@@ -174,6 +174,11 @@ export function mapApplicationToUi(app: ApplicationRecord): Application {
       }
       return undefined;
     })(),
+    version: app.version,
+    workflowId:
+      typeof app.metadata?.customerWorkflowPublicId === "string"
+        ? app.metadata.customerWorkflowPublicId
+        : undefined,
   };
 }
 
@@ -573,7 +578,51 @@ async function buildRuntime(): Promise<Runtime> {
     if (env.APP_MODE === "demo") {
       seedDemoCatalog();
     }
-    radar = RadarService.create(applications, repos, customerResumes);
+    let radarStore: import("./radar/persistence/types").RadarStore | undefined;
+    if (env.CANDIDARC_DATA_MODE === "postgres") {
+      const { getDb } = await import("./database/client");
+      const db = getDb();
+      if (db) {
+        const { createPostgresRadarStore } = await import("./radar/persistence/postgres-store");
+        radarStore = createPostgresRadarStore(db);
+      }
+    }
+    radar = RadarService.create(applications, repos, customerResumes, radarStore);
+    if (radarStore?.hydrateCatalog) {
+      try {
+        const hydrated = await radarStore.hydrateCatalog();
+        radar.catalog.applyHydratedSnapshot(hydrated);
+        radar.index.reindexAll();
+        if (hydrated.jobs.length > 0 || (hydrated.savedJobs?.length ?? 0) > 0) {
+          logger.info(
+            {
+              jobs: hydrated.jobs.length,
+              companies: hydrated.companies.length,
+              savedJobs: hydrated.savedJobs?.length ?? 0,
+            },
+            "radar catalog hydrated from postgres",
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, "radar postgres hydrate skipped");
+      }
+    }
+    if (radarStore?.syncCatalog && env.APP_MODE === "demo") {
+      try {
+        await radarStore.syncCatalog({
+          companies: [...radar.catalog.companies.values()],
+          sources: [...radar.catalog.sources.values()],
+          jobs: [...radar.catalog.canonicalJobs.values()],
+          sightings: [...radar.catalog.sightings.values()],
+        });
+        logger.info(
+          { jobs: radar.catalog.canonicalJobs.size },
+          "radar catalog synced to postgres",
+        );
+      } catch (err) {
+        logger.warn({ err }, "radar postgres sync skipped");
+      }
+    }
     registerRadarQueueHandlers(queue, radar.catalog, radar.index);
     void queue.enqueue("job-indexing", "radar-reindex", { reason: "bootstrap" });
     void queue.enqueue("job-alerting", "radar-alerts-sweep", { reason: "bootstrap" });
