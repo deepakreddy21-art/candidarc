@@ -130,8 +130,6 @@ export class ApplicationsService {
     if (candidateStatus === undefined) {
       return this.applications.update(tenantId, applicationPublicId, rest);
     }
-    const existing = await this.applications.getByPublicId(tenantId, applicationPublicId);
-    if (!existing) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
 
     const allowed = new Set([
       "Saved",
@@ -145,34 +143,14 @@ export class ApplicationsService {
     if (!allowed.has(candidateStatus)) {
       throw new AppError("INVALID_STATUS", "Unsupported application status", 400);
     }
-
-    // Idempotent: same status with matching version is a no-op success.
-    const currentStatus =
-      typeof existing.metadata?.candidateStatus === "string"
-        ? existing.metadata.candidateStatus
-        : undefined;
-    if (
-      currentStatus === candidateStatus &&
-      (expectedVersion === undefined || expectedVersion === existing.version)
-    ) {
-      return existing;
+    if (typeof expectedVersion !== "number" || !Number.isInteger(expectedVersion) || expectedVersion < 1) {
+      throw new AppError("EXPECTED_VERSION_REQUIRED", "expectedVersion is required for status updates", 400);
     }
 
-    if (expectedVersion !== undefined && existing.version !== expectedVersion) {
-      throw new AppError(
-        "APPLICATION_VERSION_CONFLICT",
-        "Application was updated elsewhere. Reload and try again.",
-        409,
-        { expectedVersion, currentVersion: existing.version, application: existing },
-      );
-    }
-
-    return this.applications.update(tenantId, applicationPublicId, {
-      ...rest,
-      metadata: {
-        ...(existing.metadata ?? {}),
-        candidateStatus,
-      },
+    return this.applications.updateCandidateStatusCas(tenantId, applicationPublicId, {
+      candidateStatus,
+      expectedVersion,
+      patch: Object.keys(rest).length > 0 ? rest : undefined,
     });
   }
 

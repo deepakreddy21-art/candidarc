@@ -89,7 +89,8 @@ export default function OpportunitiesPage() {
     } catch (err) {
       // Keep the candidate's selection visible; offer reload on conflict.
       if (err instanceof ApiError && err.status === 409) {
-        toast.error("Status changed in another tab. Reload or retry with the latest version.", {
+        // Retain the candidate's unsaved selection; offer reload of server version.
+        toast.error("Status changed in another tab. Your selection is kept — reload then retry.", {
           action: {
             label: "Reload",
             onClick: () => {
@@ -109,7 +110,6 @@ export default function OpportunitiesPage() {
             },
           },
         });
-        // Keep the candidate's unsaved selection visible for retry.
         return;
       }
       setApps((prev) =>

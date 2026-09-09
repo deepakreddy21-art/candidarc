@@ -62,5 +62,77 @@ test.describe("candidate screenshots", () => {
     await page.goto("/app/radar?q=__no_such_role_zzzz__");
     await expect(page.getByText(/no matching roles/i)).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: join(outDir, "jobs-empty-1440.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(outDir, "jobs-empty-390.png"), fullPage: true });
+
+    // Radar load failure + Retry (deterministic via route abort)
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.route("**/api/v1/jobs/search**", (route) => route.abort());
+    await page.goto("/app/radar");
+    await expect(page.getByRole("button", { name: /retry/i })).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: join(outDir, "radar-load-failure-1440.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(outDir, "radar-load-failure-390.png"), fullPage: true });
+    await page.unroute("**/api/v1/jobs/search**");
+
+    // Tailoring / workflow failure
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.route("**/api/v1/resumes/workflows/**", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            workflowId: "wf_fail_demo",
+            applicationId: "app_fail_demo",
+            status: "failed",
+            message: "Tailoring failed — fictional demo error for screenshots.",
+            pipelineStage: "failed",
+            downloads: { pdfReady: false, docxReady: false },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto("/app/resumes/wf_fail_demo");
+    await expect(page.getByRole("button", { name: /retry/i }).or(page.getByText(/failed|try again/i)).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await page.screenshot({ path: join(outDir, "tailoring-failure-1440.png"), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: join(outDir, "tailoring-failure-390.png"), fullPage: true });
+    await page.unroute("**/api/v1/resumes/workflows/**");
+
+    // Application version conflict toast (keep selection)
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/app/opportunities");
+    await page.route("**/api/v1/applications/**", async (route) => {
+      if (route.request().method() === "PATCH" || route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "APPLICATION_VERSION_CONFLICT",
+              message: "Application was updated elsewhere. Reload and try again.",
+            },
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    const statusSelect = page.locator("select").first();
+    if (await statusSelect.isVisible().catch(() => false)) {
+      await statusSelect.selectOption({ label: "Interviewing" }).catch(async () => {
+        await statusSelect.selectOption({ index: 2 });
+      });
+      await page.waitForTimeout(500);
+      await page.screenshot({ path: join(outDir, "application-version-conflict-1440.png"), fullPage: true });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({ path: join(outDir, "application-version-conflict-390.png"), fullPage: true });
+    }
+    await page.unroute("**/api/v1/applications/**");
   });
 });

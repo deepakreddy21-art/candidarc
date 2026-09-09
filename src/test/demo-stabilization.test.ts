@@ -272,7 +272,7 @@ describe("radar filter contracts", () => {
 });
 
 describe("applications → resume navigation context", () => {
-  it("stores workflowId on create and maps it for deep links", async () => {
+  it("uses production mapApplicationToUi for workflow deep links", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
     const queue = new InProcessQueueAdapter();
@@ -285,13 +285,45 @@ describe("applications → resume navigation context", () => {
       role: "Engineer",
       idempotencyKey: `nav-${newId("k")}`,
     });
-    expect(created.application.metadata?.customerWorkflowPublicId).toBe(created.workflow.publicId);
-    // Same mapping used by mapApplicationToUi — avoid importing bootstrap (starts full runtime).
-    const workflowId =
-      typeof created.application.metadata?.customerWorkflowPublicId === "string"
-        ? created.application.metadata.customerWorkflowPublicId
-        : undefined;
-    expect(workflowId).toBe(created.workflow.publicId);
-    expect(workflowId).not.toBe(created.application.publicId);
+    const { mapApplicationToUi } = await import("../../server/mappers/application-ui");
+    const ui = mapApplicationToUi(created.application);
+    expect(ui.workflowId).toBe(created.workflow.publicId);
+    expect(ui.workflowId).not.toBe(ui.id);
+    expect(ui.ownerProfileId).toBe("");
+    expect(ui.jobDescriptionId).toBe("");
+    expect(Boolean(ui.workflowId)).toBe(true);
+  });
+
+  it("hides View resume when no workflow or resume artifact exists", async () => {
+    const { mapApplicationToUi } = await import("../../server/mappers/application-ui");
+    const ui = mapApplicationToUi({
+      id: newId("app"),
+      publicId: "app-no-resume",
+      tenantId: newId("ten"),
+      company: "NoDoc",
+      companyMark: "ND",
+      role: "Analyst",
+      location: "Remote",
+      employmentType: "Full-time",
+      status: "researching",
+      stage: "APPLICATION_CREATED",
+      workflowStage: "APPLICATION_CREATED",
+      resumeScore: 0,
+      evidenceCoverage: 0,
+      atsAlignment: 0,
+      interviewStatus: "not-started",
+      researchConfidence: 0,
+      archived: false,
+      roleFamily: "General",
+      nextAction: "Start",
+      ownerUserId: newId("usr"),
+      metadata: {},
+      version: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      deletedAt: null,
+    });
+    expect(ui.workflowId).toBeUndefined();
+    expect(ui.resumeId).toBe("");
   });
 });
