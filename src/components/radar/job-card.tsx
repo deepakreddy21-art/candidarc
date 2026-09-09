@@ -2,20 +2,15 @@
 
 import Link from "next/link";
 import {
-  Building2,
   CalendarClock,
-  CheckCircle2,
   Copy,
-  EyeOff,
   Bookmark,
   BookmarkCheck,
   RefreshCw,
   RotateCcw,
-  Sparkles,
   ExternalLink,
   FileText,
 } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn, formatRelative } from "@/lib/utils";
@@ -23,9 +18,9 @@ import type { JobClassification, RadarJob, VerificationState, MatchLabel } from 
 
 const classificationMeta: Record<
   JobClassification,
-  { label: string; tone: "accent" | "cyan" | "success" | "warning" | "neutral" | "destructive"; Icon: typeof Sparkles }
+  { label: string; tone: "accent" | "cyan" | "success" | "warning" | "neutral" | "destructive"; Icon: typeof RefreshCw }
 > = {
-  NEW: { label: "New", tone: "success", Icon: Sparkles },
+  NEW: { label: "New", tone: "success", Icon: RefreshCw },
   REPOSTED: { label: "Reposted", tone: "warning", Icon: RotateCcw },
   REFRESHED: { label: "Refreshed", tone: "cyan", Icon: RefreshCw },
   REOPENED: { label: "Reopened", tone: "accent", Icon: RotateCcw },
@@ -36,7 +31,164 @@ const classificationMeta: Record<
   UNKNOWN: { label: "Unknown", tone: "neutral", Icon: CalendarClock },
 };
 
-function verificationLabel(state: VerificationState) {
+export function JobClassificationBadge({ classification }: { classification: JobClassification }) {
+  const meta = classificationMeta[classification];
+  return (
+    <Badge tone={meta.tone} className="gap-1">
+      <meta.Icon className="h-3 w-3" aria-hidden />
+      {meta.label}
+    </Badge>
+  );
+}
+
+export type FitCategory = "Strong" | "Good" | "Stretch";
+
+export function fitCategoryFromLabel(label?: MatchLabel | string | null, score?: number): FitCategory | null {
+  if (label === "Strong match" || label === "Strong") return "Strong";
+  if (label === "Good match" || label === "Good") return "Good";
+  if (label === "Stretch opportunity" || label === "Stretch") return "Stretch";
+  if (label === "Not recommended") return null;
+  if (typeof score === "number") {
+    if (score >= 75) return "Strong";
+    if (score >= 55) return "Good";
+    if (score >= 35) return "Stretch";
+  }
+  return null;
+}
+
+const fitTone: Record<FitCategory, "success" | "accent" | "warning"> = {
+  Strong: "success",
+  Good: "accent",
+  Stretch: "warning",
+};
+
+function workplaceLabel(job: RadarJob) {
+  if (job.remotePolicy === "remote") return "Remote";
+  if (job.remotePolicy === "hybrid") return "Hybrid";
+  if (job.remotePolicy === "onsite") return "On-site";
+  return null;
+}
+
+function verificationShort(job: RadarJob) {
+  if (job.verificationState === "VERIFIED_OPEN") return "Verified open";
+  if (job.companyDirect) return "Company site";
+  if (job.primarySource?.demoData || job.demoData) return "Demo fixture";
+  return null;
+}
+
+export function JobCard({
+  job,
+  selected,
+  onSelect,
+  onSave,
+  onTailorResume,
+  navigateOnSelect,
+}: {
+  job: RadarJob;
+  selected?: boolean;
+  onSelect?: (id: string) => void;
+  onSave?: (job: RadarJob) => void;
+  onHide?: (job: RadarJob) => void;
+  onTailorResume?: (job: RadarJob) => void;
+  dense?: boolean;
+  navigateOnSelect?: boolean;
+}) {
+  const fit = fitCategoryFromLabel(job.matchLabel, job.matchScore);
+  const reasons = (job.matchReasons ?? job.matchBreakdown?.notes ?? []).filter(Boolean).slice(0, 2);
+  const workplace = workplaceLabel(job);
+  const verification = verificationShort(job);
+  const freshness = job.firstSeenAt || job.originalPostedAt || job.sourcePostedAt;
+
+  return (
+    <article
+      data-testid="job-row"
+      className={cn(
+        "border-b border-border px-3 py-3 transition-colors sm:px-4",
+        selected ? "bg-surface-2" : "hover:bg-surface-2/60",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          onClick={() => onSelect?.(job.id)}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            {fit ? (
+              <Badge tone={fitTone[fit]} className="rounded-md px-1.5 py-0 text-[11px]">
+                {fit}
+              </Badge>
+            ) : null}
+            {verification ? <span className="text-[11px] text-foreground-muted">{verification}</span> : null}
+            {freshness ? <span className="text-[11px] text-foreground-muted">{formatRelative(freshness)}</span> : null}
+          </div>
+          <h3 className="mt-1 text-[15px] font-semibold text-foreground">
+            {navigateOnSelect ? (
+              <Link href={`/app/radar/jobs/${job.id}`} className="hover:text-accent">
+                {job.title}
+              </Link>
+            ) : (
+              job.title
+            )}
+          </h3>
+          <p className="text-sm text-foreground-secondary">
+            {job.company}
+            {job.location ? ` · ${job.location}` : ""}
+            {workplace ? ` · ${workplace}` : ""}
+            {job.compensation ? ` · ${job.compensation}` : ""}
+          </p>
+          {reasons.length ? (
+            <ul className="mt-1.5 space-y-0.5">
+              {reasons.map((reason) => (
+                <li key={reason} className="text-xs text-foreground-muted">
+                  {reason}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </button>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          {onSave ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              aria-label={job.saved ? "Unsave job" : "Save job"}
+              onClick={() => onSave(job)}
+            >
+              {job.saved ? <BookmarkCheck className="h-4 w-4 text-accent" /> : <Bookmark className="h-4 w-4" />}
+            </Button>
+          ) : null}
+          {onTailorResume ? (
+            <Button type="button" size="sm" onClick={() => onTailorResume(job)}>
+              <FileText className="h-3.5 w-3.5" />
+              Tailor
+            </Button>
+          ) : (
+            <Link
+              href={`/app/radar/jobs/${job.id}`}
+              className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium text-accent hover:underline"
+            >
+              View job
+            </Link>
+          )}
+          {job.applicationUrl || job.companyCareersUrl ? (
+            <a
+              href={job.applicationUrl || job.companyCareersUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-foreground-muted hover:text-foreground"
+            >
+              Company site <ExternalLink className="h-3 w-3" />
+            </a>
+          ) : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+export function verificationLabel(state: VerificationState) {
   switch (state) {
     case "VERIFIED_OPEN":
       return "Verified open";
@@ -51,244 +203,4 @@ function verificationLabel(state: VerificationState) {
     case "VERIFICATION_FAILED":
       return "Verification failed";
   }
-}
-
-export function JobClassificationBadge({ classification }: { classification: JobClassification }) {
-  const meta = classificationMeta[classification];
-  return (
-    <Badge tone={meta.tone} className="gap-1">
-      <meta.Icon className="h-3 w-3" aria-hidden />
-      {meta.label}
-    </Badge>
-  );
-}
-
-/** Match label badge colors */
-const matchLabelMeta: Record<MatchLabel, { tone: "success" | "accent" | "warning" | "neutral" }> = {
-  "Strong match": { tone: "success" },
-  "Good match": { tone: "accent" },
-  "Stretch opportunity": { tone: "warning" },
-  "Not recommended": { tone: "neutral" },
-};
-
-export function JobCard({
-  job,
-  selected,
-  onSelect,
-  onSave,
-  onHide,
-  onTailorResume,
-  dense,
-}: {
-  job: RadarJob;
-  selected?: boolean;
-  onSelect?: (id: string) => void;
-  onSave?: (job: RadarJob) => void;
-  onHide?: (job: RadarJob) => void;
-  onTailorResume?: (job: RadarJob) => void;
-  dense?: boolean;
-}) {
-  const meta = classificationMeta[job.classification];
-  const matchLabel = job.matchLabel as MatchLabel | undefined;
-  const matchTone = matchLabel ? matchLabelMeta[matchLabel]?.tone ?? "neutral" : "neutral";
-
-  return (
-    <Card
-      interactive
-      className={cn(
-        "overflow-hidden",
-        selected && "border-[color-mix(in_oklab,var(--accent)_45%,transparent)] ring-1 ring-[color-mix(in_oklab,var(--accent)_30%,transparent)]",
-      )}
-    >
-      <CardContent className={cn("p-4", !dense && "sm:p-5")}>
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-xs font-semibold tracking-wide">
-            {job.companyMark}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start justify-between gap-2">
-              <button
-                type="button"
-                className="min-w-0 text-left"
-                onClick={() => onSelect?.(job.id)}
-              >
-                <p className="text-[15px] font-semibold hover:text-accent">{job.company}</p>
-                <p className="text-sm text-foreground-secondary">{job.title}</p>
-              </button>
-              <div className="flex shrink-0 gap-1">
-                {onSave ? (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={job.saved ? "Unsave job" : "Save job"}
-                    onClick={() => onSave(job)}
-                  >
-                    {job.saved ? <BookmarkCheck className="h-4 w-4 text-accent" /> : <Bookmark className="h-4 w-4" />}
-                  </Button>
-                ) : null}
-                {onHide ? (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Hide job"
-                    onClick={() => onHide(job)}
-                  >
-                    <EyeOff className="h-4 w-4" />
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
-              <span>{job.location}</span>
-              <span>·</span>
-              <span className="capitalize">{job.remotePolicy}</span>
-              <span>·</span>
-              <span>{job.employmentType}</span>
-              {job.compensation ? (
-                <>
-                  <span>·</span>
-                  <span>{job.compensation}</span>
-                </>
-              ) : null}
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <JobClassificationBadge classification={job.classification} />
-              {job.companyDirect ? (
-                <Badge tone="accent" className="gap-1">
-                  <Building2 className="h-3 w-3" aria-hidden />
-                  Company direct
-                </Badge>
-              ) : null}
-              {job.timestampEstimated ? (
-                <Badge tone="warning" className="gap-1">
-                  <CalendarClock className="h-3 w-3" aria-hidden />
-                  Estimated
-                </Badge>
-              ) : null}
-              {(job.verificationState === "VERIFIED_OPEN" ||
-                job.verificationState === "LIKELY_OPEN") && (
-                <Badge tone="success" className="gap-1">
-                  <CheckCircle2 className="h-3 w-3" aria-hidden />
-                  {verificationLabel(job.verificationState)}
-                </Badge>
-              )}
-              {job.possibleDuplicate || job.classification === "POSSIBLE_DUPLICATE" ? (
-                <Badge tone="neutral" className="gap-1">
-                  <Copy className="h-3 w-3" aria-hidden />
-                  Possible duplicate
-                </Badge>
-              ) : null}
-              {job.demoData || job.primarySource.demoData ? (
-                <Badge tone="neutral">Demo fixture</Badge>
-              ) : null}
-            </div>
-
-            <div className="mt-3 space-y-1 text-xs text-foreground-secondary">
-              {job.classification === "REPOSTED" && job.repostedAt ? (
-                <p>
-                  {meta.label} on {job.sightings.find((s) => s.demoData)?.sourceName ?? "board"}{" "}
-                  {formatRelative(job.repostedAt)}
-                  {job.sightings.some((s) => s.demoData) ? " (demo fixture)" : ""}
-                </p>
-              ) : null}
-              {job.originalPostedAt ? (
-                <p>
-                  Originally{" "}
-                  {job.originalPostedPrecision === "DATE_ONLY" ||
-                  job.originalPostedPrecision === "RELATIVE_DAYS" ||
-                  job.originalPostedPrecision === "UNKNOWN"
-                    ? `posted on ${new Date(job.originalPostedAt).toLocaleDateString()} (date only)`
-                    : `posted ${formatRelative(job.originalPostedAt)}`}
-                </p>
-              ) : (
-                <p>Original posting date unknown</p>
-              )}
-              {job.lastVerifiedAt ? (
-                <p>
-                  {verificationLabel(job.verificationState)} on {job.primarySource.name}{" "}
-                  {formatRelative(job.lastVerifiedAt)}
-                </p>
-              ) : null}
-              <p>First discovered by CandidArc {formatRelative(job.firstSeenAt)}</p>
-            </div>
-
-            {/* Match label — never show uncalibrated percentages as the primary signal */}
-            <div className="mt-4">
-              <div className="flex items-center gap-2">
-                <Badge tone={matchTone} className="text-xs">
-                  {matchLabel ?? (
-                    job.matchScore >= 75
-                      ? "Strong match"
-                      : job.matchScore >= 55
-                        ? "Good match"
-                        : job.matchScore >= 35
-                          ? "Stretch opportunity"
-                          : "Not recommended"
-                  )}
-                </Badge>
-                {job.matchReasons && job.matchReasons.length > 0 && (
-                  <span className="truncate text-xs text-foreground-muted">
-                    {job.matchReasons[0]}
-                  </span>
-                )}
-              </div>
-              {job.matchReasons && job.matchReasons.length > 1 && !dense && (
-                <ul className="mt-2 space-y-0.5 text-xs text-foreground-muted">
-                  {job.matchReasons.slice(1, 3).map((reason, i) => (
-                    <li key={i}>• {reason}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            {job.technologies.length ? (
-              <p className="mt-3 truncate text-xs text-foreground-muted">
-                {job.technologies.slice(0, 5).join(" · ")}
-              </p>
-            ) : null}
-
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              {onTailorResume && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onTailorResume(job);
-                  }}
-                >
-                  <FileText className="h-3.5 w-3.5" />
-                  Tailor resume
-                </Button>
-              )}
-              {job.applicationUrl && (
-                <Button variant="outline" size="sm" asChild>
-                  <a
-                    href={job.applicationUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    Open listing
-                  </a>
-                </Button>
-              )}
-              <Link
-                href={`/app/radar/jobs/${job.id}`}
-                className="text-sm font-medium text-accent hover:underline"
-                onClick={(e) => e.stopPropagation()}
-              >
-                Details
-              </Link>
-              <span className="text-foreground-muted">·</span>
-              <span className="text-xs text-foreground-muted">{job.primarySource.name}</span>
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
 }

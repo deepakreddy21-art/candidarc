@@ -12,20 +12,22 @@ export type AppGateResult =
  * Authoritative gate for /app routes.
  * Cookie presence alone is not authentication — session must verify and profile must be complete.
  * Uses the same session resolution path as API routes (buildAuthContext).
+ *
+ * Next.js dynamic APIs (`headers()`) are read OUTSIDE the application try/catch so
+ * framework control-flow / dynamic-rendering bailouts are never swallowed.
  */
 export async function resolveAppGate(sessionToken?: string | null): Promise<AppGateResult> {
-  try {
-    let cookieHeader: string;
-    if (sessionToken === undefined) {
-      cookieHeader = (await headers()).get("cookie") ?? "";
-    } else if (!sessionToken) {
-      cookieHeader = "";
-    } else {
-      cookieHeader = `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}`;
-    }
+  let cookieHeader: string;
+  if (sessionToken === undefined) {
+    // Must not live inside try/catch — Next uses throw for dynamic-server bailouts.
+    cookieHeader = (await headers()).get("cookie") ?? "";
+  } else if (!sessionToken) {
+    cookieHeader = "";
+  } else {
+    cookieHeader = `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionToken)}`;
+  }
 
-    // Fail closed if callers expected a cookie jar but parsing yields nothing while a raw
-    // token was not provided — still treat as unauthenticated redirect.
+  try {
     if (sessionToken === undefined && !parseSessionCookie(cookieHeader)) {
       return { outcome: "redirect", path: "/sign-in" };
     }
@@ -49,6 +51,7 @@ export async function resolveAppGate(sessionToken?: string | null): Promise<AppG
 
     return { outcome: "allow" };
   } catch (err) {
+    // Only genuine session/repo/infra failures. Never catch redirect/notFound/dynamic bailouts here.
     console.error("resolveAppGate failed", err);
     return {
       outcome: "unavailable",

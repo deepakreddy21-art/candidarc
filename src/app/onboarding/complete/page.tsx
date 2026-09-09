@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Logo } from "@/components/brand/logo";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "@/services/api";
 
@@ -42,20 +42,17 @@ export default function OnboardingCompletePage() {
         <div className="space-y-2">
           <h1 className="font-serif text-3xl text-foreground">You&apos;re ready</h1>
           <p className="text-sm text-foreground-secondary">
-            Your preferences and career evidence are saved. Next, tailor a resume for a specific job or
-            explore roles matched to your direction.
+            Your profile is saved. See roles matched to your direction, then tailor a resume when you find one worth
+            applying to.
           </p>
         </div>
         <div className="flex flex-col gap-3">
-          <Link href="/app/resumes/new" className={cn(buttonVariants(), "w-full")}>
-            Tailor my first resume
+          <Link href="/app/radar" className={cn(buttonVariants(), "w-full")}>
+            See jobs for you
           </Link>
-          <Link href="/app/radar" className={cn(buttonVariants({ variant: "secondary" }), "w-full")}>
-            Explore Job Radar
+          <Link href="/app/settings/profile" className={cn(buttonVariants({ variant: "secondary" }), "w-full")}>
+            Review career profile
           </Link>
-          <Button type="button" variant="ghost" onClick={() => router.push("/app")}>
-            Go to home
-          </Button>
         </div>
       </div>
     </div>

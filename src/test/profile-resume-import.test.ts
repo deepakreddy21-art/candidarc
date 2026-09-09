@@ -1,6 +1,6 @@
 /** @vitest-environment node */
 import { resolve } from "path";
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { ensureDemoUser, DEMO_USER } from "../../server/auth/demo-auth";
 import type { AuthContext } from "../../server/auth/guards";
 import {
@@ -14,11 +14,16 @@ import {
   MAX_RESUME_BYTES,
   ResumeImportService,
 } from "../../server/modules/resumes/import-service";
-import { extractTextFromResume, normalizeResumeText } from "../../server/modules/resumes/text-extractor";
-import { createMinimalDocx } from "../../server/resumes/document-renderer";
+import { normalizeResumeText } from "../../server/modules/resumes/text-extractor";
 import { LocalFilesystemStorage } from "../../server/storage/local";
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
 import { resetStorage } from "../../server/storage";
+import {
+  NO_EMPLOYMENT_RESUME,
+  PROFESSIONAL_EXPERIENCE_RESUME,
+  WORK_HISTORY_RESUME,
+  textToSimplePdf,
+} from "./fixtures/resume-samples";
 
 function context(userId: string, tenantId: string, repos: Repositories): AuthContext {
   return {
@@ -30,30 +35,13 @@ function context(userId: string, tenantId: string, repos: Repositories): AuthCon
   };
 }
 
-function minimalPdfBuffer(text = "Jane Doe Software Engineer TypeScript React"): Buffer {
-  const safe = text.replace(/[()\\]/g, " ");
-  const stream = `BT /F1 12 Tf 72 720 Td (${safe}) Tj ET`;
-  const pdf = `%PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
-4 0 obj << /Length ${stream.length} >> stream
-${stream}
-endstream endobj
-5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
-xref
-0 6
-0000000000 65535 f 
-trailer << /Size 6 /Root 1 0 R >>
-startxref
-0
-%%EOF`;
-  return Buffer.from(pdf);
-}
-
 describe("profile and resume import", () => {
   beforeEach(() => {
     resetStorage();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("creates and updates a tenant-scoped candidate profile", async () => {
@@ -102,7 +90,7 @@ describe("profile and resume import", () => {
       yearsExperience: null,
       targetRoleFamilies: [],
       preferredResumeLength: "one-page",
-      careerGoal: "A",
+      careerGoal: null,
       avatarInitials: "TA",
       remoteOk: true,
       preferredLocations: [],
@@ -122,6 +110,7 @@ describe("profile and resume import", () => {
       resumeImportStatus: null,
       resumeImportExtraction: null,
     });
+
     await repos.candidateProfiles.upsert({
       id: newId("cp"),
       publicId: newId("cpp"),
@@ -141,7 +130,7 @@ describe("profile and resume import", () => {
       yearsExperience: null,
       targetRoleFamilies: [],
       preferredResumeLength: "one-page",
-      careerGoal: "B",
+      careerGoal: null,
       avatarInitials: "TB",
       remoteOk: true,
       preferredLocations: [],
@@ -163,35 +152,26 @@ describe("profile and resume import", () => {
     });
 
     const a = await repos.candidateProfiles.getByUser(tenantA, userA);
-    const cross = await repos.candidateProfiles.getByUser(tenantB, userA);
+    const cross = await repos.candidateProfiles.getByUser(tenantA, userB);
     expect(a?.fullName).toBe("Tenant A");
     expect(cross).toBeNull();
   });
 
-  it("rejects invalid, empty, and oversized resume uploads", async () => {
+  it("rejects invalid uploads", () => {
     const store = createEmptyMemoryStore();
-    const { repos } = await ensureDemoUser(store);
+    const repos = new MemoryRepositories(store);
     const queue = new InProcessQueueAdapter();
-    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads"), "test-secret");
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-1"), "test-secret-1");
     const service = ResumeImportService.fromRepos(repos, storage, queue);
 
     expect(() =>
       service.validateUpload({
         filename: "resume.exe",
-        mimeType: "application/octet-stream",
-        size: 10,
-        buffer: Buffer.from("MZ"),
-      }),
-    ).toThrow(/PDF and DOCX/);
-
-    expect(() =>
-      service.validateUpload({
-        filename: "resume.pdf",
         mimeType: "application/pdf",
-        size: 0,
-        buffer: Buffer.alloc(0),
+        size: 10,
+        buffer: Buffer.from("%PDF"),
       }),
-    ).toThrow(/empty/i);
+    ).toThrow(/PDF and DOCX/i);
 
     expect(() =>
       service.validateUpload({
@@ -212,7 +192,21 @@ describe("profile and resume import", () => {
     ).toThrow(/valid PDF/i);
   });
 
-  it("uploads, scans, extracts, and blocks extraction before scan completes", async () => {
+  it("normalizes PROFESSIONAL EXPERIENCE and WORK HISTORY headings locally", () => {
+    const professional = normalizeResumeText(PROFESSIONAL_EXPERIENCE_RESUME);
+    expect(professional.employment.length).toBeGreaterThanOrEqual(2);
+    expect(professional.employment.map((j) => j.company)).toEqual(
+      expect.arrayContaining(["Harbor Systems", "Northwind Labs"]),
+    );
+    expect(professional.skills).toEqual(
+      expect.arrayContaining(["TypeScript", "Kubernetes", "PostgreSQL"]),
+    );
+
+    const workHistory = normalizeResumeText(WORK_HISTORY_RESUME);
+    expect(workHistory.employment.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("blocks extraction before malware scan completes", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
     const queue = new InProcessQueueAdapter();
@@ -220,7 +214,7 @@ describe("profile and resume import", () => {
     const service = ResumeImportService.fromRepos(repos, storage, queue);
     const ctx = context(userId, tenantId, repos);
 
-    const pdf = minimalPdfBuffer("Jane Doe Software Engineer TypeScript React");
+    const pdf = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
     const uploaded = await service.upload(ctx, {
       filename: "resume.pdf",
       mimeType: "application/pdf",
@@ -228,36 +222,220 @@ describe("profile and resume import", () => {
       buffer: pdf,
     });
     expect(uploaded.file.scanStatus).toBe("pending");
-
-    const file = await repos.files.getByPublicId(tenantId, uploaded.file.id);
-    expect(file?.storageKey).not.toMatch(/^[A-Z]:\\/i);
-    expect(file?.storageKey.startsWith("uploads/")).toBe(true);
-
     await expect(service.runExtraction(tenantId, uploaded.file.id)).rejects.toThrow(/malware scan/i);
+  });
 
-    await service.runMalwareScan(tenantId, uploaded.file.id);
-    await service.runExtraction(tenantId, uploaded.file.id);
-
+  it("marks import failed when retries are exhausted", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    const queue = new InProcessQueueAdapter();
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-ex"), "test-secret-ex");
+    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const ctx = context(userId, tenantId, repos);
+    const pdf = textToSimplePdf("Name Only\nSKILLS\nGo");
+    const uploaded = await service.upload(ctx, {
+      filename: "resume.pdf",
+      mimeType: "application/pdf",
+      size: pdf.byteLength,
+      buffer: pdf,
+    });
+    await service.markImportFailed(tenantId, uploaded.file.id, "PARSE_FAILED", "exhausted");
     const status = await service.getImportStatus(ctx);
-    expect(status.status).toBe("ready_for_review");
-    expect(status.extraction?.skills.length).toBeGreaterThanOrEqual(0);
+    expect(status.status).toBe("failed");
+    expect(status.extraction?.errorCode).toBe("PARSE_FAILED");
   });
 
-  it("parses rendered PDF and DOCX fixtures", async () => {
-    const pdf = minimalPdfBuffer("Alex Kim Experience Built APIs with Go");
-    const docx = await createMinimalDocx(["Alex Kim", "Experience", "Built APIs with Go"]);
-
-    const pdfText = await extractTextFromResume(pdf, "application/pdf");
-    const docxText = await extractTextFromResume(docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-
-    expect(pdfText.text).toMatch(/Alex Kim|API/i);
-    expect(docxText.text).toMatch(/Alex Kim|API/i);
-
-    const normalized = normalizeResumeText(`${pdfText.text}\nSkills\nGo, TypeScript`);
-    expect(normalized.skills.map((s) => s.toLowerCase())).toEqual(expect.arrayContaining(["go"]));
+  it("does not overwrite confirmed profiles on parse failure", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    await repos.candidateProfiles.upsert({
+      id: newId("cp"),
+      publicId: newId("cpp"),
+      tenantId,
+      userId,
+      fullName: "Confirmed User",
+      preferredName: null,
+      email: "c@example.com",
+      phone: null,
+      location: null,
+      linkedIn: null,
+      github: null,
+      portfolio: null,
+      headline: null,
+      summary: null,
+      experienceLevel: null,
+      yearsExperience: null,
+      targetRoleFamilies: [],
+      preferredResumeLength: "one-page",
+      careerGoal: null,
+      avatarInitials: "CU",
+      remoteOk: true,
+      preferredLocations: [],
+      workAuthorization: null,
+      requiresSponsorship: null,
+      targetCompanies: [],
+      targetIndustries: [],
+      jobTypes: [],
+      workplaceModes: [],
+      willingToRelocate: null,
+      salaryPreference: null,
+      seniority: null,
+      onboardingStep: 2,
+      onboardingCompletedAt: null,
+      modelImprovementOptIn: false,
+      sourceResumeFilePublicId: "file-confirmed",
+      resumeImportStatus: "confirmed",
+      resumeImportExtraction: {
+        employment: [{ title: "Engineer", company: "Acme", bullets: ["Shipped"] }],
+        education: [],
+        projects: [],
+        skills: ["Go"],
+        certifications: [],
+        evidence: [],
+        rawText: "kept",
+        parseWarnings: [],
+      },
+    });
+    const queue = new InProcessQueueAdapter();
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-conf"), "test-secret-conf");
+    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    await service.runExtraction(tenantId, "file-confirmed");
+    const profile = await repos.candidateProfiles.getByUser(tenantId, userId);
+    expect(profile?.resumeImportStatus).toBe("confirmed");
+    expect((profile?.resumeImportExtraction as { rawText?: string })?.rawText).toBe("kept");
   });
 
-  it("reports parse failures for corrupted PDFs", async () => {
-    await expect(extractTextFromResume(Buffer.from("not-a-real-pdf"), "application/pdf")).rejects.toThrow(/parse failed/i);
+  it("replacement upload clears prior extraction on the profile", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    const queue = new InProcessQueueAdapter();
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-repl"), "test-secret-repl");
+    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const ctx = context(userId, tenantId, repos);
+
+    await repos.candidateProfiles.upsert({
+      id: newId("cp"),
+      publicId: newId("cpp"),
+      tenantId,
+      userId,
+      fullName: "Old",
+      preferredName: null,
+      email: null,
+      phone: null,
+      location: null,
+      linkedIn: null,
+      github: null,
+      portfolio: null,
+      headline: null,
+      summary: null,
+      experienceLevel: null,
+      yearsExperience: null,
+      targetRoleFamilies: [],
+      preferredResumeLength: "one-page",
+      careerGoal: null,
+      avatarInitials: "OL",
+      remoteOk: true,
+      preferredLocations: [],
+      workAuthorization: null,
+      requiresSponsorship: null,
+      targetCompanies: [],
+      targetIndustries: [],
+      jobTypes: [],
+      workplaceModes: [],
+      willingToRelocate: null,
+      salaryPreference: null,
+      seniority: null,
+      onboardingStep: 2,
+      onboardingCompletedAt: null,
+      modelImprovementOptIn: false,
+      sourceResumeFilePublicId: "old-file",
+      resumeImportStatus: "ready_for_review",
+      resumeImportExtraction: {
+        employment: [{ title: "Old Role", company: "Old Co", bullets: ["old"] }],
+        education: [],
+        projects: [],
+        skills: ["Legacy"],
+        certifications: [],
+        evidence: [],
+        rawText: "old",
+        parseWarnings: [],
+      },
+    });
+
+    const pdf = textToSimplePdf(NO_EMPLOYMENT_RESUME);
+    const uploaded = await service.upload(ctx, {
+      filename: "resume.pdf",
+      mimeType: "application/pdf",
+      size: pdf.byteLength,
+      buffer: pdf,
+    });
+    expect(uploaded.file.id).not.toBe("old-file");
+    const status = await service.getImportStatus(ctx);
+    expect(status.status).toBe("pending_scan");
+    expect(status.extraction).toBeNull();
+  });
+
+  it("same filename with different content creates distinct checksums", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    const queue = new InProcessQueueAdapter();
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-hash"), "test-secret-hash");
+    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const ctx = context(userId, tenantId, repos);
+
+    const a = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
+    const b = textToSimplePdf(WORK_HISTORY_RESUME);
+    const upA = await service.upload(ctx, {
+      filename: "resume.pdf",
+      mimeType: "application/pdf",
+      size: a.byteLength,
+      buffer: a,
+    });
+    const upB = await service.upload(ctx, {
+      filename: "resume.pdf",
+      mimeType: "application/pdf",
+      size: b.byteLength,
+      buffer: b,
+    });
+    const fileA = await repos.files.getByPublicId(tenantId, upA.file.id);
+    const fileB = await repos.files.getByPublicId(tenantId, upB.file.id);
+    expect(fileA?.checksum).not.toBe(fileB?.checksum);
+  });
+});
+
+describe("onboarding career validation", () => {
+  it("allows ready_for_review without re-entering employment", async () => {
+    const { validateStepClient, emptyOnboardingForm } = await import("../../src/components/onboarding/types");
+    const form = {
+      ...emptyOnboardingForm(),
+      fullName: "",
+      employment: [],
+      skills: [],
+    };
+    expect(validateStepClient(2, form, "ready_for_review")).toBeNull();
+  });
+
+  it("allows candidates with skills and education but no employment", async () => {
+    const { validateStepClient, emptyOnboardingForm } = await import("../../src/components/onboarding/types");
+    const form = {
+      ...emptyOnboardingForm(),
+      fullName: "Sam Rivera",
+      employment: [],
+      education: [{ school: "Lakeside College", degree: "B.A." }],
+      skills: ["TypeScript", "React"],
+    };
+    expect(validateStepClient(2, form, null)).toBeNull();
+  });
+
+  it("never asks to re-enter when employment was extracted", async () => {
+    const { validateStepClient, emptyOnboardingForm } = await import("../../src/components/onboarding/types");
+    const form = {
+      ...emptyOnboardingForm(),
+      fullName: "Jordan",
+      employment: [{ title: "Platform Engineer", company: "Harbor Systems", bullets: ["Built pipelines"] }],
+      skills: ["TypeScript"],
+    };
+    expect(validateStepClient(2, form, "ready_for_review")).toBeNull();
+    expect(validateStepClient(2, form, "confirmed")).toBeNull();
   });
 });

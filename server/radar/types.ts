@@ -348,6 +348,10 @@ export interface JobSearchQuery {
   company?: string;
   location?: string;
   remote?: boolean;
+  /** Exact workplace mode when UI distinguishes remote vs hybrid vs onsite. */
+  remotePolicy?: "remote" | "hybrid" | "onsite" | "unknown";
+  /** When true, only jobs saved by the authenticated tenant/user. */
+  savedOnly?: boolean;
   employmentType?: string;
   seniority?: string;
   freshnessPreset?: string;

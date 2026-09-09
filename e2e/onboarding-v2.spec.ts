@@ -51,7 +51,7 @@ async function fillStep3Manual(page: import("@playwright/test").Page) {
 }
 
 test.describe("onboarding v2", () => {
-  test("password signup completes onboarding to /app", async ({ page }) => {
+  test("password signup completes onboarding to Jobs", async ({ page }) => {
     const email = `onb-${Date.now()}@example.com`;
     await signup(page, email);
     await fillStep1(page);
@@ -60,9 +60,9 @@ test.describe("onboarding v2", () => {
     await expectStep(page, 4);
     await page.getByRole("button", { name: /finish setup/i }).click();
     await page.waitForURL(/\/onboarding\/complete/, { timeout: 60_000 });
-    await expect(page.getByRole("link", { name: /tailor my first resume/i })).toBeVisible();
-    await page.getByRole("button", { name: /go to home/i }).click();
-    await page.waitForURL(/\/app/, { timeout: 60_000 });
+    await expect(page.getByRole("link", { name: /see jobs for you/i })).toBeVisible();
+    await page.getByRole("link", { name: /see jobs for you/i }).click();
+    await page.waitForURL(/\/app(\/radar)?/, { timeout: 60_000 });
   });
 
   test("incomplete login resumes exact saved step", async ({ page }) => {

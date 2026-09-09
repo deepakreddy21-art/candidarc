@@ -400,7 +400,11 @@ def test_parse_txt_resume(client: TestClient, auth_headers: dict[str, str], ctx:
         },
     )
     assert response.status_code == 200
-    assert "Alex Example" in response.json()["text"]
+    body = response.json()
+    assert "Alex Example" in body["text"]
+    assert "employment" in body
+    assert "skills" in body
+    assert "usable" in body
 
 
 def test_audit_and_final_qa(

@@ -2,6 +2,9 @@ import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { resolveAppGate } from "@server/auth/app-gate";
 
+/** Authenticated app shell always depends on cookies/session — never statically render. */
+export const dynamic = "force-dynamic";
+
 export default async function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
   // Compute the gate result first. Never call redirect() inside a try/catch that
   // could swallow Next.js's redirect control-flow exception.

@@ -106,7 +106,12 @@ export type ResumeImportExtraction = {
   }>;
   rawText?: string;
   parseWarnings?: string[];
+  pageCount?: number;
+  extractionQuality?: "high" | "medium" | "low";
+  missingFields?: string[];
+  usable?: boolean;
   error?: string;
+  errorCode?: string;
 };
 
 export interface JobDescription {
@@ -321,6 +326,19 @@ export interface Application {
   nextAction: string;
   archived: boolean;
   roleFamily: string;
+  /** Candidate-facing application tracker status (presentation). */
+  candidateStatus?:
+    | "Saved"
+    | "Ready to apply"
+    | "Applied"
+    | "Interviewing"
+    | "Offer"
+    | "Rejected"
+    | "Withdrawn";
+  /** Optimistic concurrency token for status updates. */
+  version?: number;
+  /** Latest customer resume workflow public id for deep links. */
+  workflowId?: string;
 }
 
 export interface ActivityEvent {

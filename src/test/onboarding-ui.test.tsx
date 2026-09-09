@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChipInput, MultiToggle } from "@/components/onboarding/chip-input";
+import { StepCareerProfile } from "@/components/onboarding/step-career-profile";
 import {
   formToPayload,
   normalizeList,
@@ -133,5 +134,54 @@ describe("MultiToggle", () => {
     await user.click(screen.getByRole("button", { name: "Full-time" }));
     await user.click(screen.getByRole("button", { name: "Contract" }));
     expect(values).toEqual(["full-time", "contract"]);
+  });
+});
+
+describe("StepCareerProfile import UX", () => {
+  it("shows imported employment review cards instead of blank employment editor", () => {
+    const form = emptyOnboardingForm();
+    form.careerProfileMode = "upload";
+    form.fullName = "Jordan Blake";
+    form.skills = ["TypeScript", "Kubernetes"];
+    form.employment = [
+      { title: "Platform Engineer", company: "Harbor Systems", bullets: ["Built pipelines"] },
+      { title: "Software Engineer", company: "Northwind Labs", bullets: ["Designed APIs"] },
+    ];
+    form.education = [{ school: "Cascadia University", degree: "B.S. Computer Science" }];
+    form.certifications = [{ name: "AWS Solutions Architect Associate" }];
+    render(
+      <StepCareerProfile
+        form={form}
+        onChange={() => undefined}
+        errors={{}}
+        importStatus="ready_for_review"
+        uploading={false}
+        onUpload={() => undefined}
+        statusMessage={null}
+      />,
+    );
+    expect(screen.getByTestId("import-summary").textContent).toMatch(/Imported 2 roles/i);
+    expect(screen.getByTestId("imported-employment-cards")).toBeTruthy();
+    expect(screen.queryByText(/^Employment$/)).toBeNull();
+  });
+
+  it("shows Retry when import failed and does not show blank analyzing forever", () => {
+    const form = emptyOnboardingForm();
+    form.careerProfileMode = "upload";
+    render(
+      <StepCareerProfile
+        form={form}
+        onChange={() => undefined}
+        errors={{}}
+        importStatus="failed"
+        uploading={false}
+        onUpload={() => undefined}
+        onRetryImport={() => undefined}
+        statusMessage="Could not load résumé import status"
+        importErrorCode="IMPORT_STATUS_FAILED"
+      />,
+    );
+    expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+    expect(screen.queryByText(/Structuring career details/i)).toBeNull();
   });
 });

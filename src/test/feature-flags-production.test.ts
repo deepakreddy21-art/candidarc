@@ -68,19 +68,21 @@ describe("object storage document paths", () => {
         tenantId: "tenant",
         applicationId: "app_test",
       });
-      expect(rendered.pdfBuffer.length).toBeGreaterThan(0);
-      expect(rendered.docxBuffer.length).toBeGreaterThan(0);
+      expect(rendered.pdfBuffer!.length).toBeGreaterThan(0);
+      expect(rendered.docxBuffer!.length).toBeGreaterThan(0);
       expect("pdfPath" in rendered).toBe(false);
 
+      expect(rendered.pdfBuffer).toBeTruthy();
+      expect(rendered.docxBuffer).toBeTruthy();
       const key = "generated/user/app_test/rv_test/resume.pdf";
       await storage.putObject({
         tenantId: "tenant",
         key,
-        body: rendered.pdfBuffer,
+        body: rendered.pdfBuffer!,
         contentType: "application/pdf",
       });
       const stored = await storage.getObject("tenant", key);
-      expect(stored?.body.equals(rendered.pdfBuffer)).toBe(true);
+      expect(stored?.body.equals(rendered.pdfBuffer!)).toBe(true);
       expect(stored?.meta.key).toBe(key);
 
       const workerScratch = path.join(workerDir, "scratch.txt");

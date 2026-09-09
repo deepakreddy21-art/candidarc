@@ -2,13 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { MoreHorizontal, Search } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
-import { ApplicationCard, ApplicationBoardColumn } from "@/components/applications/application-card";
-import {
-  ApplicationFilters,
-  type ApplicationFiltersState,
-} from "@/components/applications/application-filters";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,160 +13,325 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState } from "@/components/ui/feedback";
-import { api } from "@/services/api";
+import { EmptyState, Skeleton } from "@/components/ui/feedback";
+import { Input, Label } from "@/components/ui/input";
+import {
+  CANDIDATE_STATUS_OPTIONS,
+  customerNextAction,
+  defaultCandidateStatus,
+  mapResumeProgress,
+  type CandidateApplicationStatus,
+} from "@/lib/application-presentation";
+import { cn, formatRelative } from "@/lib/utils";
+import { api, ApiError } from "@/services/api";
 import type { Application } from "@/types/domain";
-import { cn } from "@/lib/utils";
+
+type Row = Application & { candidateStatus: CandidateApplicationStatus };
 
 export default function OpportunitiesPage() {
-  const [apps, setApps] = useState<Application[]>([]);
+  const [apps, setApps] = useState<Row[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<"list" | "board">("list");
-  const [selected, setSelected] = useState<string[]>([]);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [filters, setFilters] = useState<ApplicationFiltersState>({
-    query: "",
-    status: "all",
-    company: "all",
-    roleFamily: "all",
-    readiness: "all",
-    interview: "all",
-  });
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<CandidateApplicationStatus | "all">("all");
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState<string | null>(null);
 
   useEffect(() => {
     void api.listApplications().then((items) => {
-      setApps(items.filter((a) => !a.archived));
+      setApps(
+        items
+          .filter((a) => !a.archived)
+          .map((a) => ({
+            ...a,
+            candidateStatus: defaultCandidateStatus({
+              ...a,
+              candidateStatus: a.candidateStatus,
+            }),
+          })),
+      );
       setLoaded(true);
     });
   }, []);
 
-  const companies = useMemo(() => [...new Set(apps.map((a) => a.company))], [apps]);
-  const roleFamilies = useMemo(() => [...new Set(apps.map((a) => a.roleFamily))], [apps]);
-
   const filtered = useMemo(() => {
     return apps.filter((app) => {
-      const q = filters.query.trim().toLowerCase();
-      if (q && !`${app.company} ${app.role} ${app.nextAction}`.toLowerCase().includes(q)) return false;
-      if (filters.status !== "all" && app.status !== filters.status) return false;
-      if (filters.company !== "all" && app.company !== filters.company) return false;
-      if (filters.roleFamily !== "all" && app.roleFamily !== filters.roleFamily) return false;
-      if (filters.interview !== "all" && app.interviewStatus !== filters.interview) return false;
-      if (filters.readiness === "ready" && app.resumeScore < 85) return false;
-      if (filters.readiness === "not-started" && app.resumeScore > 0) return false;
-      if (filters.readiness === "in-progress" && !(app.resumeScore > 0 && app.resumeScore < 85)) return false;
+      const q = query.trim().toLowerCase();
+      if (q && !`${app.company} ${app.role}`.toLowerCase().includes(q)) return false;
+      if (statusFilter !== "all" && app.candidateStatus !== statusFilter) return false;
       return true;
     });
-  }, [apps, filters]);
+  }, [apps, query, statusFilter]);
 
-  async function archiveIds(ids: string[]) {
-    await api.archiveApplications(ids);
-    setApps((prev) => prev.filter((a) => !ids.includes(a.id)));
-    setSelected([]);
-    setConfirmOpen(false);
-    toast.success(ids.length === 1 ? "Application archived" : `${ids.length} applications archived`);
+  async function updateStatus(id: string, candidateStatus: CandidateApplicationStatus) {
+    const current = apps.find((a) => a.id === id);
+    const previousStatus = current?.candidateStatus;
+    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, candidateStatus } : a)));
+    try {
+      const updated = await api.updateApplication(id, {
+        candidateStatus,
+        expectedVersion: current?.version,
+      });
+      setApps((prev) =>
+        prev.map((a) =>
+          a.id === id
+            ? {
+                ...a,
+                ...updated,
+                candidateStatus: defaultCandidateStatus({
+                  ...updated,
+                  candidateStatus: updated.candidateStatus ?? candidateStatus,
+                }),
+              }
+            : a,
+        ),
+      );
+      toast.success("Status updated");
+    } catch (err) {
+      // Keep the candidate's selection visible; offer reload on conflict.
+      if (err instanceof ApiError && err.status === 409) {
+        // Retain the candidate's unsaved selection; offer reload of server version.
+        toast.error("Status changed in another tab. Your selection is kept — reload then retry.", {
+          action: {
+            label: "Reload",
+            onClick: () => {
+              void api.listApplications().then((items) => {
+                setApps(
+                  items
+                    .filter((a) => !a.archived)
+                    .map((a) => ({
+                      ...a,
+                      candidateStatus: defaultCandidateStatus({
+                        ...a,
+                        candidateStatus: a.candidateStatus,
+                      }),
+                    })),
+                );
+              });
+            },
+          },
+        });
+        return;
+      }
+      setApps((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, candidateStatus: previousStatus ?? a.candidateStatus } : a)),
+      );
+      toast.error(err instanceof Error ? err.message : "Could not update status");
+    }
+  }
+
+  async function archiveId(id: string) {
+    await api.archiveApplications([id]);
+    setApps((prev) => prev.filter((a) => a.id !== id));
+    setConfirmId(null);
+    toast.success("Application archived");
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <PageHeader
-        title="My Applications"
-        description="Every role you are preparing with CandidArc — from research to downloadable resume."
+        title="Applications"
+        description="Track resume readiness and where you are in each application."
         actions={
-          <Link href="/app/resumes/new" className={buttonVariants()}>
-            Tailor a resume
+          <Link href="/app/radar" className={buttonVariants({ size: "sm" })}>
+            Browse jobs
           </Link>
         }
       />
 
-      <ApplicationFilters
-        value={filters}
-        onChange={setFilters}
-        view={view}
-        onViewChange={setView}
-        companies={companies}
-        roleFamilies={roleFamilies}
-      />
-
-      {selected.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface px-4 py-3">
-          <span className="text-sm">{selected.length} selected</span>
-          <Button type="button" size="sm" variant="destructive" onClick={() => setConfirmOpen(true)}>
-            Archive selected
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={() => setSelected([])}>
-            Clear
-          </Button>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end" role="search" aria-label="Filter applications">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Label htmlFor="apps-search">Search</Label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-muted" />
+            <Input
+              id="apps-search"
+              className="pl-9"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Company or role"
+            />
+          </div>
         </div>
-      ) : null}
+        <div className="space-y-1.5 sm:w-52">
+          <Label htmlFor="apps-status">Application status</Label>
+          <select
+            id="apps-status"
+            className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as CandidateApplicationStatus | "all")}
+          >
+            <option value="all">All</option>
+            {CANDIDATE_STATUS_OPTIONS.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
 
       {!loaded ? (
-        <p className="text-sm text-foreground-muted">Loading applications…</p>
+        <div className="space-y-2">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+        </div>
       ) : filtered.length === 0 ? (
         <EmptyState
           title={apps.length === 0 ? "No applications yet" : "No applications match"}
           description={
             apps.length === 0
-              ? "Paste a job description to start. CandidArc will research the role, tailor your experience, and prepare PDF and Word downloads."
-              : "Adjust filters or start a new application."
+              ? "Open a job and tailor your resume — applications you start will show up here."
+              : "Try another status or search term."
           }
           action={
-            <Link href="/app/resumes/new" className={buttonVariants()}>
-              Paste a job description
+            <Link href="/app/radar" className={buttonVariants()}>
+              Go to Jobs
             </Link>
           }
         />
-      ) : view === "list" ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {filtered.map((app) => (
-            <ApplicationCard
-              key={app.id}
-              application={app}
-              selected={selected.includes(app.id)}
-              onSelect={(id, checked) =>
-                setSelected((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)))
-              }
-              onArchive={(id) => {
-                setSelected([id]);
-                setConfirmOpen(true);
-              }}
-            />
-          ))}
-        </div>
       ) : (
-        <div className={cn("flex gap-4 overflow-x-auto pb-2")}>
-          {[
-            { title: "Researching", status: "researching" },
-            { title: "In progress", status: "auditing" },
-            { title: "Finalizing", status: "final-qa" },
-            { title: "Ready", status: "ready" },
-          ].map((col) => (
-            <ApplicationBoardColumn
-              key={col.status}
-              title={col.title}
-              applications={filtered.filter((a) => a.status === col.status)}
-              onArchive={(id) => {
-                setSelected([id]);
-                setConfirmOpen(true);
-              }}
-            />
-          ))}
-        </div>
+        <>
+          <div className="hidden overflow-x-auto rounded-md border border-border md:block" data-testid="applications-table">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="border-b border-border bg-surface-2 text-xs uppercase tracking-wide text-foreground-muted">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Job</th>
+                  <th className="px-3 py-2 font-medium">Resume</th>
+                  <th className="px-3 py-2 font-medium">Added</th>
+                  <th className="px-3 py-2 font-medium">Application status</th>
+                  <th className="px-3 py-2 font-medium">Next action</th>
+                  <th className="px-3 py-2 font-medium"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((app) => {
+                  const resume = mapResumeProgress(app);
+                  const next = customerNextAction({ ...app, candidateStatus: app.candidateStatus });
+                  return (
+                    <tr key={app.id} className="border-b border-border last:border-0">
+                      <td className="px-3 py-3">
+                        <p className="font-medium text-foreground">{app.role}</p>
+                        <p className="text-foreground-secondary">{app.company}</p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className="rounded-md border border-border px-2 py-0.5 text-xs">{resume}</span>
+                      </td>
+                      <td className="px-3 py-3 text-foreground-secondary">{formatRelative(app.createdAt)}</td>
+                      <td className="px-3 py-3">
+                        <select
+                          aria-label={`Status for ${app.role}`}
+                          className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+                          value={app.candidateStatus}
+                          onChange={(e) => void updateStatus(app.id, e.target.value as CandidateApplicationStatus)}
+                        >
+                          {CANDIDATE_STATUS_OPTIONS.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex flex-wrap gap-2">
+                          <span className="text-foreground-secondary">{next}</span>
+                          {app.workflowId || app.resumeId ? (
+                            <Link href={`/app/resumes/${app.workflowId ?? app.resumeId}`} className="text-accent hover:underline">
+                              View resume
+                            </Link>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="relative px-3 py-3">
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          aria-label="More actions"
+                          onClick={() => setMenuOpen(menuOpen === app.id ? null : app.id)}
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                        {menuOpen === app.id ? (
+                          <div className="absolute right-3 z-10 mt-1 w-40 rounded-md border border-border bg-background p-1 shadow-sm">
+                            <button
+                              type="button"
+                              className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-surface-2"
+                              onClick={() => {
+                                setMenuOpen(null);
+                                setConfirmId(app.id);
+                              }}
+                            >
+                              Archive
+                            </button>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <ul className="divide-y divide-border rounded-md border border-border md:hidden" data-testid="applications-mobile">
+            {filtered.map((app) => {
+              const resume = mapResumeProgress(app);
+              const next = customerNextAction({ ...app, candidateStatus: app.candidateStatus });
+              return (
+                <li key={app.id} className="space-y-2 p-3">
+                  <div>
+                    <p className="font-medium">{app.role}</p>
+                    <p className="text-sm text-foreground-secondary">{app.company}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <span className="rounded-md border border-border px-2 py-0.5">Resume: {resume}</span>
+                    <span className="rounded-md border border-border px-2 py-0.5">Added {formatRelative(app.createdAt)}</span>
+                  </div>
+                  <Label className="sr-only" htmlFor={`m-status-${app.id}`}>
+                    Application status
+                  </Label>
+                  <select
+                    id={`m-status-${app.id}`}
+                    className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm"
+                    value={app.candidateStatus}
+                    onChange={(e) => void updateStatus(app.id, e.target.value as CandidateApplicationStatus)}
+                  >
+                    {CANDIDATE_STATUS_OPTIONS.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                  <div className={cn("flex flex-wrap gap-3 text-sm")}>
+                    <span className="text-foreground-secondary">{next}</span>
+                    {app.workflowId || app.resumeId ? (
+                      <Link href={`/app/resumes/${app.workflowId ?? app.resumeId}`} className="text-accent">
+                        View resume
+                      </Link>
+                    ) : null}
+                    <button type="button" className="text-foreground-muted" onClick={() => setConfirmId(app.id)}>
+                      Archive
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <Dialog open={Boolean(confirmId)} onOpenChange={(open) => !open && setConfirmId(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Archive application{selected.length > 1 ? "s" : ""}?</DialogTitle>
-            <DialogDescription>
-              Archived applications leave the active board. You can restore them later from saved views.
-            </DialogDescription>
+            <DialogTitle>Archive application?</DialogTitle>
+            <DialogDescription>You can hide it from the tracker. Workflow history is kept.</DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setConfirmOpen(false)}>
+            <Button type="button" variant="secondary" onClick={() => setConfirmId(null)}>
               Cancel
             </Button>
-            <Button type="button" variant="destructive" onClick={() => void archiveIds(selected)}>
-              Confirm archive
+            <Button type="button" variant="destructive" onClick={() => confirmId && void archiveId(confirmId)}>
+              Archive
             </Button>
           </div>
         </DialogContent>

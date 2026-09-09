@@ -131,6 +131,24 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
     );
   }
   if (status === 422) {
+    const documentCodes: Record<string, string> = {
+      IMAGE_ONLY_PDF_OCR_REQUIRED:
+        "This PDF appears to contain scanned images. Upload a text-based PDF or DOCX, or enter your details manually.",
+      PDF_ENCRYPTED: "This PDF is password-protected. Upload an unlocked PDF or DOCX.",
+      CORRUPT_PDF: "This PDF could not be read. Try exporting again or upload a DOCX.",
+      DOCUMENT_TOO_LARGE: "File is too large. Maximum size is 10 MB.",
+      PDF_PAGE_LIMIT_EXCEEDED: "This PDF exceeds the 30-page limit.",
+      PARSE_TIMEOUT: "Parsing timed out. Try a smaller file or enter details manually.",
+      EMPTY_DOCUMENT: "No text could be extracted from this file.",
+      INVALID_PDF_MAGIC: "This file does not look like a valid PDF.",
+      INVALID_DOCX_MAGIC: "This file does not look like a valid DOCX.",
+      UNSUPPORTED_DOCUMENT_TYPE: "Only PDF and DOCX resumes are supported.",
+      INVALID_BASE64: "Resume upload was corrupted in transit. Please try again.",
+      DOCX_ZIP_BOMB_SUSPECTED: "This DOCX could not be opened safely.",
+    };
+    if (code && documentCodes[code]) {
+      return new AppError(code, documentCodes[code], 422, details);
+    }
     // Unknown 422: do not mislabel deployment/contract failures as unsupported claims.
     return new AppError(
       "PYTHON_CONTRACT_MISMATCH",
@@ -817,6 +835,63 @@ export class PythonIntelligenceClient {
         text: z.string(),
         page_count: z.number().nullable().optional(),
         warnings: z.array(z.string()).default([]),
+        contact: z
+          .object({
+            full_name: z.string().nullable().optional(),
+            email: z.string().nullable().optional(),
+            phone: z.string().nullable().optional(),
+            location: z.string().nullable().optional(),
+            linkedin: z.string().nullable().optional(),
+            github: z.string().nullable().optional(),
+            portfolio: z.string().nullable().optional(),
+          })
+          .nullable()
+          .optional(),
+        employment: z
+          .array(
+            z.object({
+              title: z.string().nullable().optional(),
+              employer: z.string().nullable().optional(),
+              location: z.string().nullable().optional(),
+              start_date: z.string().nullable().optional(),
+              end_date: z.string().nullable().optional(),
+              bullets: z.array(z.string()).default([]),
+            }),
+          )
+          .default([]),
+        education: z
+          .array(
+            z.object({
+              institution: z.string().nullable().optional(),
+              degree: z.string().nullable().optional(),
+              field: z.string().nullable().optional(),
+              end_date: z.string().nullable().optional(),
+            }),
+          )
+          .default([]),
+        projects: z
+          .array(
+            z.object({
+              name: z.string().nullable().optional(),
+              description: z.string().nullable().optional(),
+              technologies: z.array(z.string()).default([]),
+            }),
+          )
+          .default([]),
+        skills: z.array(z.string()).default([]),
+        certifications: z.array(z.string()).default([]),
+        evidence: z
+          .array(
+            z.object({
+              title: z.string(),
+              summary: z.string(),
+              technologies: z.array(z.string()).default([]),
+            }),
+          )
+          .default([]),
+        extraction_quality: z.enum(["high", "medium", "low"]).nullable().optional(),
+        missing_fields: z.array(z.string()).default([]),
+        usable: z.boolean().nullable().optional(),
       })
       .parse(data);
   }

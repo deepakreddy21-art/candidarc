@@ -4,6 +4,7 @@ import { use, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/feedback";
+import type { ResumeDocument } from "@/types/resume-document";
 import { CreatingState } from "@/components/resumes/creating-state";
 import { ResumeReady } from "@/components/resumes/resume-ready";
 import { TechConfirmCard } from "@/components/resumes/tech-confirm-card";
@@ -17,7 +18,7 @@ type WorkflowData = {
   pipelineLabel?: string;
   elapsedMs?: number;
   techQuestions?: Array<{ id: string; technology: string; reason: string }>;
-  resume?: { versionLabel: string; previewHtml?: string };
+  resume?: { versionLabel: string; previewHtml?: string; document?: ResumeDocument; sections?: unknown[]; role?: string; company?: string; candidateName?: string };
   versions?: Array<{ id: string; label: string; createdAt: string }>;
   downloads: { pdfReady: boolean; docxReady: boolean };
   qualityReport?: {

@@ -253,6 +253,17 @@ const mock = {
     await delay();
     applications = applications.map((a) => (ids.includes(a.id) ? { ...a, archived: true, status: "archived" } : a));
   },
+  async updateApplication(
+    id: string,
+    patch: Partial<Pick<Application, "company" | "role" | "location" | "nextAction" | "candidateStatus">>,
+  ): Promise<Application> {
+    await ensureDemoStore();
+    await delay();
+    const idx = applications.findIndex((a) => a.id === id);
+    if (idx < 0) throw new Error("Application not found");
+    applications[idx] = { ...applications[idx]!, ...patch, updatedAt: new Date().toISOString() };
+    return structuredClone(applications[idx]!);
+  },
   async getJobDescription(id: string): Promise<JobDescription | undefined> {
     await ensureDemoStore();
     await delay();
@@ -447,7 +458,7 @@ export const api = {
       file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
     }>("/profile/resume/import");
     if (res.ok) return res.data;
-    return { status: null, extraction: null, file: null };
+    throw new ApiError("Could not load résumé import status", res.status);
   },
   async confirmResumeImport(): Promise<{ profile: CandidateProfile; extraction: ResumeImportExtraction }> {
     const res = await apiFetch<{ profile: CandidateProfile; extraction: ResumeImportExtraction }>(
@@ -502,6 +513,28 @@ export const api = {
       if (!isDemoFallbackAllowed()) throw new ApiError("Could not archive applications", 503);
       await mock.archiveApplications(ids);
     }
+  },
+  async updateApplication(
+    id: string,
+    patch: Partial<{
+      company: string;
+      role: string;
+      location: string;
+      employmentType: string;
+      deadline: string;
+      roleFamily: string;
+      nextAction: string;
+      candidateStatus: Application["candidateStatus"];
+      expectedVersion: number;
+    }>,
+  ): Promise<Application> {
+    const res = await apiFetch<{ application: Application }>(`/applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) return res.data.application;
+    if (!isDemoFallbackAllowed()) throw new ApiError("Could not update application", res.status);
+    return mock.updateApplication(id, patch);
   },
   async getJobDescription(id: string): Promise<JobDescription | undefined> {
     if (!isDemoFallbackAllowed()) return undefined;

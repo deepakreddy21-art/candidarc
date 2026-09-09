@@ -40,6 +40,11 @@ import type {
   SourceCoverage,
 } from "./types";
 
+/** Primary keys must be UUIDs for PostgresRadarStore. */
+function newEntityId(): string {
+  return randomUUID();
+}
+
 function newPublicId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
@@ -122,7 +127,7 @@ export class CanonicalJobCatalog {
       }
     }
     const company: Company = {
-      id: newPublicId("co"),
+      id: newEntityId(),
       publicId: newPublicId("company"),
       name,
       normalizedName,
@@ -289,7 +294,7 @@ export class CanonicalJobCatalog {
           : listing.postedAt;
 
       job = {
-        id: newPublicId("cjob"),
+        id: newEntityId(),
         publicId: newPublicId("job"),
         companyId: company.id,
         companyName: company.name,
@@ -329,7 +334,7 @@ export class CanonicalJobCatalog {
     }
 
     const sighting: JobSighting = {
-      id: newPublicId("sight"),
+      id: newEntityId(),
       publicId: newPublicId("js"),
       canonicalJobId: job.id,
       sourceId,
@@ -384,7 +389,7 @@ export class CanonicalJobCatalog {
 
   private addSnapshot(sighting: JobSighting, listing: JobSourceListing) {
     const snap: JobSnapshot = {
-      id: newPublicId("snap"),
+      id: newEntityId(),
       sightingId: sighting.id,
       retrievedAt: nowIso(),
       contentHash: sighting.contentHash,
@@ -408,7 +413,7 @@ export class CanonicalJobCatalog {
     metadata?: Record<string, unknown>,
   ) {
     this.historyEvents.push({
-      id: newPublicId("hist"),
+      id: newEntityId(),
       canonicalJobId,
       sightingId,
       type,
@@ -766,10 +771,21 @@ export class CanonicalJobCatalog {
       jobs = jobs.filter((j) => j.locations.some((l) => l.toLowerCase().includes(loc)));
     }
 
-    if (query.remote === true) {
+    if (query.remotePolicy) {
+      jobs = jobs.filter((j) => j.remotePolicy === query.remotePolicy);
+    } else if (query.remote === true) {
       jobs = jobs.filter((j) => j.remotePolicy === "remote" || j.remotePolicy === "hybrid");
     } else if (query.remote === false) {
       jobs = jobs.filter((j) => j.remotePolicy === "onsite");
+    }
+
+    if (query.savedOnly && opts?.tenantId && opts?.userId) {
+      const savedIds = new Set(
+        [...this.savedJobs.values()]
+          .filter((s) => s.tenantId === opts.tenantId && s.userId === opts.userId)
+          .map((s) => s.canonicalJobId),
+      );
+      jobs = jobs.filter((j) => savedIds.has(j.id));
     }
 
     if (query.employmentType) {
@@ -1079,6 +1095,53 @@ export class CanonicalJobCatalog {
     return `${tenantId}:${userId}:${jobId}`;
   }
 
+  /**
+   * Apply a persistence snapshot into the in-memory catalog (postgres hydrate).
+   * Existing keys are overwritten so restart recovers durable state.
+   */
+  applyHydratedSnapshot(input: {
+    companies?: Company[];
+    sources?: JobSource[];
+    jobs?: CanonicalJob[];
+    sightings?: JobSighting[];
+    savedJobs?: SavedJob[];
+    hiddenJobs?: HiddenJob[];
+    savedSearches?: SavedSearch[];
+    alerts?: JobAlert[];
+  }): void {
+    for (const company of input.companies ?? []) {
+      this.companies.set(company.id, company);
+    }
+    for (const source of input.sources ?? []) {
+      this.sources.set(source.id, source);
+      if (source.policy) this.policies.set(source.id, source.policy);
+    }
+    for (const job of input.jobs ?? []) {
+      this.canonicalJobs.set(job.id, job);
+    }
+    for (const sighting of input.sightings ?? []) {
+      this.sightings.set(sighting.id, sighting);
+      if (sighting.sourceId && sighting.sourceListingId) {
+        this.listingIndex.set(`${sighting.sourceId}:${sighting.sourceListingId}`, sighting.id);
+      }
+    }
+    for (const saved of input.savedJobs ?? []) {
+      const key = this.tenantKey(saved.tenantId, saved.userId, saved.canonicalJobId);
+      this.savedJobs.set(key, saved);
+    }
+    for (const hidden of input.hiddenJobs ?? []) {
+      const key = this.tenantKey(hidden.tenantId, hidden.userId, hidden.canonicalJobId);
+      this.hiddenJobs.set(key, hidden);
+    }
+    for (const search of input.savedSearches ?? []) {
+      this.savedSearches.set(search.id, search);
+    }
+    for (const alert of input.alerts ?? []) {
+      this.alerts.set(alert.id, alert);
+    }
+    this.indexedAt = nowIso();
+  }
+
   saveJob(tenantId: string, userId: string, jobPublicId: string): SavedJob {
     const job = this.getJob(jobPublicId);
     if (!job) throw new AppError("JOB_NOT_FOUND", "Job not found", 404);
@@ -1086,7 +1149,7 @@ export class CanonicalJobCatalog {
     const existing = this.savedJobs.get(key);
     if (existing) return existing;
     const row: SavedJob = {
-      id: newPublicId("saved"),
+      id: newEntityId(),
       tenantId,
       userId,
       canonicalJobId: job.id,
@@ -1109,7 +1172,7 @@ export class CanonicalJobCatalog {
     const existing = this.hiddenJobs.get(key);
     if (existing) return existing;
     const row: HiddenJob = {
-      id: newPublicId("hidden"),
+      id: newEntityId(),
       tenantId,
       userId,
       canonicalJobId: job.id,
@@ -1137,7 +1200,7 @@ export class CanonicalJobCatalog {
     input: { name: string; query: JobSearchQuery; alertEnabled?: boolean },
   ): SavedSearch {
     const row: SavedSearch = {
-      id: newPublicId("ss"),
+      id: newEntityId(),
       publicId: newPublicId("savedsearch"),
       tenantId,
       userId,
@@ -1198,7 +1261,7 @@ export class CanonicalJobCatalog {
     },
   ): JobAlert {
     const row: JobAlert = {
-      id: newPublicId("alert"),
+      id: newEntityId(),
       publicId: newPublicId("jobalert"),
       tenantId,
       userId,
@@ -1295,7 +1358,7 @@ export class CanonicalJobCatalog {
       }
 
       const delivery: JobAlertDelivery = {
-        id: newPublicId("delivery"),
+        id: newEntityId(),
         alertId: alert.id,
         tenantId: alert.tenantId,
         userId: alert.userId,

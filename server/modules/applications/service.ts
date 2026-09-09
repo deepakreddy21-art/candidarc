@@ -82,6 +82,10 @@ export class ApplicationsService {
       stage: "RESEARCH_QUEUED",
       workflowStage: "RESEARCH_QUEUED",
       nextAction: "Wait for research",
+      metadata: {
+        ...(app.metadata ?? {}),
+        customerWorkflowPublicId: workflow.publicId,
+      },
     });
 
     logger.info(
@@ -89,7 +93,12 @@ export class ApplicationsService {
       "application created",
     );
 
-    return { application: { ...app, stage: "RESEARCH_QUEUED" as const, workflowStage: "RESEARCH_QUEUED" as const }, workflow };
+    const refreshed = (await this.applications.getByPublicId(tenantId, app.publicId)) ?? {
+      ...app,
+      stage: "RESEARCH_QUEUED" as const,
+      workflowStage: "RESEARCH_QUEUED" as const,
+    };
+    return { application: refreshed, workflow };
   }
 
   async list(ctx: AuthContext, includeArchived = false) {
@@ -112,10 +121,37 @@ export class ApplicationsService {
     deadline: string;
     roleFamily: string;
     nextAction: string;
+    candidateStatus?: string;
+    expectedVersion?: number;
   }>) {
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
-    return this.applications.update(tenantId, applicationPublicId, patch);
+    const { candidateStatus, expectedVersion, ...rest } = patch;
+    if (candidateStatus === undefined) {
+      return this.applications.update(tenantId, applicationPublicId, rest);
+    }
+
+    const allowed = new Set([
+      "Saved",
+      "Ready to apply",
+      "Applied",
+      "Interviewing",
+      "Offer",
+      "Rejected",
+      "Withdrawn",
+    ]);
+    if (!allowed.has(candidateStatus)) {
+      throw new AppError("INVALID_STATUS", "Unsupported application status", 400);
+    }
+    if (typeof expectedVersion !== "number" || !Number.isInteger(expectedVersion) || expectedVersion < 1) {
+      throw new AppError("EXPECTED_VERSION_REQUIRED", "expectedVersion is required for status updates", 400);
+    }
+
+    return this.applications.updateCandidateStatusCas(tenantId, applicationPublicId, {
+      candidateStatus,
+      expectedVersion,
+      patch: Object.keys(rest).length > 0 ? rest : undefined,
+    });
   }
 
   async archive(ctx: AuthContext, applicationPublicId: string) {

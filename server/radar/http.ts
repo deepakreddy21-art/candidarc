@@ -13,6 +13,15 @@ export const jobSearchQuerySchema = z.object({
       if (typeof v === "boolean") return v;
       return v === "true" || v === "1";
     }),
+  remotePolicy: z.enum(["remote", "hybrid", "onsite", "unknown"]).optional(),
+  savedOnly: z
+    .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      if (typeof v === "boolean") return v;
+      return v === "true" || v === "1";
+    }),
   employmentType: z.string().optional(),
   seniority: z.string().optional(),
   freshnessPreset: z.string().optional(),
@@ -72,6 +81,8 @@ export function parseJobSearchParams(url: URL): JobSearchQuery {
     "company",
     "location",
     "remote",
+    "remotePolicy",
+    "savedOnly",
     "employmentType",
     "seniority",
     "freshnessPreset",
@@ -124,13 +135,12 @@ export function parseJobSearchParams(url: URL): JobSearchQuery {
     if (sort === "recently_discovered") raw.freshnessBasis = "discovered";
   }
 
-  // remote policy: UI may send remote|hybrid|onsite|any
+  // remote policy: UI may send remote|hybrid|onsite|any as `remote`
   if (raw.remote === "any" || raw.remote === "unspecified") {
     delete raw.remote;
-  } else if (raw.remote === "remote" || raw.remote === "hybrid") {
-    raw.remote = "true";
-  } else if (raw.remote === "onsite") {
-    raw.remote = "false";
+  } else if (raw.remote === "remote" || raw.remote === "hybrid" || raw.remote === "onsite") {
+    raw.remotePolicy = raw.remote;
+    delete raw.remote;
   }
 
   if (raw.freshnessType === "any") delete raw.freshnessType;

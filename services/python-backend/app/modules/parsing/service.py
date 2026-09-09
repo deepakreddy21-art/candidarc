@@ -9,10 +9,19 @@ import re
 import zipfile
 from typing import Any
 
-from app.domain.schemas import JobParseResponse, ResumeParseResponse
+from app.domain.schemas import (
+    JobParseResponse,
+    ResumeParseContact,
+    ResumeParseEducation,
+    ResumeParseEmployment,
+    ResumeParseEvidence,
+    ResumeParseProject,
+    ResumeParseResponse,
+)
 from app.modules.guardrails.service import INJECTION_MARKERS, KNOWN_TECH_HINTS
+from app.modules.parsing.structure import structure_resume_text
 
-MAX_RESUME_BYTES = 5 * 1024 * 1024
+MAX_RESUME_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 30
 MAX_DOCX_UNCOMPRESSED = 20 * 1024 * 1024
 PARSE_TIMEOUT_SECONDS = 15.0
@@ -23,7 +32,6 @@ DOCX_MAGIC = b"PK"
 
 def _decode_base64_strict(content_base64: str) -> bytes:
     try:
-        # validate=True rejects non-alphabet characters
         raw = base64.b64decode(content_base64, validate=True)
     except Exception as exc:
         raise ValueError("INVALID_BASE64") from exc
@@ -34,28 +42,200 @@ def _decode_base64_strict(content_base64: str) -> bytes:
     return raw
 
 
+def _with_structure(text: str, page_count: int | None, warnings: list[str]) -> ResumeParseResponse:
+    structured = structure_resume_text(text, warnings)
+    contact_raw = structured.get("contact") or {}
+    return ResumeParseResponse(
+        text=text[:500_000],
+        page_count=page_count if page_count is not None else structured.get("page_count"),
+        warnings=list(structured.get("warnings") or warnings),
+        contact=ResumeParseContact(
+            full_name=contact_raw.get("full_name"),
+            email=contact_raw.get("email"),
+            phone=contact_raw.get("phone"),
+            location=contact_raw.get("location"),
+            linkedin=contact_raw.get("linkedin"),
+            github=contact_raw.get("github"),
+            portfolio=contact_raw.get("portfolio"),
+        ),
+        employment=[
+            ResumeParseEmployment(
+                title=item.get("title"),
+                employer=item.get("employer"),
+                location=item.get("location"),
+                start_date=item.get("start_date"),
+                end_date=item.get("end_date"),
+                bullets=list(item.get("bullets") or [])[:40],
+            )
+            for item in structured.get("employment") or []
+        ],
+        education=[
+            ResumeParseEducation(
+                institution=item.get("institution"),
+                degree=item.get("degree"),
+                field=item.get("field"),
+                end_date=item.get("end_date"),
+            )
+            for item in structured.get("education") or []
+        ],
+        projects=[
+            ResumeParseProject(
+                name=item.get("name"),
+                description=item.get("description"),
+                technologies=list(item.get("technologies") or [])[:40],
+            )
+            for item in structured.get("projects") or []
+        ],
+        skills=list(structured.get("skills") or [])[:200],
+        certifications=list(structured.get("certifications") or [])[:40],
+        evidence=[
+            ResumeParseEvidence(
+                title=item.get("title") or "Evidence",
+                summary=(item.get("summary") or item.get("title") or "Imported experience").strip()[:2000],
+                technologies=list(item.get("technologies") or [])[:40],
+            )
+            for item in structured.get("evidence") or []
+            if (item.get("summary") or item.get("title") or item.get("technologies"))
+        ],
+        extraction_quality=structured.get("extraction_quality"),
+        missing_fields=list(structured.get("missing_fields") or []),
+        usable=structured.get("usable"),
+    )
+
+
+def _reconstruct_column_text(page: Any) -> str | None:
+    """Rebuild reading order from positioned PDF text when multiple X columns exist.
+
+    Resumes often place experience on the left and skills/education on the right with
+    overlapping Y ranges. Default pypdf line-reading interleaves columns and swaps
+    employer/title associations. Column-major (left then right) preserves structure.
+    """
+    fragments: list[tuple[float, float, str]] = []
+
+    def visitor(text: str, _cm: Any, tm: Any, _font_dict: Any, _font_size: Any) -> None:
+        if not text or not str(text).strip():
+            return
+        try:
+            x = float(tm[4])
+            y = float(tm[5])
+        except (TypeError, ValueError, IndexError):
+            return
+        fragments.append((x, y, str(text)))
+
+    try:
+        page.extract_text(visitor_text=visitor)
+    except TypeError:
+        return None
+    except Exception:
+        return None
+
+    if len(fragments) < 4:
+        return None
+
+    xs = sorted({round(x / 10.0) * 10.0 for x, _y, _t in fragments})
+    if len(xs) < 2:
+        return None
+    # Detect a gap large enough to indicate distinct columns (≈1.5").
+    gaps = [(xs[i + 1] - xs[i], i) for i in range(len(xs) - 1)]
+    widest_gap, gap_idx = max(gaps, key=lambda item: item[0])
+    if widest_gap < 80:
+        return None
+    split_x = (xs[gap_idx] + xs[gap_idx + 1]) / 2.0
+
+    left = [(x, y, t) for x, y, t in fragments if x < split_x]
+    right = [(x, y, t) for x, y, t in fragments if x >= split_x]
+    if not left or not right:
+        return None
+
+    # Overlapping vertical ranges required for a genuine two-column layout.
+    left_ys = [y for _x, y, _t in left]
+    right_ys = [y for _x, y, _t in right]
+    if max(left_ys) < min(right_ys) or max(right_ys) < min(left_ys):
+        return None
+
+    def column_lines(items: list[tuple[float, float, str]]) -> list[str]:
+        # Top-to-bottom, then left-to-right within a line band.
+        ordered = sorted(items, key=lambda row: (-row[1], row[0]))
+        lines: list[str] = []
+        band_y: float | None = None
+        band: list[str] = []
+        for _x, y, text in ordered:
+            cleaned = text.replace("\r", "").strip("\n")
+            if not cleaned.strip():
+                continue
+            if band_y is None or abs(y - band_y) <= 3:
+                band.append(cleaned)
+                band_y = y if band_y is None else band_y
+            else:
+                lines.append("".join(band).strip())
+                band = [cleaned]
+                band_y = y
+        if band:
+            lines.append("".join(band).strip())
+        return [ln for ln in lines if ln]
+
+    left_text = "\n".join(column_lines(left))
+    right_text = "\n".join(column_lines(right))
+    if not left_text or not right_text:
+        return None
+    return f"{left_text}\n\n{right_text}".strip()
+
+
+def _extract_pdf_page_text(page: Any) -> str:
+    reconstructed = _reconstruct_column_text(page)
+    if reconstructed:
+        return reconstructed
+    return page.extract_text() or ""
+
+
 def _parse_pdf(raw: bytes) -> ResumeParseResponse:
     from pypdf import PdfReader
+    from pypdf.errors import FileNotDecryptedError, PdfReadError
 
     if not raw.startswith(PDF_MAGIC):
         raise ValueError("INVALID_PDF_MAGIC")
-    reader = PdfReader(io.BytesIO(raw))
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+    except PdfReadError as exc:
+        raise ValueError("CORRUPT_PDF") from exc
+    except Exception as exc:
+        message = str(exc).lower()
+        if "encrypt" in message or "password" in message:
+            raise ValueError("PDF_ENCRYPTED") from exc
+        raise ValueError("CORRUPT_PDF") from exc
+
+    if getattr(reader, "is_encrypted", False):
+        try:
+            # Empty password attempt — fail closed if still encrypted
+            result = reader.decrypt("")
+            if result == 0:
+                raise ValueError("PDF_ENCRYPTED")
+        except FileNotDecryptedError as exc:
+            raise ValueError("PDF_ENCRYPTED") from exc
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("PDF_ENCRYPTED") from exc
+
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise ValueError("PDF_PAGE_LIMIT_EXCEEDED")
-    pages = [page.extract_text() or "" for page in reader.pages]
+    try:
+        pages = [_extract_pdf_page_text(page) for page in reader.pages]
+    except Exception as exc:
+        raise ValueError("CORRUPT_PDF") from exc
     text = "\n".join(pages).strip()
     warnings: list[str] = []
     if not text:
         warnings.append("PDF_TEXT_LAYER_EMPTY")
-        warnings.append("IMAGE_ONLY_PDF_NO_OCR")
-    return ResumeParseResponse(text=text, page_count=page_count, warnings=warnings)
+        warnings.append("IMAGE_ONLY_PDF_OCR_REQUIRED")
+        raise ValueError("IMAGE_ONLY_PDF_OCR_REQUIRED")
+    return _with_structure(text, page_count, warnings)
 
 
 def _parse_docx(raw: bytes) -> ResumeParseResponse:
     if not raw.startswith(DOCX_MAGIC):
         raise ValueError("INVALID_DOCX_MAGIC")
-    # Zip-bomb protection: inspect uncompressed sizes before full extract
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         total_uncompressed = sum(info.file_size for info in zf.infolist())
         if total_uncompressed > MAX_DOCX_UNCOMPRESSED:
@@ -68,11 +248,16 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
 
     document = Document(io.BytesIO(raw))
     text = "\n".join(p.text for p in document.paragraphs if p.text.strip()).strip()
-    return ResumeParseResponse(text=text, page_count=None, warnings=[])
+    if not text:
+        raise ValueError("EMPTY_DOCUMENT")
+    return _with_structure(text, None, [])
 
 
 def _parse_txt(raw: bytes) -> ResumeParseResponse:
-    return ResumeParseResponse(text=raw.decode("utf-8", errors="replace").strip(), warnings=[])
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise ValueError("EMPTY_DOCUMENT")
+    return _with_structure(text, None, [])
 
 
 def parse_resume_bytes_sync(filename: str, content_type: str, content_base64: str) -> ResumeParseResponse:
@@ -162,7 +347,6 @@ def parse_job_text(job_text: str, company: str | None = None, role: str | None =
     if sen_match:
         seniority = sen_match.group(1)
 
-    # Prefer canonical casing from hints list
     canonical: list[str] = []
     for hint in KNOWN_TECH_HINTS:
         if re.search(rf"\b{re.escape(hint)}\b", job_text, re.I):

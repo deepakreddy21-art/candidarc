@@ -445,6 +445,19 @@ export interface ApplicationRepository {
   getByPublicId(tenantId: string, publicId: string): Promise<ApplicationRecord | null>;
   getByPublicIdGlobal(publicId: string): Promise<ApplicationRecord | null>;
   update(tenantId: string, publicId: string, patch: Partial<ApplicationRecord>): Promise<ApplicationRecord>;
+  /**
+   * Atomic candidate-status CAS: one update scoped by tenant + publicId + deleted_at IS NULL + expected version.
+   * Idempotent when the desired status is already current (no version bump).
+   */
+  updateCandidateStatusCas(
+    tenantId: string,
+    publicId: string,
+    input: {
+      candidateStatus: string;
+      expectedVersion: number;
+      patch?: Partial<Pick<ApplicationRecord, "nextAction" | "company" | "role" | "location" | "employmentType" | "deadline" | "roleFamily">>;
+    },
+  ): Promise<ApplicationRecord>;
   softDelete(tenantId: string, publicId: string): Promise<void>;
 }
 
@@ -899,6 +912,52 @@ export class MemoryRepositories implements Repositories {
           id: existing.id,
           publicId: existing.publicId,
           tenantId: existing.tenantId,
+          version: existing.version + 1,
+          updatedAt: nowIso(),
+        };
+        store.applications.set(existing.id, updated);
+        return updated;
+      },
+      async updateCandidateStatusCas(tenantId, publicId, input) {
+        let existing: ApplicationRecord | null = null;
+        for (const a of store.applications.values()) {
+          if (a.tenantId === tenantId && a.publicId === publicId && !a.deletedAt) {
+            existing = a;
+            break;
+          }
+        }
+        if (!existing) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
+
+        const currentStatus =
+          typeof existing.metadata?.candidateStatus === "string"
+            ? existing.metadata.candidateStatus
+            : undefined;
+        if (currentStatus === input.candidateStatus) {
+          return existing;
+        }
+        if (existing.version !== input.expectedVersion) {
+          throw new AppError(
+            "APPLICATION_VERSION_CONFLICT",
+            "Application was updated elsewhere. Reload and try again.",
+            409,
+            {
+              expectedVersion: input.expectedVersion,
+              currentVersion: existing.version,
+              application: existing,
+            },
+          );
+        }
+
+        const updated: ApplicationRecord = {
+          ...existing,
+          ...(input.patch ?? {}),
+          id: existing.id,
+          publicId: existing.publicId,
+          tenantId: existing.tenantId,
+          metadata: {
+            ...(existing.metadata ?? {}),
+            candidateStatus: input.candidateStatus,
+          },
           version: existing.version + 1,
           updatedAt: nowIso(),
         };

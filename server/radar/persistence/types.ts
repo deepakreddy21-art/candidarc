@@ -48,6 +48,10 @@ export interface PersistedOpportunityBrief {
     resumeReadinessLabel: "ready" | "needs_work" | "significant_gaps";
     researchUrls?: string[];
   };
+  /** Cache identity — miss on profile/algo/job change forces regeneration. */
+  profileRevision: string;
+  algoVersion: string;
+  jobUpdatedAt: string;
   generatedAt: string;
   expiresAt: string;
 }
@@ -172,6 +176,10 @@ export interface RadarStore extends RadarCatalogStore, RadarUserStore {
     sources: JobSource[];
     jobs: CanonicalJob[];
     sightings: JobSighting[];
+    savedJobs?: SavedJob[];
+    hiddenJobs?: HiddenJob[];
+    savedSearches?: SavedSearch[];
+    alerts?: JobAlert[];
   }>;
 
   /** Sync memory catalog to persistence (write-through). */

@@ -15,11 +15,14 @@ import type { ObjectStorage } from "../../storage/types";
 import type { QueueAdapter } from "../../workflows/queues";
 
 import { ProfileService } from "../profile/service";
-
-import { extractTextFromResume, normalizeResumeText, type ResumeExtractionSection } from "./text-extractor";
+import { type ResumeExtractionSection } from "./text-extractor";
+import { mapPythonResumeParseToExtraction } from "./python-extraction-mapper";
 import { getMalwareScanner } from "../../security/malware-scanner";
-
-
+import {
+  getPythonIntelligenceClient,
+  mapPythonBackendErrorToAppError,
+} from "../../intelligence/python-client";
+import { logger } from "../../observability/logger";
 
 export const MAX_RESUME_BYTES = 10 * 1024 * 1024;
 
@@ -33,8 +36,6 @@ export const ALLOWED_RESUME_MIMES = new Set([
 
 export const ALLOWED_RESUME_EXTENSIONS = new Set([".pdf", ".docx"]);
 
-
-
 export type ResumeUploadInput = {
 
   filename: string;
@@ -47,8 +48,6 @@ export type ResumeUploadInput = {
 
 };
 
-
-
 function importEvidencePublicId(filePublicId: string, kind: "emp" | "proj" | "cert" | "edu", index: number): string {
 
   const digest = createHash("sha256").update(`${filePublicId}:${kind}:${index}`).digest("hex").slice(0, 20);
@@ -56,8 +55,6 @@ function importEvidencePublicId(filePublicId: string, kind: "emp" | "proj" | "ce
   return `evp-import-${digest}`;
 
 }
-
-
 
 export class ResumeImportService {
 
@@ -73,15 +70,11 @@ export class ResumeImportService {
 
   ) {}
 
-
-
   static fromRepos(repos: Repositories, storage: ObjectStorage, queue: QueueAdapter) {
 
     return new ResumeImportService(repos, storage, queue, ProfileService.fromRepos(repos));
 
   }
-
-
 
   private tenantId(ctx: AuthContext) {
 
@@ -94,8 +87,6 @@ export class ResumeImportService {
     return ctx.activeTenantId;
 
   }
-
-
 
   validateUpload(input: ResumeUploadInput) {
 
@@ -149,8 +140,6 @@ export class ResumeImportService {
 
   }
 
-
-
   async upload(ctx: AuthContext, input: ResumeUploadInput) {
 
     const user = requireUser(ctx);
@@ -161,19 +150,13 @@ export class ResumeImportService {
 
     this.validateUpload(input);
 
-
-
     await this.profiles.getOrCreate(ctx);
-
-
 
     const filePublicId = newId("sfp");
 
     const storageKey = `uploads/${user.publicId}/${filePublicId}${input.filename.endsWith(".docx") ? ".docx" : ".pdf"}`;
 
     const checksum = createHash("sha256").update(input.buffer).digest("hex");
-
-
 
     await this.storage.putObject({
 
@@ -188,8 +171,6 @@ export class ResumeImportService {
       checksum,
 
     });
-
-
 
     const file = await this.repos.files.create({
 
@@ -217,8 +198,6 @@ export class ResumeImportService {
 
     });
 
-
-
     await this.repos.candidateProfiles.update(tenantId, user.id, {
 
       sourceResumeFilePublicId: file.publicId,
@@ -228,8 +207,6 @@ export class ResumeImportService {
       resumeImportExtraction: null,
 
     });
-
-
 
     await this.queue.enqueue(
 
@@ -242,8 +219,6 @@ export class ResumeImportService {
       { idempotencyKey: `scan:${file.publicId}` },
 
     );
-
-
 
     return {
 
@@ -266,8 +241,6 @@ export class ResumeImportService {
     };
 
   }
-
-
 
   async getImportStatus(ctx: AuthContext) {
 
@@ -311,8 +284,6 @@ export class ResumeImportService {
 
   }
 
-
-
   async updateExtraction(ctx: AuthContext, extraction: ResumeExtractionSection) {
 
     const user = requireUser(ctx);
@@ -345,8 +316,6 @@ export class ResumeImportService {
 
   }
 
-
-
   private async createImportEvidence(
 
     tenantId: string,
@@ -371,8 +340,6 @@ export class ResumeImportService {
 
       if (existing) continue;
 
-
-
       const title = [job.title, job.company].filter(Boolean).join(" at ") || `Role ${index + 1}`;
 
       const situation = job.bullets[0] ?? `Worked as ${title}`;
@@ -380,8 +347,6 @@ export class ResumeImportService {
       const actions = job.bullets.slice(1);
 
       const dateRange = [job.startDate, job.endDate].filter(Boolean).join(" – ");
-
-
 
       await this.repos.evidence.create({
 
@@ -437,8 +402,6 @@ export class ResumeImportService {
 
     }
 
-
-
     for (const [index, project] of extraction.projects.entries()) {
 
       const publicId = importEvidencePublicId(filePublicId, "proj", index);
@@ -447,13 +410,9 @@ export class ResumeImportService {
 
       if (existing) continue;
 
-
-
       const title = project.name ?? `Project ${index + 1}`;
 
       const description = project.description ?? title;
-
-
 
       await this.repos.evidence.create({
 
@@ -517,8 +476,6 @@ export class ResumeImportService {
 
     }
 
-
-
     for (const [index, certification] of (extraction.certifications ?? []).entries()) {
       const name = typeof certification === "string" ? certification.trim() : "";
       if (!name) continue;
@@ -528,8 +485,6 @@ export class ResumeImportService {
       const existing = await this.repos.evidence.getByPublicId(tenantId, publicId);
 
       if (existing) continue;
-
-
 
       await this.repos.evidence.create({
 
@@ -595,8 +550,6 @@ export class ResumeImportService {
 
   }
 
-
-
   async confirmImport(ctx: AuthContext) {
 
     const user = requireUser(ctx);
@@ -615,23 +568,17 @@ export class ResumeImportService {
 
     }
 
-
-
     if (profile.resumeImportStatus === "confirmed") {
 
       return { profile, extraction };
 
     }
 
-
-
     if (profile.resumeImportStatus !== "ready_for_review") {
 
       throw new AppError("IMPORT_NOT_READY", "Resume import is not ready for confirmation", 409);
 
     }
-
-
 
     const filePublicId = profile.sourceResumeFilePublicId;
 
@@ -640,8 +587,6 @@ export class ResumeImportService {
       throw new AppError("IMPORT_NOT_READY", "No source resume file linked to this profile", 409);
 
     }
-
-
 
     const contact = extraction.contact ?? {};
 
@@ -671,8 +616,6 @@ export class ResumeImportService {
 
     }
 
-
-
     const updated = await this.repos.candidateProfiles.update(tenantId, user.id, patch);
 
     await this.createImportEvidence(tenantId, user.id, updated.id, filePublicId, extraction);
@@ -680,8 +623,6 @@ export class ResumeImportService {
     return { profile: updated, extraction };
 
   }
-
-
 
   async runMalwareScan(tenantId: string, filePublicId: string) {
     const file = await this.repos.files.getByPublicId(tenantId, filePublicId);
@@ -724,84 +665,88 @@ export class ResumeImportService {
     );
   }
 
-
-
   async runExtraction(tenantId: string, filePublicId: string) {
-
     const file = await this.repos.files.getByPublicId(tenantId, filePublicId);
-
     if (!file || file.deletedAt) return;
-
     if (file.scanStatus !== "clean") {
-
       throw new AppError("SCAN_REQUIRED", "Resume must pass malware scan before extraction", 409);
-
     }
-
-
 
     const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
-
     if (!profile?.userId) return;
 
-
-
-    await this.repos.candidateProfiles.update(tenantId, profile.userId, {
-
-      resumeImportStatus: "extracting",
-
-    });
-
-
-
-    try {
-
-      const object = await this.storage.getObject(tenantId, file.storageKey);
-
-      if (!object) throw new AppError("FILE_NOT_FOUND", "Stored resume object missing", 404);
-
-
-
-      const { text, warnings } = await extractTextFromResume(object.body, file.mimeType);
-
-      if (!text.trim()) {
-
-        throw new AppError("PARSE_FAILED", "Could not extract text from resume", 422);
-
-      }
-
-      const parsed = normalizeResumeText(text, warnings);
-
-
-
-      await this.repos.candidateProfiles.update(tenantId, profile.userId, {
-
-        resumeImportStatus: "ready_for_review",
-
-        resumeImportExtraction: parsed as unknown as Record<string, unknown>,
-
-      });
-
-    } catch (err) {
-
-      await this.repos.candidateProfiles.update(tenantId, profile.userId, {
-
-        resumeImportStatus: "failed",
-
-        resumeImportExtraction: {
-
-          error: err instanceof Error ? err.message : "Extraction failed",
-
-        },
-
-      });
-
-      throw err;
-
+    // Never overwrite a previously confirmed career profile with a failed parse.
+    if (profile.resumeImportStatus === "confirmed") {
+      logger.info({ tenantId, filePublicId }, "skipping extraction for already-confirmed import");
+      return;
     }
 
+    await this.repos.candidateProfiles.update(tenantId, profile.userId, {
+      resumeImportStatus: "extracting",
+    });
+
+    try {
+      const object = await this.storage.getObject(tenantId, file.storageKey);
+      if (!object) throw new AppError("FILE_NOT_FOUND", "Stored resume object missing", 404);
+
+      const contentBase64 = object.body.toString("base64");
+      let parsed;
+      try {
+        parsed = await getPythonIntelligenceClient().parseResume({
+          context: {
+            tenantId,
+            userId: profile.userId,
+            requestId: `resume-import:${filePublicId}`,
+          },
+          filename:
+            file.storageKey.endsWith(".docx") || file.mimeType.includes("word")
+              ? `${file.publicId}.docx`
+              : `${file.publicId}.pdf`,
+          contentType: file.mimeType,
+          contentBase64,
+        });
+      } catch (err) {
+        throw mapPythonBackendErrorToAppError(err);
+      }
+
+      const extraction = mapPythonResumeParseToExtraction(parsed);
+      if (!extraction.rawText.trim() && !(extraction.usable ?? false)) {
+        throw new AppError("PARSE_FAILED", "Could not extract text from resume", 422);
+      }
+
+      await this.repos.candidateProfiles.update(tenantId, profile.userId, {
+        resumeImportStatus: "ready_for_review",
+        resumeImportExtraction: extraction as unknown as Record<string, unknown>,
+      });
+    } catch (err) {
+      const code = err instanceof AppError ? err.code : "PARSE_FAILED";
+      const message =
+        err instanceof AppError
+          ? err.message
+          : "We couldn’t read that resume. Try a text-based PDF or DOCX, or enter details manually.";
+      await this.repos.candidateProfiles.update(tenantId, profile.userId, {
+        resumeImportStatus: "failed",
+        resumeImportExtraction: {
+          error: message,
+          errorCode: code,
+        },
+      });
+      throw err;
+    }
   }
 
+  /** Mark import failed after queue retries are exhausted (terminal). */
+  async markImportFailed(tenantId: string, filePublicId: string, errorCode: string, message: string) {
+    const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
+    if (!profile?.userId) return;
+    if (profile.resumeImportStatus === "confirmed") return;
+    await this.repos.candidateProfiles.update(tenantId, profile.userId, {
+      resumeImportStatus: "failed",
+      resumeImportExtraction: {
+        error: message,
+        errorCode,
+      },
+    });
+  }
 }
-
 

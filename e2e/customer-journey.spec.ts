@@ -18,7 +18,6 @@ test.describe("primary customer journey", () => {
     await page.getByRole("button", { name: /sign in|log in/i }).click();
     await page.waitForURL(/\/(app|onboarding)/, { timeout: 60_000 });
 
-    // Skip incomplete onboarding if redirected there
     if (page.url().includes("/onboarding")) {
       await page.goto("/app/resumes/new");
     } else {
@@ -26,10 +25,10 @@ test.describe("primary customer journey", () => {
     }
 
     await expect(page.getByRole("navigation", { name: "Primary" })).toContainText(
-      /Home|Find Jobs|My Applications|Career Profile|Settings/,
+      /Jobs|Applications|Resume/,
     );
     await expect(page.getByRole("navigation", { name: "Primary" })).not.toContainText(
-      /Resume Studio|Application Copilot|Interview/,
+      /Resume Studio|Application Copilot|Interview|Home|Find Jobs|My Applications/,
     );
 
     const jd = `Senior Platform Engineer
@@ -43,19 +42,21 @@ Requirements: 5+ years experience, strong ownership, measurable impact.`;
     await page.getByRole("button", { name: /create|generate|tailor/i }).first().click();
 
     await expect(
-      page.getByText(/Understanding role|Tailoring experience|Preparing documents|Working on your resume|We need a few details/i).first(),
+      page
+        .getByText(
+          /Researching the role|Tailoring your resume|Quality checking|Working on your resume|We need a few details/i,
+        )
+        .first(),
     ).toBeVisible({
       timeout: 30_000,
     });
     await expect(page.locator("body")).not.toContainText(/HR_AUDIT|EM_AUDIT|V0_GENERATING/);
 
-    // Optional tech prompts must not block the customer journey
     const continueWithout = page.getByRole("button", { name: /continue without answering/i });
     if (await continueWithout.isVisible().catch(() => false)) {
       await continueWithout.click();
     }
 
-    // Wait for completion (mock pipeline is fast)
     await expect(
       page.getByText(/Version|Download|PDF|Word|Refine|Quality/i).first(),
     ).toBeVisible({ timeout: 90_000 });

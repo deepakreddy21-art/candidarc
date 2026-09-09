@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     requireUser(ctx);
     const body = await parseJsonBody(request, jobAlertBodySchema);
     const runtime = await getRuntime();
-    const created = getRadarService(runtime.services.radar).createAlert(ctx, {
+    const created = await getRadarService(runtime.services.radar).createAlert(ctx, {
       name: body.name,
       query: body.query,
       cadence: body.cadence,
@@ -39,7 +39,7 @@ export async function POST(request: Request) {
       savedSearchId: body.savedSearchId,
     });
     if (body.active === false) {
-      getRadarService(runtime.services.radar).updateAlert(ctx, created.publicId, { enabled: false });
+      await getRadarService(runtime.services.radar).updateAlert(ctx, created.publicId, { enabled: false });
       created.enabled = false;
     }
     return jsonOk({ alert: toAlertView(created) }, { status: 201 });

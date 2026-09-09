@@ -311,6 +311,10 @@ export const radarApi = {
         usingDemoFixtures: false,
       };
     }
+    // Network/transport failures must surface Retry UI — never silently substitute seed jobs.
+    if (res.network || !allowDemoFallback()) {
+      throw new ApiError("Could not load jobs", res.status ?? 503);
+    }
     return mock.searchJobs(params);
   },
 

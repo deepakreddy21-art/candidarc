@@ -1,5 +1,8 @@
 export {
+  analyzeRenderedPdf,
   buildResumeDocument,
+  measurePdfPageCount,
+  resumeDocumentNormalizedOrder,
   resumeDocumentPlainText,
   validateResumeLayout,
   verifyPdfContainsCanonicalContent,

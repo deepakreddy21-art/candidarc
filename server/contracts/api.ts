@@ -27,6 +27,11 @@ export const updateApplicationRequestSchema = z.object({
   nextAction: z.string().max(200).optional(),
   jobUrl: z.string().url().optional(),
   jobDescriptionText: z.string().max(100_000).optional(),
+  candidateStatus: z
+    .enum(["Saved", "Ready to apply", "Applied", "Interviewing", "Offer", "Rejected", "Withdrawn"])
+    .optional(),
+  /** Optimistic concurrency token — required when changing candidateStatus. */
+  expectedVersion: z.number().int().positive().optional(),
 });
 
 export const applicationResponseSchema = z.object({
@@ -49,6 +54,7 @@ export const applicationResponseSchema = z.object({
   nextAction: z.string(),
   resumeId: z.string().optional(),
   workflowId: z.string().optional(),
+  candidateStatus: z.string().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
