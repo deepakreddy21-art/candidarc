@@ -160,9 +160,9 @@ describe("StepCareerProfile import UX", () => {
         statusMessage={null}
       />,
     );
-    expect(screen.getByTestId("import-summary").textContent).toMatch(/Imported 2 roles/i);
+    expect(screen.getByTestId("import-summary").textContent).toMatch(/We imported your résumé: 2 roles/i);
     expect(screen.getByTestId("imported-employment-cards")).toBeTruthy();
-    expect(screen.queryByText(/^Employment$/)).toBeNull();
+    expect(screen.getByText("Professional experience")).toBeTruthy();
   });
 
   it("shows Retry when import failed and does not show blank analyzing forever", () => {

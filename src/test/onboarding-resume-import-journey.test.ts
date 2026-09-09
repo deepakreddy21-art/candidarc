@@ -631,4 +631,131 @@ describe("onboarding resume import journey (real FastAPI)", () => {
     const otherBody = await other.json();
     expect(otherBody.extraction?.employment ?? []).toHaveLength(0);
   }, 60_000);
+
+  it("failed replacement upload preserves prior confirmed profile and evidence", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf, tenant, user } = await seedAuthedUser(runtime);
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    const { POST: confirm } = await import("../../src/app/api/v1/profile/resume/confirm/route");
+    const { GET: getImport } = await import("../../src/app/api/v1/profile/resume/import/route");
+
+    const good = new FormData();
+    good.append(
+      "file",
+      new File([Uint8Array.from(textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME))], "good.pdf", {
+        type: "application/pdf",
+      }),
+    );
+    expect(
+      (
+        await upload(
+          new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf },
+            body: good,
+          }),
+        )
+      ).status,
+    ).toBe(201);
+    const ready = await waitImportReady(cookie);
+    expect(ready.status).toBe("ready_for_review");
+    expect(ready.extraction.employment.length).toBeGreaterThanOrEqual(2);
+
+    expect(
+      (
+        await confirm(
+          new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" },
+            body: JSON.stringify({}),
+          }),
+        )
+      ).status,
+    ).toBe(200);
+
+    const evidenceBefore = (await runtime.repos.evidence.list(tenant.id, { ownerUserId: user.id })).filter(
+      (row) => row.payload && (row.payload as { source?: string }).source === "resume-import",
+    );
+    expect(evidenceBefore.length).toBeGreaterThanOrEqual(2);
+
+    const bad = new FormData();
+    bad.append(
+      "file",
+      new File([Uint8Array.from(imageOnlyPdf())], "bad-scan.pdf", { type: "application/pdf" }),
+    );
+    expect(
+      (
+        await upload(
+          new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf },
+            body: bad,
+          }),
+        )
+      ).status,
+    ).toBe(201);
+
+    // Poll until terminal: either restored confirmed or failed without baseline.
+    let finalBody: { status: string; extraction?: { employment?: unknown[]; contact?: { email?: string } } } | null =
+      null;
+    for (let i = 0; i < 80; i++) {
+      const res = await getImport(
+        new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }),
+      );
+      const body = await res.json();
+      if (body.status === "confirmed" || body.status === "failed") {
+        finalBody = body;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    expect(finalBody?.status).toBe("confirmed");
+    expect(finalBody?.extraction?.employment?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(finalBody?.extraction?.contact?.email).toMatch(/jordan\.blake@example\.com/i);
+
+    const evidenceAfter = (await runtime.repos.evidence.list(tenant.id, { ownerUserId: user.id })).filter(
+      (row) => row.payload && (row.payload as { source?: string }).source === "resume-import",
+    );
+    expect(evidenceAfter.length).toBe(evidenceBefore.length);
+  }, 90_000);
+
+  it("DOCX full path surfaces visible extracted employers and skills", async () => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const docx = await createMinimalDocx(PROFESSIONAL_EXPERIENCE_RESUME.split("\n"));
+    const form = new FormData();
+    form.append(
+      "file",
+      new File([Uint8Array.from(docx)], "jordan.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }),
+    );
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    expect(
+      (
+        await upload(
+          new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+            method: "POST",
+            headers: { cookie, "x-csrf-token": csrf },
+            body: form,
+          }),
+        )
+      ).status,
+    ).toBe(201);
+    const body = await waitImportReady(cookie);
+    expect(body.status).toBe("ready_for_review");
+    expect(body.extraction.contact?.fullName).toMatch(/Jordan Blake/i);
+    expect(body.extraction.employment.map((j: { company?: string }) => j.company)).toEqual(
+      expect.arrayContaining(["Harbor Systems", "Northwind Labs"]),
+    );
+    expect(body.extraction.employment[0]?.bullets?.length).toBeGreaterThan(0);
+    expect(body.extraction.skills.join(" ")).toMatch(/TypeScript|Kubernetes/i);
+    expect(validateStepClient(2, {
+      ...emptyOnboardingForm(),
+      fullName: body.extraction.contact?.fullName ?? "Jordan Blake",
+      employment: body.extraction.employment,
+      skills: body.extraction.skills,
+      careerProfileMode: "upload",
+    }, "ready_for_review")).toBeNull();
+  }, 90_000);
 });

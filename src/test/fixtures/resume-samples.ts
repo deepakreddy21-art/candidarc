@@ -181,7 +181,7 @@ export function imageOnlyPdf(): Buffer {
   const pdf = `%PDF-1.4
 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> endobj
 4 0 obj << /Length ${stream.length} >> stream
 ${stream}
 endstream endobj
@@ -195,3 +195,109 @@ startxref
 `;
   return Buffer.from(pdf);
 }
+
+/** Rich sanitized résumé covering projects, structured certs, publications, compound name. */
+export const RICH_STRUCTURED_RESUME = `Maria Elena Vasquez-Smith
+maria.vasquez@example.com | maria.alt@example.com | (555) 010-9988 | Austin, TX
+linkedin.com/in/mariavasquez | github.com/mvsmith | https://mariavasquez.dev | https://blog.example.com/mv
+
+PROFESSIONAL SUMMARY
+Platform engineer focused on reliable data systems and developer tooling.
+
+PROFESSIONAL EXPERIENCE
+
+Staff Engineer | Riverbend Analytics | Austin, TX
+Mar 2022 - Present
+- Led migration of batch pipelines to Apache Spark on AWS
+- Mentored four engineers on observability and incident response
+
+Software Engineer | Cascade Robotics
+Jan 2019 - Feb 2022
+- Built TypeScript APIs for robot fleet scheduling
+- Reduced deploy failures by introducing canary releases
+
+PROJECTS
+Campus Lab Scheduler
+- Built a Next.js scheduling board for shared lab equipment
+- Stack: TypeScript, PostgreSQL, Redis
+https://github.com/example/lab-scheduler
+
+EDUCATION
+M.S. Computer Science | Hillcrest Institute | 2018 | GPA: 3.8 | magna cum laude
+B.S. Computer Engineering | Hillcrest Institute | 2016
+
+SKILLS
+Languages: TypeScript, Python, SQL
+Cloud: AWS, Kubernetes, Docker
+
+CERTIFICATIONS
+AWS Solutions Architect Associate | Amazon | 2021 | ID: AWS-SAA-001
+Certified Kubernetes Administrator | CNCF | 2023
+
+PUBLICATIONS
+Vasquez-Smith, M. Reliable Batch Pipelines. Journal of Systems Practice (2022). doi:10.1000/josp.2022.001
+`;
+
+export const COMPOUND_NAME_RESUME = `Jean-Luc O'Connor-Nguyen
+jean.oconnor@example.com
+
+SKILLS
+Python, FastAPI
+
+EDUCATION
+B.S. Mathematics | Northern College | 2020
+`;
+
+export function corruptPdf(): Buffer {
+  return Buffer.from("%PDF-1.4\nthis is not a valid pdf structure\n%%EOF\n");
+}
+
+export function emptyPdf(): Buffer {
+  const stream = "BT /F1 10 Tf 50 750 Td () Tj ET";
+  const objects = [
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj",
+    `4 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj`,
+    "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+  ];
+  const pdf: string[] = ["%PDF-1.4"];
+  const offsets = [0];
+  for (const obj of objects) {
+    offsets.push(pdf.reduce((n, line) => n + line.length + 1, 0));
+    pdf.push(obj);
+  }
+  const xrefPos = pdf.reduce((n, line) => n + line.length + 1, 0);
+  pdf.push("xref");
+  pdf.push(`0 ${objects.length + 1}`);
+  pdf.push("0000000000 65535 f ");
+  for (const off of offsets.slice(1)) {
+    pdf.push(`${String(off).padStart(10, "0")} 00000 n `);
+  }
+  pdf.push(`trailer << /Size ${objects.length + 1} /Root 1 0 R >>`);
+  pdf.push("startxref");
+  pdf.push(String(xrefPos));
+  pdf.push("%%EOF");
+  return Buffer.from(pdf.join("\n") + "\n");
+}
+
+/** Minimal encrypted-looking PDF marker for typed error paths (pypdf raises encrypt errors). */
+export function encryptedPdfStub(): Buffer {
+  return Buffer.from(`%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >> endobj
+4 0 obj << /Length 0 /Filter /Standard >> stream
+endstream endobj
+trailer << /Encrypt 4 0 R /Root 1 0 R /Size 5 >>
+startxref
+0
+%%EOF
+`);
+}
+
+/** Legacy OLE .doc magic bytes — not a convertible path; expect LEGACY_DOC_UNSUPPORTED. */
+export function legacyDocBytes(): Buffer {
+  return Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, ...Array(64).fill(0)]);
+}
+
