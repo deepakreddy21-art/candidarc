@@ -29,3 +29,5 @@ services/python-backend/.pytest_cache/
 **/.venv/
 **/__pycache__/
 *.pyc
+
+resume-import-screenshots/
