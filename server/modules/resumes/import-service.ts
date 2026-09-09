@@ -58,7 +58,8 @@ function wrapWithConfirmedBaseline(
   confirmed: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
   if (!confirmed) return null;
-  const { [CONFIRMED_BASELINE_KEY]: _drop, ...clean } = confirmed;
+  const { [CONFIRMED_BASELINE_KEY]: _ignoredBaseline, ...clean } = confirmed;
+  void _ignoredBaseline;
   return { [CONFIRMED_BASELINE_KEY]: clean };
 }
 

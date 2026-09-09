@@ -228,6 +228,11 @@ describe("profile and resume import", () => {
   it("marks import failed when retries are exhausted", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
+    await repos.candidateProfiles.update(tenantId, userId, {
+      resumeImportStatus: null,
+      resumeImportExtraction: null,
+      sourceResumeFilePublicId: null,
+    });
     const queue = new InProcessQueueAdapter();
     const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-ex"), "test-secret-ex");
     const service = ResumeImportService.fromRepos(repos, storage, queue);
