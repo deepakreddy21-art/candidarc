@@ -253,6 +253,44 @@ class JobParseResponse(StrictModel):
     warnings: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=50)
 
 
+class ResumeParseContact(StrictModel):
+    full_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    location: str | None = None
+    linkedin: str | None = None
+    github: str | None = None
+    portfolio: str | None = None
+
+
+class ResumeParseEmployment(StrictModel):
+    title: str | None = None
+    employer: str | None = None
+    location: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    bullets: list[Annotated[str, Field(max_length=2_000)]] = Field(default_factory=list, max_length=40)
+
+
+class ResumeParseEducation(StrictModel):
+    institution: str | None = None
+    degree: str | None = None
+    field: str | None = None
+    end_date: str | None = None
+
+
+class ResumeParseProject(StrictModel):
+    name: str | None = None
+    description: str | None = None
+    technologies: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=40)
+
+
+class ResumeParseEvidence(StrictModel):
+    title: StrShort
+    summary: StrMed
+    technologies: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=40)
+
+
 class ResumeParseRequest(StrictModel):
     context: RequestContext
     filename: str = Field(min_length=1, max_length=512)
@@ -264,6 +302,16 @@ class ResumeParseResponse(StrictModel):
     text: str = Field(max_length=500_000)
     page_count: int | None = Field(default=None, ge=0, le=10_000)
     warnings: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=50)
+    contact: ResumeParseContact | None = None
+    employment: list[ResumeParseEmployment] = Field(default_factory=list, max_length=40)
+    education: list[ResumeParseEducation] = Field(default_factory=list, max_length=20)
+    projects: list[ResumeParseProject] = Field(default_factory=list, max_length=20)
+    skills: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=200)
+    certifications: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=40)
+    evidence: list[ResumeParseEvidence] = Field(default_factory=list, max_length=40)
+    extraction_quality: Literal["high", "medium", "low"] | None = None
+    missing_fields: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list, max_length=40)
+    usable: bool | None = None
 
 
 class ResearchSource(StrictModel):

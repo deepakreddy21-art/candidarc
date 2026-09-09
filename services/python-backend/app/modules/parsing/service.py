@@ -9,10 +9,19 @@ import re
 import zipfile
 from typing import Any
 
-from app.domain.schemas import JobParseResponse, ResumeParseResponse
+from app.domain.schemas import (
+    JobParseResponse,
+    ResumeParseContact,
+    ResumeParseEducation,
+    ResumeParseEmployment,
+    ResumeParseEvidence,
+    ResumeParseProject,
+    ResumeParseResponse,
+)
 from app.modules.guardrails.service import INJECTION_MARKERS, KNOWN_TECH_HINTS
+from app.modules.parsing.structure import structure_resume_text
 
-MAX_RESUME_BYTES = 5 * 1024 * 1024
+MAX_RESUME_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 30
 MAX_DOCX_UNCOMPRESSED = 20 * 1024 * 1024
 PARSE_TIMEOUT_SECONDS = 15.0
@@ -23,7 +32,6 @@ DOCX_MAGIC = b"PK"
 
 def _decode_base64_strict(content_base64: str) -> bytes:
     try:
-        # validate=True rejects non-alphabet characters
         raw = base64.b64decode(content_base64, validate=True)
     except Exception as exc:
         raise ValueError("INVALID_BASE64") from exc
@@ -34,28 +42,115 @@ def _decode_base64_strict(content_base64: str) -> bytes:
     return raw
 
 
+def _with_structure(text: str, page_count: int | None, warnings: list[str]) -> ResumeParseResponse:
+    structured = structure_resume_text(text, warnings)
+    contact_raw = structured.get("contact") or {}
+    return ResumeParseResponse(
+        text=text[:500_000],
+        page_count=page_count if page_count is not None else structured.get("page_count"),
+        warnings=list(structured.get("warnings") or warnings),
+        contact=ResumeParseContact(
+            full_name=contact_raw.get("full_name"),
+            email=contact_raw.get("email"),
+            phone=contact_raw.get("phone"),
+            location=contact_raw.get("location"),
+            linkedin=contact_raw.get("linkedin"),
+            github=contact_raw.get("github"),
+            portfolio=contact_raw.get("portfolio"),
+        ),
+        employment=[
+            ResumeParseEmployment(
+                title=item.get("title"),
+                employer=item.get("employer"),
+                location=item.get("location"),
+                start_date=item.get("start_date"),
+                end_date=item.get("end_date"),
+                bullets=list(item.get("bullets") or [])[:40],
+            )
+            for item in structured.get("employment") or []
+        ],
+        education=[
+            ResumeParseEducation(
+                institution=item.get("institution"),
+                degree=item.get("degree"),
+                field=item.get("field"),
+                end_date=item.get("end_date"),
+            )
+            for item in structured.get("education") or []
+        ],
+        projects=[
+            ResumeParseProject(
+                name=item.get("name"),
+                description=item.get("description"),
+                technologies=list(item.get("technologies") or [])[:40],
+            )
+            for item in structured.get("projects") or []
+        ],
+        skills=list(structured.get("skills") or [])[:200],
+        certifications=list(structured.get("certifications") or [])[:40],
+        evidence=[
+            ResumeParseEvidence(
+                title=item.get("title") or "Evidence",
+                summary=(item.get("summary") or item.get("title") or "Imported experience").strip()[:2000],
+                technologies=list(item.get("technologies") or [])[:40],
+            )
+            for item in structured.get("evidence") or []
+            if (item.get("summary") or item.get("title") or item.get("technologies"))
+        ],
+        extraction_quality=structured.get("extraction_quality"),
+        missing_fields=list(structured.get("missing_fields") or []),
+        usable=structured.get("usable"),
+    )
+
+
 def _parse_pdf(raw: bytes) -> ResumeParseResponse:
     from pypdf import PdfReader
+    from pypdf.errors import FileNotDecryptedError, PdfReadError
 
     if not raw.startswith(PDF_MAGIC):
         raise ValueError("INVALID_PDF_MAGIC")
-    reader = PdfReader(io.BytesIO(raw))
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+    except PdfReadError as exc:
+        raise ValueError("CORRUPT_PDF") from exc
+    except Exception as exc:
+        message = str(exc).lower()
+        if "encrypt" in message or "password" in message:
+            raise ValueError("PDF_ENCRYPTED") from exc
+        raise ValueError("CORRUPT_PDF") from exc
+
+    if getattr(reader, "is_encrypted", False):
+        try:
+            # Empty password attempt — fail closed if still encrypted
+            result = reader.decrypt("")
+            if result == 0:
+                raise ValueError("PDF_ENCRYPTED")
+        except FileNotDecryptedError as exc:
+            raise ValueError("PDF_ENCRYPTED") from exc
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("PDF_ENCRYPTED") from exc
+
     page_count = len(reader.pages)
     if page_count > MAX_PDF_PAGES:
         raise ValueError("PDF_PAGE_LIMIT_EXCEEDED")
-    pages = [page.extract_text() or "" for page in reader.pages]
+    try:
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except Exception as exc:
+        raise ValueError("CORRUPT_PDF") from exc
     text = "\n".join(pages).strip()
     warnings: list[str] = []
     if not text:
         warnings.append("PDF_TEXT_LAYER_EMPTY")
-        warnings.append("IMAGE_ONLY_PDF_NO_OCR")
-    return ResumeParseResponse(text=text, page_count=page_count, warnings=warnings)
+        warnings.append("IMAGE_ONLY_PDF_OCR_REQUIRED")
+        raise ValueError("IMAGE_ONLY_PDF_OCR_REQUIRED")
+    return _with_structure(text, page_count, warnings)
 
 
 def _parse_docx(raw: bytes) -> ResumeParseResponse:
     if not raw.startswith(DOCX_MAGIC):
         raise ValueError("INVALID_DOCX_MAGIC")
-    # Zip-bomb protection: inspect uncompressed sizes before full extract
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         total_uncompressed = sum(info.file_size for info in zf.infolist())
         if total_uncompressed > MAX_DOCX_UNCOMPRESSED:
@@ -68,11 +163,16 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
 
     document = Document(io.BytesIO(raw))
     text = "\n".join(p.text for p in document.paragraphs if p.text.strip()).strip()
-    return ResumeParseResponse(text=text, page_count=None, warnings=[])
+    if not text:
+        raise ValueError("EMPTY_DOCUMENT")
+    return _with_structure(text, None, [])
 
 
 def _parse_txt(raw: bytes) -> ResumeParseResponse:
-    return ResumeParseResponse(text=raw.decode("utf-8", errors="replace").strip(), warnings=[])
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise ValueError("EMPTY_DOCUMENT")
+    return _with_structure(text, None, [])
 
 
 def parse_resume_bytes_sync(filename: str, content_type: str, content_base64: str) -> ResumeParseResponse:
@@ -162,7 +262,6 @@ def parse_job_text(job_text: str, company: str | None = None, role: str | None =
     if sen_match:
         seniority = sen_match.group(1)
 
-    # Prefer canonical casing from hints list
     canonical: list[str] = []
     for hint in KNOWN_TECH_HINTS:
         if re.search(rf"\b{re.escape(hint)}\b", job_text, re.I):

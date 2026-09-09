@@ -2440,6 +2440,282 @@
         "title": "ResumeItem",
         "type": "object"
       },
+      "ResumeParseContact": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "github": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github"
+          },
+          "linkedin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linkedin"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "portfolio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portfolio"
+          }
+        },
+        "title": "ResumeParseContact",
+        "type": "object"
+      },
+      "ResumeParseEducation": {
+        "additionalProperties": false,
+        "properties": {
+          "degree": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Degree"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "institution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Institution"
+          }
+        },
+        "title": "ResumeParseEducation",
+        "type": "object"
+      },
+      "ResumeParseEmployment": {
+        "additionalProperties": false,
+        "properties": {
+          "bullets": {
+            "items": {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Bullets",
+            "type": "array"
+          },
+          "employer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employer"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "ResumeParseEmployment",
+        "type": "object"
+      },
+      "ResumeParseEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "summary": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "technologies": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Technologies",
+            "type": "array"
+          },
+          "title": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "summary"
+        ],
+        "title": "ResumeParseEvidence",
+        "type": "object"
+      },
+      "ResumeParseProject": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "technologies": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Technologies",
+            "type": "array"
+          }
+        },
+        "title": "ResumeParseProject",
+        "type": "object"
+      },
       "ResumeParseRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2477,6 +2753,74 @@
       "ResumeParseResponse": {
         "additionalProperties": false,
         "properties": {
+          "certifications": {
+            "items": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Certifications",
+            "type": "array"
+          },
+          "contact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeParseContact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "education": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeParseEducation"
+            },
+            "maxItems": 20,
+            "title": "Education",
+            "type": "array"
+          },
+          "employment": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeParseEmployment"
+            },
+            "maxItems": 40,
+            "title": "Employment",
+            "type": "array"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeParseEvidence"
+            },
+            "maxItems": 40,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "extraction_quality": {
+            "anyOf": [
+              {
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extraction Quality"
+          },
+          "missing_fields": {
+            "items": {
+              "maxLength": 64,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Missing Fields",
+            "type": "array"
+          },
           "page_count": {
             "anyOf": [
               {
@@ -2490,10 +2834,38 @@
             ],
             "title": "Page Count"
           },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeParseProject"
+            },
+            "maxItems": 20,
+            "title": "Projects",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Skills",
+            "type": "array"
+          },
           "text": {
             "maxLength": 500000,
             "title": "Text",
             "type": "string"
+          },
+          "usable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usable"
           },
           "warnings": {
             "items": {
