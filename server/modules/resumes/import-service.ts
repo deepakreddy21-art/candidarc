@@ -15,7 +15,7 @@ import type { ObjectStorage } from "../../storage/types";
 import type { QueueAdapter } from "../../workflows/queues";
 
 import { ProfileService } from "../profile/service";
-import { type ResumeExtractionSection } from "./text-extractor";
+import { adaptResumeExtractionV1ToV2, type ResumeExtractionSection } from "./text-extractor";
 import { mapPythonResumeParseToExtraction } from "./python-extraction-mapper";
 import { getMalwareScanner } from "../../security/malware-scanner";
 import {
@@ -36,6 +36,57 @@ export const ALLOWED_RESUME_MIMES = new Set([
 
 export const ALLOWED_RESUME_EXTENSIONS = new Set([".pdf", ".docx"]);
 
+const CONFIRMED_BASELINE_KEY = "__confirmedBaseline";
+
+function asExtractionRecord(
+  value: ResumeExtractionSection | Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
+
+function readConfirmedBaseline(
+  extraction: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!extraction || typeof extraction !== "object") return null;
+  const baseline = extraction[CONFIRMED_BASELINE_KEY];
+  if (!baseline || typeof baseline !== "object") return null;
+  return baseline as Record<string, unknown>;
+}
+
+function wrapWithConfirmedBaseline(
+  confirmed: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!confirmed) return null;
+  const { [CONFIRMED_BASELINE_KEY]: _drop, ...clean } = confirmed;
+  return { [CONFIRMED_BASELINE_KEY]: clean };
+}
+
+async function restoreConfirmedOrFail(
+  repos: Repositories,
+  tenantId: string,
+  userId: string,
+  extraction: Record<string, unknown> | null | undefined,
+  errorCode: string,
+  message: string,
+) {
+  const baseline = readConfirmedBaseline(extraction);
+  if (baseline) {
+    await repos.candidateProfiles.update(tenantId, userId, {
+      resumeImportStatus: "confirmed",
+      resumeImportExtraction: baseline,
+    });
+    return;
+  }
+  await repos.candidateProfiles.update(tenantId, userId, {
+    resumeImportStatus: "failed",
+    resumeImportExtraction: {
+      error: message,
+      errorCode,
+    },
+  });
+}
+
 export type ResumeUploadInput = {
 
   filename: string;
@@ -48,7 +99,7 @@ export type ResumeUploadInput = {
 
 };
 
-function importEvidencePublicId(filePublicId: string, kind: "emp" | "proj" | "cert" | "edu", index: number): string {
+function importEvidencePublicId(filePublicId: string, kind: "emp" | "proj" | "cert" | "edu" | "pub", index: number): string {
 
   const digest = createHash("sha256").update(`${filePublicId}:${kind}:${index}`).digest("hex").slice(0, 20);
 
@@ -208,6 +259,15 @@ export class ResumeImportService {
 
     await this.profiles.getOrCreate(ctx);
 
+    const existing = await this.profiles.get(ctx);
+    const priorExtraction = asExtractionRecord(existing.resumeImportExtraction as Record<string, unknown> | null);
+    const confirmedBaseline =
+      existing.resumeImportStatus === "confirmed" && priorExtraction
+        ? wrapWithConfirmedBaseline(priorExtraction)
+        : readConfirmedBaseline(priorExtraction)
+          ? wrapWithConfirmedBaseline(readConfirmedBaseline(priorExtraction))
+          : null;
+
     const filePublicId = newId("sfp");
 
     const storageKey = `uploads/${user.publicId}/${filePublicId}${input.filename.endsWith(".docx") ? ".docx" : ".pdf"}`;
@@ -260,7 +320,8 @@ export class ResumeImportService {
 
       resumeImportStatus: "pending_scan",
 
-      resumeImportExtraction: null,
+      // Keep confirmed extraction baseline so a failed replacement cannot wipe career data.
+      resumeImportExtraction: confirmedBaseline,
 
     });
 
@@ -332,7 +393,16 @@ export class ResumeImportService {
 
       status: profile.resumeImportStatus,
 
-      extraction: profile.resumeImportExtraction as ResumeExtractionSection | null,
+      extraction: adaptResumeExtractionV1ToV2(
+        (() => {
+          const raw = profile.resumeImportExtraction as Record<string, unknown> | null;
+          if (raw && CONFIRMED_BASELINE_KEY in raw && !raw.employment && !raw.error) {
+            // Replacement in progress — do not surface baseline as a staged ready extraction.
+            return null;
+          }
+          return raw as ResumeExtractionSection | null;
+        })(),
+      ),
 
       file,
 
@@ -387,6 +457,7 @@ export class ResumeImportService {
   ) {
 
     const skills = extraction.skills ?? [];
+    void skills;
 
     for (const [index, job] of extraction.employment.entries()) {
 
@@ -428,7 +499,7 @@ export class ResumeImportService {
 
         result: job.bullets.at(-1) ?? situation,
 
-        technologies: skills,
+        technologies: job.technologies?.length ? job.technologies : [],
 
         confidence: "medium",
 
@@ -451,6 +522,10 @@ export class ResumeImportService {
           index,
 
           location: job.location,
+
+          sourceOrder: job.sourceOrder ?? index,
+
+          attestation: "candidate_confirmation",
 
         },
 
@@ -494,7 +569,7 @@ export class ResumeImportService {
 
         result: description,
 
-        technologies: project.technologies.length ? project.technologies : skills,
+        technologies: project.technologies.length ? project.technologies : [],
 
         confidence: "medium",
 
@@ -516,6 +591,8 @@ export class ResumeImportService {
 
           index,
 
+          attestation: "candidate_confirmation",
+
         },
 
         sourceType: "resume-import-project",
@@ -532,8 +609,15 @@ export class ResumeImportService {
 
     }
 
-    for (const [index, certification] of (extraction.certifications ?? []).entries()) {
-      const name = typeof certification === "string" ? certification.trim() : "";
+    const certRows =
+      extraction.certificationEntries?.length
+        ? extraction.certificationEntries
+        : (extraction.certifications ?? []).map((name) => ({
+            name: typeof name === "string" ? name : "",
+          }));
+
+    for (const [index, certification] of certRows.entries()) {
+      const name = (certification.name ?? "").trim();
       if (!name) continue;
 
       const publicId = importEvidencePublicId(filePublicId, "cert", index);
@@ -541,6 +625,11 @@ export class ResumeImportService {
       const existing = await this.repos.evidence.getByPublicId(tenantId, publicId);
 
       if (existing) continue;
+
+      const issuer =
+        "issuer" in certification && typeof certification.issuer === "string"
+          ? certification.issuer
+          : undefined;
 
       await this.repos.evidence.create({
 
@@ -556,7 +645,7 @@ export class ResumeImportService {
 
         title: name.trim(),
 
-        organization: "Certification attestation",
+        organization: issuer || "Certification attestation",
 
         situation: `Candidate reported certification: ${name.trim()}`,
 
@@ -590,6 +679,10 @@ export class ResumeImportService {
 
           attestationRequired: true,
 
+          independentlyVerified: false,
+
+          issuer,
+
         },
 
         sourceType: "certification-attestation",
@@ -604,6 +697,84 @@ export class ResumeImportService {
 
     }
 
+    for (const [index, edu] of (extraction.education ?? []).entries()) {
+      const label = [edu.degree, edu.institution].filter(Boolean).join(" — ") || `Education ${index + 1}`;
+      const publicId = importEvidencePublicId(filePublicId, "edu", index);
+      const existing = await this.repos.evidence.getByPublicId(tenantId, publicId);
+      if (existing) continue;
+      await this.repos.evidence.create({
+        id: newId("ev"),
+        publicId,
+        tenantId,
+        ownerUserId: userId,
+        candidateProfileId,
+        title: label,
+        organization: edu.institution ?? "",
+        situation: label,
+        task: edu.field ? `Field of study: ${edu.field}` : "Education attestation from resume import",
+        actions: [],
+        result: [edu.endDate, edu.gpa ? `GPA ${edu.gpa}` : null, edu.honors].filter(Boolean).join(" · ") || label,
+        technologies: [],
+        confidence: "medium",
+        verificationStatus: "user_attested",
+        privacyLevel: "share-safe",
+        excludedFromApplicationIds: [],
+        matchedApplicationIds: [],
+        payload: {
+          source: "resume-import",
+          filePublicId,
+          kind: "education",
+          index,
+          attestation: "candidate_confirmation",
+        },
+        sourceType: "resume-import-education",
+        claimText: label,
+        evidenceStatus: "active",
+        candidateConfirmationStatus: "confirmed",
+      });
+    }
+
+    for (const [index, publication] of (extraction.publications ?? []).entries()) {
+      const title = publication.title?.trim();
+      if (!title) continue;
+      const publicId = importEvidencePublicId(filePublicId, "pub", index);
+      const existing = await this.repos.evidence.getByPublicId(tenantId, publicId);
+      if (existing) continue;
+      await this.repos.evidence.create({
+        id: newId("ev"),
+        publicId,
+        tenantId,
+        ownerUserId: userId,
+        candidateProfileId,
+        title,
+        organization: publication.publisher || "Publication attestation",
+        situation: publication.description || title,
+        task: "Treat as candidate attestation until independently verified",
+        actions: publication.authors?.length ? [`Authors: ${publication.authors.join(", ")}`] : [],
+        result: "Pending independent verification; treat as candidate attestation only",
+        technologies: [],
+        confidence: "low",
+        verificationStatus: "user_attested",
+        privacyLevel: "share-safe",
+        excludedFromApplicationIds: [],
+        matchedApplicationIds: [],
+        payload: {
+          source: "resume-import",
+          filePublicId,
+          kind: "publication",
+          index,
+          independentlyVerified: false,
+          doi: publication.doi,
+          url: publication.url,
+          attestationRequired: true,
+        },
+        sourceType: "publication-attestation",
+        claimText: title,
+        evidenceStatus: "attestation_pending",
+        candidateConfirmationStatus: "attested",
+      });
+    }
+
   }
 
   async confirmImport(ctx: AuthContext) {
@@ -616,7 +787,9 @@ export class ResumeImportService {
 
     const profile = await this.profiles.get(ctx);
 
-    const extraction = profile.resumeImportExtraction as ResumeExtractionSection | null;
+    const extraction = adaptResumeExtractionV1ToV2(
+      profile.resumeImportExtraction as ResumeExtractionSection | null,
+    );
 
     if (!extraction) {
 
@@ -666,6 +839,8 @@ export class ResumeImportService {
 
     if (contact.portfolio) patch.portfolio = contact.portfolio;
 
+    if (extraction.professionalSummary) patch.summary = extraction.professionalSummary;
+
     if (extraction.skills.length && !profile.headline && extraction.employment[0]?.title) {
 
       patch.headline = extraction.employment[0].title;
@@ -696,10 +871,14 @@ export class ResumeImportService {
       await this.repos.files.update(tenantId, filePublicId, { scanStatus: "infected" });
       const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
       if (profile?.userId) {
-        await this.repos.candidateProfiles.update(tenantId, profile.userId, {
-          resumeImportStatus: "failed",
-          resumeImportExtraction: { error: scan.detail ?? "Malware detected in uploaded file" },
-        });
+        await restoreConfirmedOrFail(
+          this.repos,
+          tenantId,
+          profile.userId,
+          profile.resumeImportExtraction as Record<string, unknown> | null,
+          "MALWARE_DETECTED",
+          scan.detail ?? "Malware detected in uploaded file",
+        );
       }
       return;
     }
@@ -780,13 +959,14 @@ export class ResumeImportService {
         err instanceof AppError
           ? err.message
           : "We couldn’t read that resume. Try a text-based PDF or DOCX, or enter details manually.";
-      await this.repos.candidateProfiles.update(tenantId, profile.userId, {
-        resumeImportStatus: "failed",
-        resumeImportExtraction: {
-          error: message,
-          errorCode: code,
-        },
-      });
+      await restoreConfirmedOrFail(
+        this.repos,
+        tenantId,
+        profile.userId,
+        profile.resumeImportExtraction as Record<string, unknown> | null,
+        code,
+        message,
+      );
       throw err;
     }
   }
@@ -796,13 +976,14 @@ export class ResumeImportService {
     const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
     if (!profile?.userId) return;
     if (profile.resumeImportStatus === "confirmed") return;
-    await this.repos.candidateProfiles.update(tenantId, profile.userId, {
-      resumeImportStatus: "failed",
-      resumeImportExtraction: {
-        error: message,
-        errorCode,
-      },
-    });
+    await restoreConfirmedOrFail(
+      this.repos,
+      tenantId,
+      profile.userId,
+      profile.resumeImportExtraction as Record<string, unknown> | null,
+      errorCode,
+      message,
+    );
   }
 }
 

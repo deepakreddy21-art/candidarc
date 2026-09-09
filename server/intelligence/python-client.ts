@@ -834,21 +834,40 @@ export class PythonIntelligenceClient {
     });
     return z
       .object({
+        schema_version: z.union([z.literal(1), z.literal(2)]).optional(),
         text: z.string(),
         page_count: z.number().nullable().optional(),
         warnings: z.array(z.string()).default([]),
         contact: z
           .object({
             full_name: z.string().nullable().optional(),
+            first_name: z.string().nullable().optional(),
+            middle_name: z.string().nullable().optional(),
+            last_name: z.string().nullable().optional(),
             email: z.string().nullable().optional(),
+            emails: z.array(z.string()).default([]),
             phone: z.string().nullable().optional(),
+            phones: z.array(z.string()).default([]),
             location: z.string().nullable().optional(),
             linkedin: z.string().nullable().optional(),
             github: z.string().nullable().optional(),
             portfolio: z.string().nullable().optional(),
+            other_urls: z.array(z.string()).default([]),
+            provenance: z
+              .object({
+                source_text: z.string().nullable().optional(),
+                page_number: z.number().nullable().optional(),
+                location_hint: z.string().nullable().optional(),
+                confidence: z.enum(["high", "medium", "low"]).optional(),
+                warnings: z.array(z.string()).default([]),
+                extracted_or_normalized: z.enum(["extracted", "normalized"]).optional(),
+              })
+              .nullable()
+              .optional(),
           })
           .nullable()
           .optional(),
+        professional_summary: z.string().nullable().optional(),
         employment: z
           .array(
             z.object({
@@ -857,7 +876,11 @@ export class PythonIntelligenceClient {
               location: z.string().nullable().optional(),
               start_date: z.string().nullable().optional(),
               end_date: z.string().nullable().optional(),
+              is_current: z.boolean().nullable().optional(),
               bullets: z.array(z.string()).default([]),
+              technologies: z.array(z.string()).default([]),
+              source_order: z.number().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
             }),
           )
           .default([]),
@@ -867,7 +890,12 @@ export class PythonIntelligenceClient {
               institution: z.string().nullable().optional(),
               degree: z.string().nullable().optional(),
               field: z.string().nullable().optional(),
+              location: z.string().nullable().optional(),
+              start_date: z.string().nullable().optional(),
               end_date: z.string().nullable().optional(),
+              gpa: z.string().nullable().optional(),
+              honors: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
             }),
           )
           .default([]),
@@ -875,13 +903,51 @@ export class PythonIntelligenceClient {
           .array(
             z.object({
               name: z.string().nullable().optional(),
+              role: z.string().nullable().optional(),
+              organization: z.string().nullable().optional(),
+              start_date: z.string().nullable().optional(),
+              end_date: z.string().nullable().optional(),
               description: z.string().nullable().optional(),
+              bullets: z.array(z.string()).default([]),
               technologies: z.array(z.string()).default([]),
+              url: z.string().nullable().optional(),
+              repo_url: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
             }),
           )
           .default([]),
         skills: z.array(z.string()).default([]),
+        skill_groups: z
+          .array(z.object({ category: z.string(), skills: z.array(z.string()).default([]) }))
+          .default([]),
         certifications: z.array(z.string()).default([]),
+        certification_entries: z
+          .array(
+            z.object({
+              name: z.string(),
+              issuer: z.string().nullable().optional(),
+              issue_date: z.string().nullable().optional(),
+              expiration_date: z.string().nullable().optional(),
+              credential_id: z.string().nullable().optional(),
+              credential_url: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
+            }),
+          )
+          .default([]),
+        publications: z
+          .array(
+            z.object({
+              title: z.string(),
+              authors: z.array(z.string()).default([]),
+              publisher: z.string().nullable().optional(),
+              publication_date: z.string().nullable().optional(),
+              doi: z.string().nullable().optional(),
+              url: z.string().nullable().optional(),
+              description: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
+            }),
+          )
+          .default([]),
         evidence: z
           .array(
             z.object({

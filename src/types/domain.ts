@@ -69,36 +69,76 @@ export interface CandidateProfile {
 }
 
 export type ResumeImportExtraction = {
+  schemaVersion?: 1 | 2;
   contact?: {
     fullName?: string;
+    firstName?: string;
+    middleName?: string;
+    lastName?: string;
     email?: string;
+    emails?: string[];
     phone?: string;
+    phones?: string[];
     location?: string;
     linkedIn?: string;
     github?: string;
     portfolio?: string;
+    otherUrls?: string[];
   };
+  professionalSummary?: string;
   employment: Array<{
     title?: string;
     company?: string;
     location?: string;
     startDate?: string;
     endDate?: string;
+    isCurrent?: boolean;
     bullets: string[];
+    technologies?: string[];
+    sourceOrder?: number;
   }>;
   education: Array<{
     institution?: string;
     degree?: string;
     field?: string;
+    location?: string;
+    startDate?: string;
     endDate?: string;
+    gpa?: string;
+    honors?: string;
   }>;
   projects: Array<{
     name?: string;
+    role?: string;
+    organization?: string;
+    startDate?: string;
+    endDate?: string;
     description?: string;
+    bullets?: string[];
     technologies: string[];
+    url?: string;
+    repoUrl?: string;
   }>;
   skills: string[];
+  skillGroups?: Array<{ category: string; skills: string[] }>;
   certifications: string[];
+  certificationEntries?: Array<{
+    name: string;
+    issuer?: string;
+    issueDate?: string;
+    expirationDate?: string;
+    credentialId?: string;
+    credentialUrl?: string;
+  }>;
+  publications?: Array<{
+    title: string;
+    authors?: string[];
+    publisher?: string;
+    publicationDate?: string;
+    doi?: string;
+    url?: string;
+    description?: string;
+  }>;
   evidence: Array<{
     title: string;
     summary: string;
