@@ -19,7 +19,6 @@ import {
   verifyPdfContainsCanonicalContent,
 } from "./resume-document";
 import { renderResumeDocumentHtml } from "./resume-html-renderer";
-import { createExtractableTextPdf } from "./extractable-pdf";
 import { AppError } from "../domain/types";
 
 type ResumeVersionLike = { publicId: string; sections: unknown[] };
