@@ -125,3 +125,33 @@ def test_document_too_large(client: TestClient, auth_headers: dict[str, str], ct
     )
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "DOCUMENT_TOO_LARGE"
+
+
+def test_encrypted_pdf(client: TestClient, auth_headers: dict[str, str], ctx: RequestContext):
+    from tests.fixtures.resume_samples import encrypted_pdf
+
+    response = _parse(client, auth_headers, ctx, "locked.pdf", "application/pdf", encrypted_pdf())
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "PDF_ENCRYPTED"
+
+
+def test_empty_pdf(client: TestClient, auth_headers: dict[str, str], ctx: RequestContext):
+    from tests.fixtures.resume_samples import empty_pdf
+
+    response = _parse(client, auth_headers, ctx, "empty.pdf", "application/pdf", empty_pdf())
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "IMAGE_ONLY_PDF_OCR_REQUIRED"
+
+
+def test_two_column_pdf_extracts_employment(
+    client: TestClient, auth_headers: dict[str, str], ctx: RequestContext
+):
+    from tests.fixtures.resume_samples import two_column_text_pdf
+
+    response = _parse(client, auth_headers, ctx, "two-col.pdf", "application/pdf", two_column_text_pdf())
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["usable"] is True
+    assert len(body["employment"]) >= 1
+    assert any("Harbor" in (row.get("employer") or "") for row in body["employment"])
+    assert body["skills"]

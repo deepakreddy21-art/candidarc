@@ -121,5 +121,52 @@ startxref
     return pdf.encode("latin-1")
 
 
+def empty_pdf() -> bytes:
+    """Valid PDF with a blank page and no extractable text."""
+    return image_only_pdf()
+
+
+def encrypted_pdf(password: str = "secret") -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt(password)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def two_column_text_pdf() -> bytes:
+    """Two-column resume represented in column-major extract order (left then right).
+
+    Many text-layer PDFs extract this way; content includes both employment and skills.
+    """
+    left_column = """Jordan Blake
+jordan.blake@example.com | Seattle, WA
+
+PROFESSIONAL EXPERIENCE
+
+Platform Engineer | Harbor Systems | Seattle, WA
+Jan 2021 - Present
+- Built Kubernetes-based deployment pipelines for 12 services
+- Reduced mean recovery time from 45 minutes to 8 minutes
+
+Software Engineer | Northwind Labs
+Jun 2018 - Dec 2020
+- Designed REST APIs in TypeScript and Node.js
+"""
+    right_column = """SKILLS
+TypeScript, Node.js, Kubernetes, PostgreSQL, AWS, React
+
+EDUCATION
+B.S. Computer Science | Cascadia University | 2018
+
+CERTIFICATIONS
+AWS Solutions Architect Associate
+"""
+    return text_to_simple_pdf(left_column + "\n" + right_column)
+
+
 def b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
