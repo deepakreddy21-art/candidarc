@@ -458,7 +458,7 @@ export const api = {
       file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
     }>("/profile/resume/import");
     if (res.ok) return res.data;
-    return { status: null, extraction: null, file: null };
+    throw new ApiError("Could not load résumé import status", res.status);
   },
   async confirmResumeImport(): Promise<{ profile: CandidateProfile; extraction: ResumeImportExtraction }> {
     const res = await apiFetch<{ profile: CandidateProfile; extraction: ResumeImportExtraction }>(

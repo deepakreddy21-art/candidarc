@@ -106,7 +106,12 @@ export type ResumeImportExtraction = {
   }>;
   rawText?: string;
   parseWarnings?: string[];
+  pageCount?: number;
+  extractionQuality?: "high" | "medium" | "low";
+  missingFields?: string[];
+  usable?: boolean;
   error?: string;
+  errorCode?: string;
 };
 
 export interface JobDescription {

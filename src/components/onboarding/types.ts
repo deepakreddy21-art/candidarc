@@ -209,13 +209,18 @@ export function validateStepClient(
     if (!form.workplaceModes.length) return "Select at least one workplace mode";
   }
   if (step === 2) {
-    if (importStatus === "confirmed") return null;
+    if (importStatus === "confirmed" || importStatus === "ready_for_review") return null;
+    if (["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "")) {
+      return "Wait for résumé import to finish, or choose Enter manually";
+    }
     if (!form.fullName.trim()) return "Add your name";
     const hasEmployment = form.employment.some((row) => row.title?.trim() || row.company?.trim());
     const hasSkills = normalizeList(form.skills).length > 0;
-    if (!hasEmployment && !hasSkills) {
-      return "Add at least one role or a few skills, or upload and confirm a resume";
-    }
+    const hasEducation = form.education.some((row) => row.school?.trim() || row.degree?.trim());
+    const hasCerts = form.certifications.some((row) => row.name?.trim());
+    const hasNotes = Boolean(form.evidenceNotes.trim());
+    if (hasEmployment || hasSkills || hasEducation || hasCerts || hasNotes) return null;
+    return "Add employment, education, skills, or upload a resume";
   }
   return null;
 }
