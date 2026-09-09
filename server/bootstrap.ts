@@ -155,7 +155,7 @@ export function mapApplicationToUi(app: ApplicationRecord): Application {
     researchConfidence: app.researchConfidence,
     ownerProfileId: "cand-deepak",
     jobDescriptionId: app.jobDescriptionPublicId ?? "jd-cisco",
-    resumeId: app.resumePublicId ?? "resume-cisco",
+    resumeId: app.resumePublicId ?? "",
     nextAction: app.nextAction,
     archived: app.archived,
     roleFamily: app.roleFamily,

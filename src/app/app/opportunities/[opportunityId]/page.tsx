@@ -84,13 +84,15 @@ export default function OpportunityOverviewPage() {
       </dl>
 
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          className={buttonVariants()}
-          onClick={() => router.push(`/app/resumes/${app.id}`)}
-        >
-          View resume
-        </button>
+        {app.workflowId || app.resumeId ? (
+          <button
+            type="button"
+            className={buttonVariants()}
+            onClick={() => router.push(`/app/resumes/${app.workflowId ?? app.resumeId}`)}
+          >
+            View resume
+          </button>
+        ) : null}
         <Link href="/app/radar" className={buttonVariants({ variant: "secondary" })}>
           Browse jobs
         </Link>

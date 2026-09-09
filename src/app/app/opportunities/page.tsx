@@ -304,7 +304,7 @@ export default function OpportunitiesPage() {
                   </select>
                   <div className={cn("flex flex-wrap gap-3 text-sm")}>
                     <span className="text-foreground-secondary">{next}</span>
-                    {app.resumeId ? (
+                    {app.workflowId || app.resumeId ? (
                       <Link href={`/app/resumes/${app.workflowId ?? app.resumeId}`} className="text-accent">
                         View resume
                       </Link>
