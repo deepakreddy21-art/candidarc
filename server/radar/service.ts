@@ -19,7 +19,9 @@ import type {
   JobSearchQuery,
   SavedSearch,
 } from "./types";
-import type { RadarStore } from "./persistence/types";
+import type { PersistedOpportunityBrief, RadarStore } from "./persistence/types";
+import type { JobSourceListing } from "./providers/types";
+import { createHash, randomUUID } from "crypto";
 
 /** Interaction types for job interactions tracking */
 export type JobInteractionType =
@@ -45,6 +47,74 @@ export interface OpportunityBrief {
   researchUrls?: string[];
   generatedAt: string;
   cached: boolean;
+}
+
+const BRIEF_ALGO_VERSION = "opportunity-brief-v2";
+const BRIEF_TTL_MS = 24 * 60 * 60 * 1000;
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+/** Deterministic UUID for provider source ids that are not already UUIDs. */
+function stableSourceUuid(sourceKey: string): string {
+  const hash = createHash("sha256").update(`candidarc.radar.source:${sourceKey}`).digest();
+  const bytes = Buffer.from(hash.subarray(0, 16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function profileRevisionOf(profile: CandidateProfileForMatch): string {
+  return [
+    profile.skills.slice().sort().join(","),
+    (profile.careerGoals ?? []).slice().sort().join(","),
+    (profile.preferredLocations ?? []).slice().sort().join(","),
+    profile.seniority ?? "",
+    String(profile.yearsExperience ?? ""),
+    String(profile.targetCompensationMin ?? ""),
+    String(profile.remoteOk ?? ""),
+  ].join("|");
+}
+
+function briefCacheKey(
+  tenantId: string,
+  userId: string,
+  jobId: string,
+  jobUpdatedAt: string,
+  profileRevision: string,
+): string {
+  return `${tenantId}:${userId}:${jobId}:${jobUpdatedAt}:${profileRevision}:${BRIEF_ALGO_VERSION}`;
+}
+
+function persistedBriefMatches(
+  persisted: PersistedOpportunityBrief,
+  profileRevision: string,
+  jobUpdatedAt: string,
+): boolean {
+  return (
+    persisted.profileRevision === profileRevision &&
+    persisted.algoVersion === BRIEF_ALGO_VERSION &&
+    persisted.jobUpdatedAt === jobUpdatedAt &&
+    new Date(persisted.expiresAt) >= new Date()
+  );
+}
+
+function toOpportunityBrief(
+  persisted: PersistedOpportunityBrief,
+  jobPublicId: string,
+  cached: boolean,
+): OpportunityBrief {
+  return {
+    jobId: jobPublicId,
+    ...persisted.brief,
+    generatedAt: persisted.generatedAt,
+    cached,
+  };
 }
 
 /**
@@ -93,6 +163,22 @@ export class RadarService {
     }
     requireTenantMembership(ctx, ctx.activeTenantId);
     return { tenantId: ctx.activeTenantId, userId: user.id, user };
+  }
+
+  private async persistOrThrow<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    if (!this.store) {
+      throw new AppError("RADAR_STORE_UNAVAILABLE", "Radar persistence is not configured", 503);
+    }
+    try {
+      return await fn();
+    } catch (err) {
+      throw new AppError(
+        "RADAR_STORE_ERROR",
+        `Failed to persist radar ${operation}`,
+        503,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   /**
@@ -155,7 +241,7 @@ export class RadarService {
     const { tenantId, userId } = this.tenantAndUser(ctx);
     const saved = this.catalog.saveJob(tenantId, userId, jobId);
     if (this.store) {
-      await this.store.saveJob(saved);
+      await this.persistOrThrow("saved job", () => this.store!.saveJob(saved));
     }
     return saved;
   }
@@ -165,19 +251,31 @@ export class RadarService {
     this.catalog.unsaveJob(tenantId, userId, jobId);
     if (this.store) {
       const job = this.catalog.getJob(jobId);
-      if (job) await this.store.unsaveJob(tenantId, userId, job.id);
+      if (job) {
+        await this.persistOrThrow("unsaved job", () => this.store!.unsaveJob(tenantId, userId, job.id));
+      }
     }
     return { ok: true };
   }
 
-  hide(ctx: AuthContext, jobId: string) {
+  async hide(ctx: AuthContext, jobId: string) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
-    return this.catalog.hideJob(tenantId, userId, jobId);
+    const hidden = this.catalog.hideJob(tenantId, userId, jobId);
+    if (this.store) {
+      await this.persistOrThrow("hidden job", () => this.store!.hideJob(hidden));
+    }
+    return hidden;
   }
 
-  unhide(ctx: AuthContext, jobId: string) {
+  async unhide(ctx: AuthContext, jobId: string) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
     this.catalog.unhideJob(tenantId, userId, jobId);
+    if (this.store) {
+      const job = this.catalog.getJob(jobId);
+      if (job) {
+        await this.persistOrThrow("unhidden job", () => this.store!.unhideJob(tenantId, userId, job.id));
+      }
+    }
     return { ok: true };
   }
 
@@ -213,26 +311,44 @@ export class RadarService {
     return this.catalog.listSavedSearches(tenantId, userId);
   }
 
-  createSavedSearch(
+  async createSavedSearch(
     ctx: AuthContext,
     input: { name: string; query: JobSearchQuery; alertEnabled?: boolean },
   ) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
-    return this.catalog.createSavedSearch(tenantId, userId, input);
+    const saved = this.catalog.createSavedSearch(tenantId, userId, input);
+    if (this.store) {
+      await this.persistOrThrow("saved search", () => this.store!.createSavedSearch(saved));
+    }
+    return saved;
   }
 
-  updateSavedSearch(
+  async updateSavedSearch(
     ctx: AuthContext,
     id: string,
     patch: Partial<Pick<SavedSearch, "name" | "query" | "alertEnabled">>,
   ) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
-    return this.catalog.updateSavedSearch(tenantId, userId, id, patch);
+    const updated = this.catalog.updateSavedSearch(tenantId, userId, id, patch);
+    if (this.store) {
+      await this.persistOrThrow("saved search update", () =>
+        this.store!.updateSavedSearch(tenantId, updated.id, patch),
+      );
+    }
+    return updated;
   }
 
-  deleteSavedSearch(ctx: AuthContext, id: string) {
+  async deleteSavedSearch(ctx: AuthContext, id: string) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
+    const existing = this.catalog.listSavedSearches(tenantId, userId).find(
+      (s) => s.id === id || s.publicId === id,
+    );
     this.catalog.deleteSavedSearch(tenantId, userId, id);
+    if (this.store && existing) {
+      await this.persistOrThrow("saved search delete", () =>
+        this.store!.deleteSavedSearch(tenantId, existing.id),
+      );
+    }
     return { ok: true };
   }
 
@@ -241,7 +357,7 @@ export class RadarService {
     return this.catalog.listAlerts(tenantId, userId);
   }
 
-  createAlert(
+  async createAlert(
     ctx: AuthContext,
     input: {
       name: string;
@@ -253,10 +369,14 @@ export class RadarService {
     },
   ) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
-    return this.catalog.createAlert(tenantId, userId, input);
+    const alert = this.catalog.createAlert(tenantId, userId, input);
+    if (this.store) {
+      await this.persistOrThrow("job alert", () => this.store!.createAlert(alert));
+    }
+    return alert;
   }
 
-  updateAlert(
+  async updateAlert(
     ctx: AuthContext,
     id: string,
     patch: Partial<
@@ -267,12 +387,22 @@ export class RadarService {
     >,
   ) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
-    return this.catalog.updateAlert(tenantId, userId, id, patch);
+    const updated = this.catalog.updateAlert(tenantId, userId, id, patch);
+    if (this.store) {
+      await this.persistOrThrow("job alert update", () => this.store!.updateAlert(tenantId, updated.id, patch));
+    }
+    return updated;
   }
 
-  deleteAlert(ctx: AuthContext, id: string) {
+  async deleteAlert(ctx: AuthContext, id: string) {
     const { tenantId, userId } = this.tenantAndUser(ctx);
+    const existing = this.catalog.listAlerts(tenantId, userId).find(
+      (a) => a.id === id || a.publicId === id,
+    );
     this.catalog.deleteAlert(tenantId, userId, id);
+    if (this.store && existing) {
+      await this.persistOrThrow("job alert delete", () => this.store!.deleteAlert(tenantId, existing.id));
+    }
     return { ok: true };
   }
 
@@ -283,7 +413,7 @@ export class RadarService {
 
   /**
    * Record a user interaction with a job.
-   * Used for analytics and personalization.
+   * Store is authoritative when present — failures propagate.
    */
   async recordInteraction(
     ctx: AuthContext,
@@ -295,9 +425,8 @@ export class RadarService {
     const job = this.catalog.getJob(jobId);
     if (!job) throw new AppError("JOB_NOT_FOUND", "Job not found", 404);
 
-    // Store interaction in memory catalog (would persist to DB in postgres mode)
-    // For now, log the interaction
     const interaction = {
+      id: randomUUID(),
       tenantId,
       userId,
       canonicalJobId: job.id,
@@ -306,10 +435,60 @@ export class RadarService {
       createdAt: new Date().toISOString(),
     };
 
-    // TODO: Persist to postgres when CANDIDARC_DATA_MODE=postgres
-    void interaction;
+    if (this.store) {
+      await this.persistOrThrow("job interaction", () => this.store!.createInteraction(interaction));
+    }
 
     return { recorded: true };
+  }
+
+  /**
+   * Ingest a listing and write-through job/sighting when a store is present.
+   * Store failures propagate — no silent memory-only success.
+   */
+  async ingestListing(listing: JobSourceListing, sourceId: string) {
+    const result = this.catalog.ingestListing(listing, sourceId);
+    if (this.store) {
+      await this.persistIngestWriteThrough(result);
+    }
+    this.index.reindexAll();
+    return result;
+  }
+
+  private async persistIngestWriteThrough(result: {
+    job: import("./types").CanonicalJob;
+    sighting: import("./types").JobSighting;
+    created: boolean;
+  }): Promise<void> {
+    if (!this.store) return;
+
+    const company = this.catalog.companies.get(result.job.companyId);
+    if (company) {
+      await this.store.upsertCompany(company);
+    }
+
+    const catalogSource = this.catalog.sources.get(result.sighting.sourceId);
+    let persistedSourceId = result.sighting.sourceId;
+    if (catalogSource) {
+      persistedSourceId = isUuid(catalogSource.id)
+        ? catalogSource.id
+        : stableSourceUuid(catalogSource.id);
+      await this.store.upsertSource({
+        ...catalogSource,
+        id: persistedSourceId,
+      });
+    }
+
+    await this.store.upsertJob({
+      ...result.job,
+      primarySourceId: isUuid(result.job.primarySourceId)
+        ? result.job.primarySourceId
+        : persistedSourceId,
+    });
+    await this.store.upsertSighting({
+      ...result.sighting,
+      sourceId: persistedSourceId,
+    });
   }
 
   /**
@@ -423,7 +602,7 @@ export class RadarService {
 
   /**
    * Get or generate an opportunity brief for a job.
-   * Lazy generates and caches the brief.
+   * Postgres mode: store is authoritative; profile/algo/job revision must match.
    */
   async getOpportunityBrief(ctx: AuthContext, jobId: string): Promise<OpportunityBrief> {
     const { tenantId, userId } = this.tenantAndUser(ctx);
@@ -431,37 +610,69 @@ export class RadarService {
     const job = this.catalog.getJob(jobId);
     if (!job) throw new AppError("JOB_NOT_FOUND", "Job not found", 404);
 
-    // Load profile for personalization — MUST participate in cache identity.
     const profile = await this.getProfileForMatch(ctx);
-    const BRIEF_ALGO_VERSION = "opportunity-brief-v2";
-    const profileRevision = [
-      profile.skills.slice().sort().join(","),
-      (profile.careerGoals ?? []).slice().sort().join(","),
-      (profile.preferredLocations ?? []).slice().sort().join(","),
-      profile.seniority ?? "",
-      String(profile.yearsExperience ?? ""),
-      String(profile.targetCompensationMin ?? ""),
-      String(profile.remoteOk ?? ""),
-    ].join("|");
+    const profileRevision = profileRevisionOf(profile);
+    const cacheKey = briefCacheKey(tenantId, userId, job.id, job.updatedAt, profileRevision);
 
-    // Candidate-specific briefs must never be shared across tenants/users/profiles.
-    const cacheKey = `${tenantId}:${userId}:${jobId}:${job.updatedAt}:${profileRevision}:${BRIEF_ALGO_VERSION}`;
-    const cached = this.cachedBriefs.get(cacheKey);
-    if (cached) {
-      return { ...cached, cached: true };
+    if (this.store) {
+      let persisted: PersistedOpportunityBrief | null;
+      try {
+        persisted = await this.store.getBrief(tenantId, userId, job.id);
+      } catch (err) {
+        throw new AppError(
+          "RADAR_STORE_ERROR",
+          "Failed to load opportunity brief",
+          503,
+          err instanceof Error ? err.message : err,
+        );
+      }
+
+      if (persisted && persistedBriefMatches(persisted, profileRevision, job.updatedAt)) {
+        const cachedBrief = toOpportunityBrief(persisted, job.publicId, true);
+        this.cachedBriefs.set(cacheKey, cachedBrief);
+        return cachedBrief;
+      }
+    } else {
+      const cached = this.cachedBriefs.get(cacheKey);
+      if (cached) {
+        return { ...cached, cached: true };
+      }
     }
 
     const { generateOpportunityBrief } = await import("./opportunity-brief");
+    const generated = await generateOpportunityBrief(job, profile, this.catalog);
+    const generatedAt = generated.generatedAt || new Date().toISOString();
 
-    const brief = await generateOpportunityBrief(job, profile, this.catalog);
-
-    this.cachedBriefs.set(cacheKey, brief);
-
-    if (this.cachedBriefs.size > 100) {
-      const oldest = this.cachedBriefs.keys().next().value;
-      if (oldest) this.cachedBriefs.delete(oldest);
+    if (this.store) {
+      const persisted: PersistedOpportunityBrief = {
+        id: randomUUID(),
+        tenantId,
+        userId,
+        canonicalJobId: job.id,
+        brief: {
+          summary: generated.summary,
+          companyOverview: generated.companyOverview,
+          roleHighlights: generated.roleHighlights,
+          skillsAlignment: generated.skillsAlignment,
+          concerns: generated.concerns,
+          resumeReadinessLabel: generated.resumeReadinessLabel,
+          researchUrls: generated.researchUrls,
+        },
+        profileRevision,
+        algoVersion: BRIEF_ALGO_VERSION,
+        jobUpdatedAt: job.updatedAt,
+        generatedAt,
+        expiresAt: new Date(Date.now() + BRIEF_TTL_MS).toISOString(),
+      };
+      await this.persistOrThrow("opportunity brief", () => this.store!.upsertBrief(persisted));
+    } else {
+      this.cachedBriefs.set(cacheKey, generated);
+      if (this.cachedBriefs.size > 100) {
+        const oldest = this.cachedBriefs.keys().next().value;
+        if (oldest) this.cachedBriefs.delete(oldest);
+      }
     }
 
-    return brief;
+    return { ...generated, cached: false };
   }
 }

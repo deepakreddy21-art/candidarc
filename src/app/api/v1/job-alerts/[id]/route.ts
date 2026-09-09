@@ -20,7 +20,7 @@ export async function PATCH(request: Request, { params }: Params) {
     const body = await parseJsonBody(request, jobAlertPatchSchema);
     const runtime = await getRuntime();
     const alert = toAlertView(
-      getRadarService(runtime.services.radar).updateAlert(ctx, id, {
+      await getRadarService(runtime.services.radar).updateAlert(ctx, id, {
         name: body.name,
         query: body.query,
         cadence: body.cadence,
@@ -44,7 +44,7 @@ export async function DELETE(request: Request, { params }: Params) {
     requestId = ctx.requestId;
     requireUser(ctx);
     const runtime = await getRuntime();
-    const result = getRadarService(runtime.services.radar).deleteAlert(ctx, id);
+    const result = await getRadarService(runtime.services.radar).deleteAlert(ctx, id);
     return jsonOk(result);
   } catch (err) {
     return jsonError(err, requestId || undefined);

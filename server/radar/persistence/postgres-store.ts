@@ -34,6 +34,13 @@ import * as schema from "../../database/schema";
 // Type alias for the database client
 type Db = PostgresJsDatabase<typeof schema>;
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
 /**
  * PostgreSQL-based RadarStore implementation.
  */
@@ -986,7 +993,7 @@ export class PostgresRadarStore implements RadarStore {
   }
 
   async createInteraction(interaction: JobInteraction): Promise<JobInteraction> {
-    const id = interaction.id || `int_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const id = interaction.id && isUuid(interaction.id) ? interaction.id : randomUUID();
     const [row] = await this.db
       .insert(schema.radarJobInteractions)
       .values({
@@ -1027,6 +1034,12 @@ export class PostgresRadarStore implements RadarStore {
   }
 
   async upsertBrief(brief: PersistedOpportunityBrief): Promise<PersistedOpportunityBrief> {
+    const briefPayload = {
+      ...brief.brief,
+      profileRevision: brief.profileRevision,
+      algoVersion: brief.algoVersion,
+      jobUpdatedAt: brief.jobUpdatedAt,
+    };
     const [row] = await this.db
       .insert(schema.radarOpportunityBriefs)
       .values({
@@ -1034,7 +1047,7 @@ export class PostgresRadarStore implements RadarStore {
         tenantId: brief.tenantId,
         userId: brief.userId,
         canonicalJobId: brief.canonicalJobId,
-        brief: brief.brief,
+        brief: briefPayload,
         generatedAt: new Date(brief.generatedAt),
         expiresAt: new Date(brief.expiresAt),
         createdAt: new Date(brief.generatedAt),
@@ -1046,7 +1059,7 @@ export class PostgresRadarStore implements RadarStore {
           schema.radarOpportunityBriefs.canonicalJobId,
         ],
         set: {
-          brief: brief.brief,
+          brief: briefPayload,
           generatedAt: new Date(brief.generatedAt),
           expiresAt: new Date(brief.expiresAt),
         },
@@ -1148,12 +1161,21 @@ export class PostgresRadarStore implements RadarStore {
   }
 
   private mapBrief(row: typeof schema.radarOpportunityBriefs.$inferSelect): PersistedOpportunityBrief {
+    const raw = (row.brief ?? {}) as PersistedOpportunityBrief["brief"] & {
+      profileRevision?: string;
+      algoVersion?: string;
+      jobUpdatedAt?: string;
+    };
+    const { profileRevision, algoVersion, jobUpdatedAt, ...briefBody } = raw;
     return {
       id: row.id,
       tenantId: row.tenantId,
       userId: row.userId,
       canonicalJobId: row.canonicalJobId,
-      brief: row.brief as PersistedOpportunityBrief["brief"],
+      brief: briefBody as PersistedOpportunityBrief["brief"],
+      profileRevision: profileRevision ?? "",
+      algoVersion: algoVersion ?? "",
+      jobUpdatedAt: jobUpdatedAt ?? "",
       generatedAt: row.generatedAt.toISOString(),
       expiresAt: row.expiresAt.toISOString(),
     };
@@ -1166,14 +1188,21 @@ export class PostgresRadarStore implements RadarStore {
     jobs: CanonicalJob[];
     sightings: JobSighting[];
     savedJobs: SavedJob[];
+    hiddenJobs: HiddenJob[];
+    savedSearches: SavedSearch[];
+    alerts: JobAlert[];
   }> {
-    const [companies, sources, jobs, sightings, savedJobs] = await Promise.all([
-      this.db.select().from(schema.radarCompanies),
-      this.db.select().from(schema.radarJobSources),
-      this.db.select().from(schema.radarCanonicalJobs),
-      this.db.select().from(schema.radarJobSightings),
-      this.db.select().from(schema.radarSavedJobs),
-    ]);
+    const [companies, sources, jobs, sightings, savedJobs, hiddenJobs, savedSearches, alerts] =
+      await Promise.all([
+        this.db.select().from(schema.radarCompanies),
+        this.db.select().from(schema.radarJobSources),
+        this.db.select().from(schema.radarCanonicalJobs),
+        this.db.select().from(schema.radarJobSightings),
+        this.db.select().from(schema.radarSavedJobs),
+        this.db.select().from(schema.radarHiddenJobs),
+        this.db.select().from(schema.radarSavedSearches),
+        this.db.select().from(schema.radarJobAlerts),
+      ]);
 
     return {
       companies: companies.map((c) => this.mapCompany(c)),
@@ -1181,6 +1210,9 @@ export class PostgresRadarStore implements RadarStore {
       jobs: jobs.map((j) => this.mapJob(j)),
       sightings: sightings.map((s) => this.mapSighting(s)),
       savedJobs: savedJobs.map((s) => this.mapSavedJob(s)),
+      hiddenJobs: hiddenJobs.map((h) => this.mapHiddenJob(h)),
+      savedSearches: savedSearches.map((s) => this.mapSavedSearch(s)),
+      alerts: alerts.map((a) => this.mapAlert(a)),
     };
   }
 

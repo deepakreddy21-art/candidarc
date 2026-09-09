@@ -32,7 +32,7 @@ export async function POST(request: Request) {
     const body = await parseJsonBody(request, savedSearchBodySchema);
     const runtime = await getRuntime();
     const radar = getRadarService(runtime.services.radar);
-    const savedSearch = toSavedSearchView(radar.createSavedSearch(ctx, body));
+    const savedSearch = toSavedSearchView(await radar.createSavedSearch(ctx, body));
     return jsonOk({ savedSearch }, { status: 201 });
   } catch (err) {
     return jsonError(err, requestId || undefined);

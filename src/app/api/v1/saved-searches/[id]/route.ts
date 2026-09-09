@@ -20,7 +20,7 @@ export async function PATCH(request: Request, { params }: Params) {
     const body = await parseJsonBody(request, savedSearchPatchSchema);
     const runtime = await getRuntime();
     const radar = getRadarService(runtime.services.radar);
-    const savedSearch = toSavedSearchView(radar.updateSavedSearch(ctx, id, body));
+    const savedSearch = toSavedSearchView(await radar.updateSavedSearch(ctx, id, body));
     return jsonOk({ savedSearch });
   } catch (err) {
     return jsonError(err, requestId || undefined);
@@ -37,7 +37,7 @@ export async function DELETE(request: Request, { params }: Params) {
     requireUser(ctx);
     const runtime = await getRuntime();
     const radar = getRadarService(runtime.services.radar);
-    const result = radar.deleteSavedSearch(ctx, id);
+    const result = await radar.deleteSavedSearch(ctx, id);
     return jsonOk(result);
   } catch (err) {
     return jsonError(err, requestId || undefined);

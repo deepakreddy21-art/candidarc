@@ -40,6 +40,11 @@ import type {
   SourceCoverage,
 } from "./types";
 
+/** Primary keys must be UUIDs for PostgresRadarStore. */
+function newEntityId(): string {
+  return randomUUID();
+}
+
 function newPublicId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
@@ -122,7 +127,7 @@ export class CanonicalJobCatalog {
       }
     }
     const company: Company = {
-      id: newPublicId("co"),
+      id: newEntityId(),
       publicId: newPublicId("company"),
       name,
       normalizedName,
@@ -289,7 +294,7 @@ export class CanonicalJobCatalog {
           : listing.postedAt;
 
       job = {
-        id: newPublicId("cjob"),
+        id: newEntityId(),
         publicId: newPublicId("job"),
         companyId: company.id,
         companyName: company.name,
@@ -329,7 +334,7 @@ export class CanonicalJobCatalog {
     }
 
     const sighting: JobSighting = {
-      id: newPublicId("sight"),
+      id: newEntityId(),
       publicId: newPublicId("js"),
       canonicalJobId: job.id,
       sourceId,
@@ -384,7 +389,7 @@ export class CanonicalJobCatalog {
 
   private addSnapshot(sighting: JobSighting, listing: JobSourceListing) {
     const snap: JobSnapshot = {
-      id: newPublicId("snap"),
+      id: newEntityId(),
       sightingId: sighting.id,
       retrievedAt: nowIso(),
       contentHash: sighting.contentHash,
@@ -408,7 +413,7 @@ export class CanonicalJobCatalog {
     metadata?: Record<string, unknown>,
   ) {
     this.historyEvents.push({
-      id: newPublicId("hist"),
+      id: newEntityId(),
       canonicalJobId,
       sightingId,
       type,
@@ -1100,12 +1105,16 @@ export class CanonicalJobCatalog {
     jobs?: CanonicalJob[];
     sightings?: JobSighting[];
     savedJobs?: SavedJob[];
+    hiddenJobs?: HiddenJob[];
+    savedSearches?: SavedSearch[];
+    alerts?: JobAlert[];
   }): void {
     for (const company of input.companies ?? []) {
       this.companies.set(company.id, company);
     }
     for (const source of input.sources ?? []) {
       this.sources.set(source.id, source);
+      if (source.policy) this.policies.set(source.id, source.policy);
     }
     for (const job of input.jobs ?? []) {
       this.canonicalJobs.set(job.id, job);
@@ -1120,6 +1129,16 @@ export class CanonicalJobCatalog {
       const key = this.tenantKey(saved.tenantId, saved.userId, saved.canonicalJobId);
       this.savedJobs.set(key, saved);
     }
+    for (const hidden of input.hiddenJobs ?? []) {
+      const key = this.tenantKey(hidden.tenantId, hidden.userId, hidden.canonicalJobId);
+      this.hiddenJobs.set(key, hidden);
+    }
+    for (const search of input.savedSearches ?? []) {
+      this.savedSearches.set(search.id, search);
+    }
+    for (const alert of input.alerts ?? []) {
+      this.alerts.set(alert.id, alert);
+    }
     this.indexedAt = nowIso();
   }
 
@@ -1130,7 +1149,7 @@ export class CanonicalJobCatalog {
     const existing = this.savedJobs.get(key);
     if (existing) return existing;
     const row: SavedJob = {
-      id: newPublicId("saved"),
+      id: newEntityId(),
       tenantId,
       userId,
       canonicalJobId: job.id,
@@ -1153,7 +1172,7 @@ export class CanonicalJobCatalog {
     const existing = this.hiddenJobs.get(key);
     if (existing) return existing;
     const row: HiddenJob = {
-      id: newPublicId("hidden"),
+      id: newEntityId(),
       tenantId,
       userId,
       canonicalJobId: job.id,
@@ -1181,7 +1200,7 @@ export class CanonicalJobCatalog {
     input: { name: string; query: JobSearchQuery; alertEnabled?: boolean },
   ): SavedSearch {
     const row: SavedSearch = {
-      id: newPublicId("ss"),
+      id: newEntityId(),
       publicId: newPublicId("savedsearch"),
       tenantId,
       userId,
@@ -1242,7 +1261,7 @@ export class CanonicalJobCatalog {
     },
   ): JobAlert {
     const row: JobAlert = {
-      id: newPublicId("alert"),
+      id: newEntityId(),
       publicId: newPublicId("jobalert"),
       tenantId,
       userId,
@@ -1339,7 +1358,7 @@ export class CanonicalJobCatalog {
       }
 
       const delivery: JobAlertDelivery = {
-        id: newPublicId("delivery"),
+        id: newEntityId(),
         alertId: alert.id,
         tenantId: alert.tenantId,
         userId: alert.userId,
