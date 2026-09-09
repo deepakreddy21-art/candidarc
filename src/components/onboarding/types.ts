@@ -87,7 +87,32 @@ export type EmploymentDraft = {
   location?: string;
   startDate?: string;
   endDate?: string;
+  isCurrent?: boolean;
   bullets?: string[];
+  technologies?: string[];
+};
+
+export type ProjectDraft = {
+  name?: string;
+  role?: string;
+  organization?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+  bullets?: string[];
+  technologies?: string[];
+  url?: string;
+  repoUrl?: string;
+};
+
+export type PublicationDraft = {
+  title?: string;
+  authors?: string[];
+  publisher?: string;
+  publicationDate?: string;
+  doi?: string;
+  url?: string;
+  description?: string;
 };
 
 export type OnboardingFormState = {
@@ -113,8 +138,27 @@ export type OnboardingFormState = {
   summary: string;
   skills: string[];
   employment: EmploymentDraft[];
-  education: Array<{ school?: string; degree?: string; field?: string; endDate?: string }>;
-  certifications: Array<{ name: string; issuer?: string; date?: string }>;
+  projects: ProjectDraft[];
+  education: Array<{
+    school?: string;
+    degree?: string;
+    field?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    gpa?: string;
+    honors?: string;
+  }>;
+  certifications: Array<{
+    name: string;
+    issuer?: string;
+    date?: string;
+    expirationDate?: string;
+    credentialId?: string;
+    credentialUrl?: string;
+  }>;
+  publications: PublicationDraft[];
+  lowConfidenceCount: number;
   careerProfileMode: "upload" | "manual" | "";
   evidenceNotes: string;
 };
@@ -143,8 +187,11 @@ export function emptyOnboardingForm(): OnboardingFormState {
     summary: "",
     skills: [],
     employment: [],
+    projects: [],
     education: [],
     certifications: [],
+    publications: [],
+    lowConfidenceCount: 0,
     careerProfileMode: "",
     evidenceNotes: "",
   };
@@ -188,8 +235,10 @@ export function formToPayload(form: OnboardingFormState): Record<string, unknown
     summary: form.summary.trim() || null,
     skills: normalizeList(form.skills),
     employment: form.employment,
+    projects: form.projects,
     education: form.education,
     certifications: form.certifications,
+    publications: form.publications,
     careerProfileMode: form.careerProfileMode || undefined,
     evidenceNotes: form.evidenceNotes.trim() || undefined,
   };
@@ -218,9 +267,7 @@ export function validateStepClient(
     const hasSkills = normalizeList(form.skills).length > 0;
     const hasEducation = form.education.some((row) => row.school?.trim() || row.degree?.trim());
     const hasCerts = form.certifications.some((row) => row.name?.trim());
-    const hasProjects = Boolean(
-      (form as { projects?: Array<{ name?: string }> }).projects?.some((row) => row.name?.trim()),
-    );
+    const hasProjects = form.projects.some((row) => row.name?.trim());
     const hasNotes = Boolean(form.evidenceNotes.trim());
     if (hasEmployment || hasSkills || hasEducation || hasCerts || hasProjects || hasNotes) return null;
     return "Add employment, projects, education, skills, or upload a resume";

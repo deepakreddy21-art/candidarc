@@ -1,12 +1,36 @@
 import { emptyOnboardingForm, type OnboardingFormState } from "@/components/onboarding/types";
 import type { CandidateProfile, ResumeImportExtraction } from "@/types/domain";
 
+function lowConfidenceCount(extraction: ResumeImportExtraction | null): number {
+  if (!extraction) return 0;
+  let count = 0;
+  const missing = extraction.missingFields ?? [];
+  count += missing.length;
+  for (const job of extraction.employment ?? []) {
+    if (!job.title || !job.company) count += 1;
+  }
+  if (extraction.extractionQuality === "low") count += 1;
+  return count;
+}
+
 export function profileToForm(
   profile: CandidateProfile,
   extraction: ResumeImportExtraction | null,
 ): OnboardingFormState {
   const base = emptyOnboardingForm();
   const contact = extraction?.contact ?? {};
+  const certEntries: Array<{
+    name: string;
+    issuer?: string;
+    issueDate?: string;
+    expirationDate?: string;
+    credentialId?: string;
+    credentialUrl?: string;
+  }> =
+    extraction?.certificationEntries?.length
+      ? extraction.certificationEntries
+      : (extraction?.certifications ?? []).map((name) => ({ name: typeof name === "string" ? name : "" }));
+
   return {
     ...base,
     targetRoles: profile.targetRoleFamilies ?? [],
@@ -28,7 +52,7 @@ export function profileToForm(
     github: profile.github || contact.github || "",
     portfolio: profile.portfolio || contact.portfolio || "",
     headline: profile.headline || "",
-    summary: profile.summary || "",
+    summary: profile.summary || extraction?.professionalSummary || "",
     skills: Array.isArray(extraction?.skills) ? extraction!.skills.filter(Boolean) : [],
     employment: (extraction?.employment ?? []).map((row) => ({
       title: row.title,
@@ -36,17 +60,52 @@ export function profileToForm(
       location: row.location,
       startDate: row.startDate,
       endDate: row.endDate,
+      isCurrent: row.isCurrent,
       bullets: row.bullets ?? [],
+      technologies: row.technologies ?? [],
+    })),
+    projects: (extraction?.projects ?? []).map((row) => ({
+      name: row.name,
+      role: row.role,
+      organization: row.organization,
+      startDate: row.startDate,
+      endDate: row.endDate,
+      description: row.description,
+      bullets: row.bullets ?? (row.description ? [row.description] : []),
+      technologies: row.technologies ?? [],
+      url: row.url,
+      repoUrl: row.repoUrl,
     })),
     education: (extraction?.education ?? []).map((row) => ({
       school: row.institution,
       degree: row.degree,
       field: row.field,
+      location: row.location,
+      startDate: row.startDate,
       endDate: row.endDate,
+      gpa: row.gpa,
+      honors: row.honors,
     })),
-    certifications: (extraction?.certifications ?? []).map((name) =>
-      typeof name === "string" ? { name } : { name: "" },
-    ),
+    certifications: certEntries
+      .filter((row) => row.name?.trim())
+      .map((row) => ({
+        name: row.name,
+        issuer: row.issuer,
+        date: row.issueDate,
+        expirationDate: row.expirationDate,
+        credentialId: row.credentialId,
+        credentialUrl: row.credentialUrl,
+      })),
+    publications: (extraction?.publications ?? []).map((row) => ({
+      title: row.title,
+      authors: row.authors ?? [],
+      publisher: row.publisher,
+      publicationDate: row.publicationDate,
+      doi: row.doi,
+      url: row.url,
+      description: row.description,
+    })),
+    lowConfidenceCount: lowConfidenceCount(extraction),
     careerProfileMode:
       ((extraction as { careerProfileMode?: "upload" | "manual" } | null)?.careerProfileMode as
         | "upload"

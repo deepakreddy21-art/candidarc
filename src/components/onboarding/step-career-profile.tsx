@@ -39,12 +39,11 @@ function statusLabel(status: string | null): string {
 
 function importSummary(form: OnboardingFormState): string {
   const roles = form.employment.filter((row) => row.title?.trim() || row.company?.trim()).length;
-  const projects = (form as { projects?: Array<{ name?: string }> }).projects?.filter((row) => row.name?.trim()).length ?? 0;
+  const projects = form.projects.filter((row) => row.name?.trim()).length;
   const skills = form.skills.length;
   const education = form.education.filter((row) => row.school?.trim() || row.degree?.trim()).length;
   const certs = form.certifications.filter((row) => row.name?.trim()).length;
-  const publications =
-    (form as { publications?: Array<{ title?: string }> }).publications?.filter((row) => row.title?.trim()).length ?? 0;
+  const publications = form.publications.filter((row) => row.title?.trim()).length;
   const parts = [
     roles ? `${roles} role${roles === 1 ? "" : "s"}` : null,
     projects ? `${projects} project${projects === 1 ? "" : "s"}` : null,
@@ -53,8 +52,16 @@ function importSummary(form: OnboardingFormState): string {
     certs ? `${certs} certification${certs === 1 ? "" : "s"}` : null,
     publications ? `${publications} publication${publications === 1 ? "" : "s"}` : null,
   ].filter(Boolean);
-  if (!parts.length) return "We imported your résumé — review and edit anything that looks off.";
-  return `We imported your résumé: ${parts.join(", ")}.`;
+  const confidenceNote =
+    form.lowConfidenceCount > 0
+      ? ` ${form.lowConfidenceCount} field${form.lowConfidenceCount === 1 ? "" : "s"} need review.`
+      : "";
+  if (!parts.length) return `We imported your résumé — review and edit anything that looks off.${confidenceNote}`;
+  return `We imported your résumé: ${parts.join(", ")}.${confidenceNote}`;
+}
+
+function ambiguousClass(ambiguous: boolean): string {
+  return ambiguous ? "ring-1 ring-amber-500/60 bg-amber-500/5" : "";
 }
 
 export function StepCareerProfile({
@@ -176,13 +183,13 @@ export function StepCareerProfile({
       ) : null}
 
       {showReview ? (
-        <div className="space-y-4">
+        <div className="space-y-4" data-testid="import-review-sections">
           {uploadReviewMode && form.employment.length > 0 ? (
             <div className="space-y-2" data-testid="imported-employment-cards">
               <p className="text-sm font-medium">Imported roles</p>
               {form.employment.map((job, index) => (
                 <div key={index} className="rounded-md border border-border px-3 py-2 text-sm">
-                  <p className="font-medium">
+                  <p className="font-medium" data-testid={`imported-role-title-${index}`}>
                     {[job.title, job.company].filter(Boolean).join(" · ") || `Role ${index + 1}`}
                   </p>
                   {(job.startDate || job.endDate) && (
@@ -192,173 +199,324 @@ export function StepCareerProfile({
                   )}
                   {job.bullets?.length ? (
                     <ul className="mt-1 list-disc pl-4 text-xs text-foreground-secondary">
-                      {job.bullets.slice(0, 3).map((bullet) => (
+                      {job.bullets.map((bullet) => (
                         <li key={bullet}>{bullet}</li>
                       ))}
                     </ul>
                   ) : null}
                 </div>
               ))}
-              <p className="text-xs text-foreground-muted">Edit any field below if something looks wrong.</p>
             </div>
           ) : null}
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="full-name">Full name</Label>
-              <Input
-                id="full-name"
-                value={form.fullName}
-                onChange={(e) => onChange({ fullName: e.target.value })}
-                aria-invalid={Boolean(errors.fullName)}
-              />
-              {errors.fullName ? (
-                <p className="text-xs text-destructive" role="alert">
-                  {errors.fullName}
-                </p>
-              ) : null}
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                value={form.email}
-                onChange={(e) => onChange({ email: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="phone">Phone (optional)</Label>
-              <Input id="phone" value={form.phone} onChange={(e) => onChange({ phone: e.target.value })} />
-            </div>
-            <div className="space-y-1.5 sm:col-span-2">
-              <Label htmlFor="location">Location (optional)</Label>
-              <Input
-                id="location"
-                value={form.location}
-                onChange={(e) => onChange({ location: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <ChipInput
-            id="skills"
-            label="Skills"
-            values={form.skills}
-            onChange={(skills) => onChange({ skills })}
-            placeholder="Add a skill"
-            error={errors.skills}
-          />
-
-          {form.careerProfileMode === "manual" ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Employment</p>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() =>
-                    onChange({
-                      employment: [...form.employment, { title: "", company: "", bullets: [""] }],
-                    })
-                  }
-                >
-                  Add role
-                </Button>
+          <details open className="rounded-md border border-border p-3">
+            <summary className="cursor-pointer text-sm font-medium">Contact</summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className={`space-y-1.5 sm:col-span-2 ${ambiguousClass(uploadReviewMode && !form.fullName.trim())}`}>
+                <Label htmlFor="full-name">Full name</Label>
+                <Input
+                  id="full-name"
+                  value={form.fullName}
+                  onChange={(e) => onChange({ fullName: e.target.value })}
+                  aria-invalid={Boolean(errors.fullName)}
+                  data-testid="imported-full-name"
+                />
               </div>
+              <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.email.trim())}`}>
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  value={form.email}
+                  onChange={(e) => onChange({ email: e.target.value })}
+                  data-testid="imported-email"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="phone">Phone (optional)</Label>
+                <Input id="phone" value={form.phone} onChange={(e) => onChange({ phone: e.target.value })} />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="location">Location (optional)</Label>
+                <Input
+                  id="location"
+                  value={form.location}
+                  onChange={(e) => onChange({ location: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="linkedin">LinkedIn</Label>
+                <Input id="linkedin" value={form.linkedIn} onChange={(e) => onChange({ linkedIn: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="github">GitHub</Label>
+                <Input id="github" value={form.github} onChange={(e) => onChange({ github: e.target.value })} />
+              </div>
+            </div>
+          </details>
+
+          {(form.summary.trim() || form.careerProfileMode === "manual") ? (
+            <details open={Boolean(form.summary.trim())} className="rounded-md border border-border p-3">
+              <summary className="cursor-pointer text-sm font-medium">Summary</summary>
+              <Textarea
+                className="mt-3"
+                aria-label="Professional summary"
+                value={form.summary}
+                onChange={(e) => onChange({ summary: e.target.value })}
+              />
+            </details>
+          ) : (
+            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
+              <p className="text-sm text-foreground-muted">No summary imported</p>
+              <Button type="button" size="sm" variant="secondary" onClick={() => onChange({ summary: " " })}>
+                Add
+              </Button>
+            </div>
+          )}
+
+          <details open={form.employment.length > 0} className="rounded-md border border-border p-3">
+            <summary className="cursor-pointer text-sm font-medium">Professional experience</summary>
+            <div className="mt-3 space-y-3">
               {form.employment.length === 0 ? (
-                <p className="text-sm text-foreground-muted">
-                  Optional if you have skills, education, or projects. Students and career changers can continue
-                  without employment history.
+                <p className="text-sm text-foreground-muted" data-testid="no-employment-imported">
+                  No employment history was found. You can continue with projects, education, and skills.
                 </p>
               ) : null}
               {form.employment.map((job, index) => (
-                <div key={index} className="space-y-2 rounded-md border border-border p-3">
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <Input
-                      aria-label={`Job title ${index + 1}`}
-                      placeholder="Job title"
-                      value={job.title ?? ""}
-                      onChange={(e) => {
-                        const employment = [...form.employment];
-                        employment[index] = { ...job, title: e.target.value };
-                        onChange({ employment });
-                      }}
-                    />
-                    <Input
-                      aria-label={`Employer ${index + 1}`}
-                      placeholder="Employer"
-                      value={job.company ?? ""}
-                      onChange={(e) => {
-                        const employment = [...form.employment];
-                        employment[index] = { ...job, company: e.target.value };
-                        onChange({ employment });
-                      }}
-                    />
-                  </div>
+                <div
+                  key={index}
+                  className={`space-y-2 border-b border-border pb-3 last:border-0 ${ambiguousClass(!job.title || !job.company)}`}
+                >
+                  <Input
+                    aria-label={`Job title ${index + 1}`}
+                    value={job.title ?? ""}
+                    onChange={(e) => {
+                      const employment = [...form.employment];
+                      employment[index] = { ...job, title: e.target.value };
+                      onChange({ employment });
+                    }}
+                  />
+                  <Input
+                    aria-label={`Employer ${index + 1}`}
+                    value={job.company ?? ""}
+                    onChange={(e) => {
+                      const employment = [...form.employment];
+                      employment[index] = { ...job, company: e.target.value };
+                      onChange({ employment });
+                    }}
+                  />
                   <Textarea
                     aria-label={`Bullets ${index + 1}`}
-                    placeholder="One achievement per line"
                     value={(job.bullets ?? []).join("\n")}
                     onChange={(e) => {
                       const employment = [...form.employment];
                       employment[index] = {
                         ...job,
-                        bullets: e.target.value.split("\n").filter(Boolean),
+                        bullets: e.target.value.split("\n"),
                       };
                       onChange({ employment });
                     }}
                   />
                 </div>
               ))}
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() =>
+                  onChange({
+                    employment: [...form.employment, { title: "", company: "", bullets: [""] }],
+                  })
+                }
+              >
+                Add role
+              </Button>
             </div>
-          ) : form.employment.length > 0 ? (
-            <details className="rounded-md border border-border p-3">
-              <summary className="cursor-pointer text-sm font-medium">Edit employment fields</summary>
+          </details>
+
+          {(form.projects.length > 0 || form.careerProfileMode === "manual") ? (
+            <details open={form.projects.length > 0} className="rounded-md border border-border p-3">
+              <summary className="cursor-pointer text-sm font-medium">Projects</summary>
               <div className="mt-3 space-y-3">
-                {form.employment.map((job, index) => (
+                {form.projects.map((project, index) => (
                   <div key={index} className="space-y-2 border-b border-border pb-3 last:border-0">
                     <Input
-                      aria-label={`Job title ${index + 1}`}
-                      value={job.title ?? ""}
+                      aria-label={`Project name ${index + 1}`}
+                      value={project.name ?? ""}
+                      data-testid={`imported-project-${index}`}
                       onChange={(e) => {
-                        const employment = [...form.employment];
-                        employment[index] = { ...job, title: e.target.value };
-                        onChange({ employment });
-                      }}
-                    />
-                    <Input
-                      aria-label={`Employer ${index + 1}`}
-                      value={job.company ?? ""}
-                      onChange={(e) => {
-                        const employment = [...form.employment];
-                        employment[index] = { ...job, company: e.target.value };
-                        onChange({ employment });
+                        const projects = [...form.projects];
+                        projects[index] = { ...project, name: e.target.value };
+                        onChange({ projects });
                       }}
                     />
                     <Textarea
-                      aria-label={`Bullets ${index + 1}`}
-                      value={(job.bullets ?? []).join("\n")}
+                      aria-label={`Project bullets ${index + 1}`}
+                      value={(project.bullets ?? []).join("\n")}
                       onChange={(e) => {
-                        const employment = [...form.employment];
-                        employment[index] = {
-                          ...job,
-                          bullets: e.target.value.split("\n").filter(Boolean),
-                        };
-                        onChange({ employment });
+                        const projects = [...form.projects];
+                        projects[index] = { ...project, bullets: e.target.value.split("\n") };
+                        onChange({ projects });
                       }}
                     />
                   </div>
                 ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => onChange({ projects: [...form.projects, { name: "", bullets: [], technologies: [] }] })}
+                >
+                  Add project
+                </Button>
               </div>
             </details>
-          ) : uploadReviewMode ? (
-            <p className="text-sm text-foreground-muted" data-testid="no-employment-imported">
-              No employment history was found. You can continue with projects, education, and skills, or add a role
-              under Enter manually.
-            </p>
-          ) : null}
+          ) : (
+            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
+              <p className="text-sm text-foreground-muted">No projects imported</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => onChange({ projects: [{ name: "", bullets: [], technologies: [] }] })}
+              >
+                Add
+              </Button>
+            </div>
+          )}
+
+          <details open={form.education.length > 0} className="rounded-md border border-border p-3">
+            <summary className="cursor-pointer text-sm font-medium">Education</summary>
+            <div className="mt-3 space-y-3">
+              {form.education.map((row, index) => (
+                <div key={index} className="grid gap-2 sm:grid-cols-2">
+                  <Input
+                    aria-label={`School ${index + 1}`}
+                    value={row.school ?? ""}
+                    data-testid={`imported-education-${index}`}
+                    onChange={(e) => {
+                      const education = [...form.education];
+                      education[index] = { ...row, school: e.target.value };
+                      onChange({ education });
+                    }}
+                  />
+                  <Input
+                    aria-label={`Degree ${index + 1}`}
+                    value={row.degree ?? ""}
+                    onChange={(e) => {
+                      const education = [...form.education];
+                      education[index] = { ...row, degree: e.target.value };
+                      onChange({ education });
+                    }}
+                  />
+                </div>
+              ))}
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => onChange({ education: [...form.education, { school: "", degree: "" }] })}
+              >
+                Add education
+              </Button>
+            </div>
+          </details>
+
+          <details open={form.skills.length > 0} className="rounded-md border border-border p-3">
+            <summary className="cursor-pointer text-sm font-medium">Skills</summary>
+            <div className="mt-3">
+              <ChipInput
+                id="skills"
+                label="Skills"
+                values={form.skills}
+                onChange={(skills) => onChange({ skills })}
+                placeholder="Add a skill"
+                error={errors.skills}
+              />
+            </div>
+          </details>
+
+          {(form.certifications.length > 0 || form.careerProfileMode === "manual") ? (
+            <details open={form.certifications.length > 0} className="rounded-md border border-border p-3">
+              <summary className="cursor-pointer text-sm font-medium">Certifications</summary>
+              <div className="mt-3 space-y-2">
+                {form.certifications.map((cert, index) => (
+                  <Input
+                    key={index}
+                    aria-label={`Certification ${index + 1}`}
+                    value={cert.name}
+                    data-testid={`imported-cert-${index}`}
+                    onChange={(e) => {
+                      const certifications = [...form.certifications];
+                      certifications[index] = { ...cert, name: e.target.value };
+                      onChange({ certifications });
+                    }}
+                  />
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => onChange({ certifications: [...form.certifications, { name: "" }] })}
+                >
+                  Add certification
+                </Button>
+              </div>
+            </details>
+          ) : (
+            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
+              <p className="text-sm text-foreground-muted">No certifications imported</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => onChange({ certifications: [{ name: "" }] })}
+              >
+                Add
+              </Button>
+            </div>
+          )}
+
+          {(form.publications.length > 0 || form.careerProfileMode === "manual") ? (
+            <details open={form.publications.length > 0} className="rounded-md border border-border p-3">
+              <summary className="cursor-pointer text-sm font-medium">Publications</summary>
+              <div className="mt-3 space-y-2">
+                {form.publications.map((pub, index) => (
+                  <Input
+                    key={index}
+                    aria-label={`Publication ${index + 1}`}
+                    value={pub.title ?? ""}
+                    data-testid={`imported-publication-${index}`}
+                    onChange={(e) => {
+                      const publications = [...form.publications];
+                      publications[index] = { ...pub, title: e.target.value };
+                      onChange({ publications });
+                    }}
+                  />
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => onChange({ publications: [...form.publications, { title: "" }] })}
+                >
+                  Add publication
+                </Button>
+              </div>
+            </details>
+          ) : (
+            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
+              <p className="text-sm text-foreground-muted">No publications imported</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={() => onChange({ publications: [{ title: "" }] })}
+              >
+                Add
+              </Button>
+            </div>
+          )}
 
           {errors.career ? (
             <p className="text-sm text-destructive" role="alert">
