@@ -8,10 +8,21 @@ export function jsonOk<T>(data: T, init?: ResponseInit): NextResponse {
   return NextResponse.json(data, { status: init?.status ?? 200, headers: init?.headers });
 }
 
+function isAppError(err: unknown): err is AppError {
+  if (err instanceof AppError) return true;
+  return Boolean(
+    err &&
+      typeof err === "object" &&
+      (err as { name?: string }).name === "AppError" &&
+      typeof (err as { code?: unknown }).code === "string" &&
+      typeof (err as { status?: unknown }).status === "number",
+  );
+}
+
 export function jsonError(err: AppError | unknown, requestId?: string): NextResponse {
   const rid = requestId ?? createRequestId();
 
-  if (err instanceof AppError) {
+  if (isAppError(err)) {
     return NextResponse.json(formatApiError(err.code, err.message, rid, err.details), {
       status: err.status,
     });

@@ -28,7 +28,8 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    # Official MinIO images moved off Docker Hub; pin a quay.io RELEASE tag.
+    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin

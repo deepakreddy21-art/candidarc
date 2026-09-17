@@ -102,9 +102,15 @@ function isObviouslyPublicExfilUrl(raw: string): boolean {
   }
 }
 
-export function assertSafeRuntime(env: Env): void {
+export type RuntimeScope = "app" | "migrate";
+
+export function assertSafeRuntime(env: Env, scope: RuntimeScope = "app"): void {
   const unsafe: string[] = [];
   const production = env.APP_MODE === "production";
+  if (scope === "migrate") {
+    // SQL migrations only need a database. Queue pairing is a web/worker concern.
+    return;
+  }
   // Postgres/multiprocess cannot share an in-process queue across web + worker.
   if (env.CANDIDARC_DATA_MODE === "postgres" && env.QUEUE_BACKEND === "inprocess") {
     throw new Error(
@@ -218,9 +224,16 @@ export function getEnv(overrides?: Partial<Record<string, string>>): Env {
   if (cached && !overrides) return cached;
   const env = parseEnvSource(overrides);
   if (!isBuildPhase()) {
-    assertSafeRuntime(env);
+    assertSafeRuntime(env, "app");
   }
   if (!overrides) cached = env;
+  return env;
+}
+
+/** Parse env for `db:migrate` without web/worker queue pairing rules. */
+export function getMigrationEnv(overrides?: Partial<Record<string, string>>): Env {
+  const env = parseEnvSource(overrides);
+  assertSafeRuntime(env, "migrate");
   return env;
 }
 

@@ -26,6 +26,13 @@ import { logger } from "../../observability/logger";
 
 export const MAX_RESUME_BYTES = 10 * 1024 * 1024;
 
+/** Injected in unit tests so CI does not require a live FastAPI process. Production keeps the real probe. */
+export type PythonReadyFn = () => Promise<boolean>;
+
+function defaultPythonReady(): Promise<boolean> {
+  return getPythonIntelligenceClient().ready();
+}
+
 export const ALLOWED_RESUME_MIMES = new Set([
 
   "application/pdf",
@@ -161,11 +168,18 @@ export class ResumeImportService {
 
     private readonly profiles: ProfileService,
 
+    private readonly pythonReady: PythonReadyFn = defaultPythonReady,
+
   ) {}
 
-  static fromRepos(repos: Repositories, storage: ObjectStorage, queue: QueueAdapter) {
+  static fromRepos(
+    repos: Repositories,
+    storage: ObjectStorage,
+    queue: QueueAdapter,
+    pythonReady: PythonReadyFn = defaultPythonReady,
+  ) {
 
-    return new ResumeImportService(repos, storage, queue, ProfileService.fromRepos(repos));
+    return new ResumeImportService(repos, storage, queue, ProfileService.fromRepos(repos), pythonReady);
 
   }
 
@@ -259,7 +273,7 @@ export class ResumeImportService {
 
     try {
 
-      const ready = await getPythonIntelligenceClient().ready();
+      const ready = await this.pythonReady();
 
       if (!ready) {
 

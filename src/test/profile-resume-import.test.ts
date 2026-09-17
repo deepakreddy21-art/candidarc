@@ -35,6 +35,15 @@ function context(userId: string, tenantId: string, repos: Repositories): AuthCon
   };
 }
 
+function importService(
+  repos: Repositories,
+  storage: LocalFilesystemStorage,
+  queue: InProcessQueueAdapter,
+  pythonReady: () => Promise<boolean> = async () => true,
+) {
+  return ResumeImportService.fromRepos(repos, storage, queue, pythonReady);
+}
+
 describe("profile and resume import", () => {
   beforeEach(() => {
     resetStorage();
@@ -162,7 +171,7 @@ describe("profile and resume import", () => {
     const repos = new MemoryRepositories(store);
     const queue = new InProcessQueueAdapter();
     const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-1"), "test-secret-1");
-    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const service = importService(repos, storage, queue);
 
     expect(() =>
       service.validateUpload({
@@ -211,7 +220,7 @@ describe("profile and resume import", () => {
     const { repos, userId, tenantId } = await ensureDemoUser(store);
     const queue = new InProcessQueueAdapter();
     const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-2"), "test-secret-2");
-    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const service = importService(repos, storage, queue);
     const ctx = context(userId, tenantId, repos);
 
     const pdf = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
@@ -235,7 +244,7 @@ describe("profile and resume import", () => {
     });
     const queue = new InProcessQueueAdapter();
     const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-ex"), "test-secret-ex");
-    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const service = importService(repos, storage, queue);
     const ctx = context(userId, tenantId, repos);
     const pdf = textToSimplePdf("Name Only\nSKILLS\nGo");
     const uploaded = await service.upload(ctx, {
@@ -303,7 +312,7 @@ describe("profile and resume import", () => {
     });
     const queue = new InProcessQueueAdapter();
     const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-conf"), "test-secret-conf");
-    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const service = importService(repos, storage, queue);
     await service.runExtraction(tenantId, "file-confirmed");
     const profile = await repos.candidateProfiles.getByUser(tenantId, userId);
     expect(profile?.resumeImportStatus).toBe("confirmed");
@@ -315,7 +324,7 @@ describe("profile and resume import", () => {
     const { repos, userId, tenantId } = await ensureDemoUser(store);
     const queue = new InProcessQueueAdapter();
     const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-repl"), "test-secret-repl");
-    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const service = importService(repos, storage, queue);
     const ctx = context(userId, tenantId, repos);
 
     await repos.candidateProfiles.upsert({
@@ -385,7 +394,7 @@ describe("profile and resume import", () => {
     const { repos, userId, tenantId } = await ensureDemoUser(store);
     const queue = new InProcessQueueAdapter();
     const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-hash"), "test-secret-hash");
-    const service = ResumeImportService.fromRepos(repos, storage, queue);
+    const service = importService(repos, storage, queue);
     const ctx = context(userId, tenantId, repos);
 
     const a = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
@@ -405,6 +414,63 @@ describe("profile and resume import", () => {
     const fileA = await repos.files.getByPublicId(tenantId, upA.file.id);
     const fileB = await repos.files.getByPublicId(tenantId, upB.file.id);
     expect(fileA?.checksum).not.toBe(fileB?.checksum);
+  });
+
+  it("proceeds with upload when the parse pipeline reports ready", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    const queue = new InProcessQueueAdapter();
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-ready"), "test-secret-ready");
+    const service = importService(repos, storage, queue, async () => true);
+    const ctx = context(userId, tenantId, repos);
+    const pdf = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
+    const uploaded = await service.upload(ctx, {
+      filename: "resume.pdf",
+      mimeType: "application/pdf",
+      size: pdf.byteLength,
+      buffer: pdf,
+    });
+    expect(uploaded.file.scanStatus).toBe("pending");
+  });
+
+  it("fails closed when the parse pipeline is unavailable", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    const queue = new InProcessQueueAdapter();
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-unavail"), "test-secret-unavail");
+    const service = importService(repos, storage, queue, async () => false);
+    const ctx = context(userId, tenantId, repos);
+    const pdf = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
+    await expect(
+      service.upload(ctx, {
+        filename: "resume.pdf",
+        mimeType: "application/pdf",
+        size: pdf.byteLength,
+        buffer: pdf,
+      }),
+    ).rejects.toMatchObject({ code: "RESUME_PARSE_PIPELINE_UNAVAILABLE", status: 503, retryable: true });
+  });
+
+  it("fails closed when the parse pipeline readiness probe times out", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    const queue = new InProcessQueueAdapter();
+    const storage = new LocalFilesystemStorage(resolve(".data/test-uploads-timeout"), "test-secret-timeout");
+    const service = importService(repos, storage, queue, async () => {
+      const error = new Error("The operation was aborted due to timeout");
+      error.name = "TimeoutError";
+      throw error;
+    });
+    const ctx = context(userId, tenantId, repos);
+    const pdf = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
+    await expect(
+      service.upload(ctx, {
+        filename: "resume.pdf",
+        mimeType: "application/pdf",
+        size: pdf.byteLength,
+        buffer: pdf,
+      }),
+    ).rejects.toMatchObject({ code: "RESUME_PARSE_PIPELINE_UNAVAILABLE", status: 503, retryable: true });
   });
 });
 
