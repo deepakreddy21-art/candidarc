@@ -24,7 +24,7 @@ export function VersionHistory({
                 <time className="text-foreground-muted">{new Date(version.createdAt).toLocaleDateString()}</time>
                 {onRestore && currentId !== version.id ? (
                   <button type="button" className="text-accent hover:underline" onClick={() => onRestore(version.id)}>
-                    Restore
+                    Compare
                   </button>
                 ) : null}
               </span>

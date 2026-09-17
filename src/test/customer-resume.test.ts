@@ -94,7 +94,7 @@ describe("customer resume generation", () => {
     }
   });
 
-  it("requires both rendered documents before reporting completion", () => {
+  it("reports completion when documentsReady is true", () => {
     expect(mapInternalStageToCustomer("FINAL_READY", { documentsReady: false }).status).toBe("creating");
     expect(mapInternalStageToCustomer("FINAL_READY", { documentsReady: true }).status).toBe("completed");
   });

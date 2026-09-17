@@ -21,6 +21,7 @@ type WorkflowData = {
   resume?: { versionLabel: string; previewHtml?: string; document?: ResumeDocument; sections?: unknown[]; role?: string; company?: string; candidateName?: string };
   versions?: Array<{ id: string; label: string; createdAt: string }>;
   downloads: { pdfReady: boolean; docxReady: boolean };
+  documentRetryAvailable?: boolean;
   qualityReport?: {
     summary?: string;
     score?: number;
@@ -107,5 +108,5 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
       </div>
     );
   }
-  return <ResumeReady data={data} />;
+  return <ResumeReady data={data} onRetryDocuments={() => void retry()} retryingDocuments={retrying} />;
 }

@@ -110,8 +110,12 @@ async function restoreConfirmedOrFail(
   const baseline = readConfirmedBaseline(extraction);
   if (baseline) {
     await repos.candidateProfiles.update(tenantId, userId, {
-      resumeImportStatus: "confirmed",
-      resumeImportExtraction: baseline,
+      resumeImportStatus: "failed",
+      resumeImportExtraction: {
+        [CONFIRMED_BASELINE_KEY]: baseline,
+        error: message,
+        errorCode,
+      },
     });
     return;
   }
@@ -971,8 +975,9 @@ export class ResumeImportService {
     const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
     if (!profile?.userId) return;
 
-    // Never overwrite a previously confirmed career profile with a failed parse.
-    if (profile.resumeImportStatus === "confirmed") {
+    // Replacements always run; confirmed data is preserved via baseline wrapping on upload.
+    // Skipping here left pending_scan stuck and hid IMAGE_ONLY / parse failures.
+    if (profile.resumeImportStatus === "confirmed" && profile.sourceResumeFilePublicId !== filePublicId) {
       logger.info({ tenantId, filePublicId }, "skipping extraction for already-confirmed import");
       return;
     }

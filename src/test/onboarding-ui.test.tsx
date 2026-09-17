@@ -82,7 +82,9 @@ describe("onboarding helpers", () => {
     expect(merged.jobTypes).toEqual(["full-time"]);
     expect(merged.workplaceModes).toEqual(["remote"]);
     expect(merged.preferredLocations).toEqual(["Austin"]);
-    expect(merged.fullName).toBe("Keep Me");
+    // Contact fields come from extraction so the review form shows imported details.
+    expect(merged.fullName).toBe("Parsed Name");
+    expect(merged.email).toBe("parsed@example.com");
     expect(merged.skills).toContain("Go");
   });
 });

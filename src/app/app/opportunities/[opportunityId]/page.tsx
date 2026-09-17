@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
-import { EmptyState, Skeleton } from "@/components/ui/feedback";
+import { EmptyState, ErrorState, Skeleton } from "@/components/ui/feedback";
 import {
   customerNextAction,
   customerResumePath,
@@ -32,28 +32,47 @@ export default function OpportunityOverviewPage() {
   const [connectionBasis, setConnectionBasis] = useState("");
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [savedNotes, setSavedNotes] = useState("");
+  const requestId = useRef(0);
 
   useEffect(() => {
-    void api.getApplication(params.opportunityId).then((found) => {
-      setApp(found ?? null);
-      if (found) {
-        setNotes(found.notes ?? "");
-        setFollowUpAt(found.followUpAt ?? "");
-        setInterviewAt(found.interviewAt ?? "");
-        setCoverLetter(found.coverLetter ?? "");
-        setContactName(found.contacts?.[0]?.name ?? "");
-        setOutreachDraft(found.outreachDraft ?? "");
-      }
-    });
+    const id = ++requestId.current;
+    setLoadError(null);
+    void api
+      .getApplication(params.opportunityId)
+      .then((found) => {
+        if (id !== requestId.current) return;
+        setApp(found ?? null);
+        if (found) {
+          setNotes(found.notes ?? "");
+          setSavedNotes(found.notes ?? "");
+          setFollowUpAt(found.followUpAt ?? "");
+          setInterviewAt(found.interviewAt ?? "");
+          setCoverLetter(found.coverLetter ?? "");
+          setContactName(found.contacts?.[0]?.name ?? "");
+          setOutreachDraft(found.outreachDraft ?? "");
+        }
+      })
+      .catch((err) => {
+        if (id !== requestId.current) return;
+        setLoadError(err instanceof Error ? err.message : "Could not load application");
+        setApp(null);
+      });
   }, [params.opportunityId]);
 
   if (app === undefined) {
     return (
-      <div className="space-y-3">
+      <div role="status" aria-live="polite" className="space-y-3">
+        <span className="sr-only">Loading application</span>
         <Skeleton className="h-10 w-64" />
         <Skeleton className="h-40 w-full" />
       </div>
     );
+  }
+
+  if (loadError && !app) {
+    return <ErrorState description={loadError} />;
   }
 
   if (!app) {
@@ -86,8 +105,10 @@ export default function OpportunityOverviewPage() {
         coverLetter,
         outreachDraft,
         contacts: contactName.trim() ? [{ name: contactName.trim() }] : [],
+        expectedVersion: app.version,
       });
       setApp(saved);
+      setSavedNotes(saved.notes ?? notes);
       toast.success("Application workspace saved");
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not save");
@@ -313,9 +334,22 @@ export default function OpportunityOverviewPage() {
             Copy outreach
           </Button>
         </div>
-        <Button type="button" onClick={() => void saveTracker()} disabled={saving}>
-          {saving ? "Saving…" : "Save workspace"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={() => void saveTracker()} disabled={saving}>
+            {saving ? "Saving…" : "Save workspace"}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={saving}
+            onClick={() => {
+              setNotes(savedNotes);
+              toast.message("Unsaved note edits discarded");
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
       </section>
       <AskPanel contextType="application" contextId={app.id} company={app.company} role={app.role} />
       <ApplicationCopilot opportunityId={app.id} company={app.company} role={app.role} />

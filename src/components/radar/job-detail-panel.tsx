@@ -29,6 +29,7 @@ export function JobDetailPanel({
   onTailorResume,
   tailoring,
   compact,
+  actionPending,
 }: {
   job: RadarJob;
   history?: RadarHistoryEvent[];
@@ -44,6 +45,7 @@ export function JobDetailPanel({
   onHide?: () => void;
   onTailorResume?: () => void;
   tailoring?: boolean;
+  actionPending?: boolean;
   compact?: boolean;
 }) {
   const fit = fitCategoryFromLabel(job.matchLabel as MatchLabel | undefined, job.matchScore);
@@ -107,19 +109,19 @@ export function JobDetailPanel({
           </div>
           <div className="flex flex-wrap gap-2">
             {onSave ? (
-              <Button type="button" size="sm" variant="secondary" onClick={onSave} aria-label={job.saved ? "Unsave" : "Save"}>
+              <Button type="button" size="sm" variant="secondary" onClick={onSave} disabled={actionPending} aria-label={job.saved ? "Unsave" : "Save"} aria-busy={actionPending || undefined}>
                 {job.saved ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
                 {job.saved ? "Saved" : "Save"}
               </Button>
             ) : null}
             {onTailorResume ? (
-              <Button type="button" size="sm" onClick={onTailorResume} disabled={tailoring}>
+              <Button type="button" size="sm" onClick={onTailorResume} disabled={tailoring || actionPending} aria-busy={tailoring || undefined}>
                 <FileText className="h-4 w-4" />
                 {tailoring ? "Starting…" : "Tailor my resume"}
               </Button>
             ) : null}
             {onHide ? (
-              <Button type="button" size="sm" variant="ghost" onClick={onHide}>
+              <Button type="button" size="sm" variant="ghost" onClick={onHide} disabled={actionPending}>
                 Hide / report stale
               </Button>
             ) : null}

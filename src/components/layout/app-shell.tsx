@@ -21,7 +21,8 @@ import {
   PROFILE_HREF,
   SETTINGS_HREF,
 } from "@/lib/primary-nav";
-import { api } from "@/services/api";
+import { api, clearClientRequestCaches } from "@/services/api";
+import { NavigationPendingProvider, useNavigationPending } from "@/components/layout/navigation-pending";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,18 +57,46 @@ function NavItem({
   active: boolean;
   collapsed: boolean;
 }) {
+  const { pendingHref, markPending } = useNavigationPending();
+  const pending = pendingHref === href;
   return (
     <Link
       href={href}
+      onClick={() => markPending(href)}
+      aria-busy={pending || undefined}
+      data-pending={pending ? "true" : undefined}
       className={cn(
         "relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
         active ? "bg-surface-2 text-foreground" : "text-foreground-secondary hover:bg-surface-2 hover:text-foreground",
+        pending && "opacity-80",
         collapsed && "justify-center px-2",
       )}
       aria-current={active ? "page" : undefined}
     >
       <Icon className="h-4 w-4 shrink-0" />
       {!collapsed ? <span>{label}</span> : <span className="sr-only">{label}</span>}
+      {pending ? <span className="sr-only">Loading</span> : null}
+    </Link>
+  );
+}
+
+function PendingLink({
+  href,
+  className,
+  children,
+  ...rest
+}: React.ComponentProps<typeof Link>) {
+  const { pendingHref, markPending } = useNavigationPending();
+  const hrefValue = typeof href === "string" ? href : href.pathname ?? "";
+  return (
+    <Link
+      href={href}
+      onClick={() => markPending(hrefValue)}
+      aria-busy={pendingHref === hrefValue || undefined}
+      className={className}
+      {...rest}
+    >
+      {children}
     </Link>
   );
 }
@@ -171,6 +200,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
+    <NavigationPendingProvider>
     <div className="flex min-h-dvh bg-background">
       <a
         href="#main-content"
@@ -310,6 +340,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       credentials: "include",
                       headers: csrf ? { "x-csrf-token": csrf } : {},
                     });
+                    clearClientRequestCaches();
+                    try {
+                      localStorage.removeItem("candidarc-privacy");
+                    } catch {
+                      /* ignore */
+                    }
                     router.push("/sign-in");
                   }}
                 >
@@ -332,7 +368,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {primaryNav.map((item) => {
             const active = isNavActive(pathname, item.href);
             return (
-              <Link
+              <PendingLink
                 key={item.href}
                 href={item.href}
                 className={cn(
@@ -342,12 +378,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               >
                 <item.icon className="h-4 w-4" />
                 {item.label}
-              </Link>
+              </PendingLink>
             );
           })}
         </nav>
       </div>
       <CommandPalette />
     </div>
+    </NavigationPendingProvider>
   );
 }

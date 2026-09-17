@@ -39,10 +39,19 @@ type ReadyData = {
     remainingSkillGaps?: string[];
   };
   downloads: { pdfReady: boolean; docxReady: boolean };
+  documentRetryAvailable?: boolean;
   enhancementAvailable?: boolean;
 };
 
-export function ResumeReady({ data }: { data: ReadyData }) {
+export function ResumeReady({
+  data,
+  onRetryDocuments,
+  retryingDocuments,
+}: {
+  data: ReadyData;
+  onRetryDocuments?: () => void;
+  retryingDocuments?: boolean;
+}) {
   const router = useRouter();
   const [enhancing, setEnhancing] = useState(false);
   const [selectedText, setSelectedText] = useState("");
@@ -112,6 +121,16 @@ export function ResumeReady({ data }: { data: ReadyData }) {
               Download Word
             </a>
           </Button>
+          {data.documentRetryAvailable && !data.downloads.pdfReady ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => onRetryDocuments?.()}
+              disabled={retryingDocuments || !onRetryDocuments}
+            >
+              {retryingDocuments ? "Retrying PDF…" : "Retry PDF"}
+            </Button>
+          ) : null}
           <Button asChild variant="ghost">
             <Link href="/app/opportunities">View applications</Link>
           </Button>
@@ -149,7 +168,7 @@ export function ResumeReady({ data }: { data: ReadyData }) {
           currentId={data.versions?.[0]?.id}
           onRestore={(id) => {
             const label = data.versions?.find((v) => v.id === id)?.label ?? "prior version";
-            toast.message(`Prior versions stay immutable. Create a new version if you want to return to ${label}.`);
+            toast.message(`Prior versions stay immutable. Comparing against ${label}. Create a new version if you want that snapshot again.`);
             setCompareId(id);
           }}
         />

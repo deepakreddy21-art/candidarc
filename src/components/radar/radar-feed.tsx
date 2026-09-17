@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
@@ -15,7 +15,7 @@ import { JobDetailPanel } from "@/components/radar/job-detail-panel";
 import { SavedSearchForm } from "@/components/radar/saved-search-form";
 import { AlertForm } from "@/components/radar/alert-form";
 import { radarApi } from "@/services/radar-api";
-import { api } from "@/services/api";
+import { api, isCancelledError } from "@/services/api";
 import type {
   FreshnessBasis,
   FreshnessPreset,
@@ -69,10 +69,18 @@ export function RadarFeed() {
   const [location, setLocation] = useState(filters.location ?? "");
   const [arrangement, setArrangement] = useState<RemotePolicy | "any">(filters.arrangement);
   const [jobs, setJobs] = useState<RadarJob[]>([]);
+  const jobsRef = useRef(jobs);
+  jobsRef.current = jobs;
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [selectedId, setSelectedId] = useState<string | undefined>();
+  const [pendingJobId, setPendingJobId] = useState<string | undefined>();
+  const [pendingKind, setPendingKind] = useState<"save" | "hide" | "tailor" | "unhide" | undefined>();
+  const [tailoringId, setTailoringId] = useState<string | undefined>();
+  const tailoringRef = useRef(false);
+  const actionRef = useRef(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [saveSearchOpen, setSaveSearchOpen] = useState(false);
   const [alertOpen, setAlertOpen] = useState(false);
@@ -82,6 +90,7 @@ export function RadarFeed() {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
   const [loadingMore, setLoadingMore] = useState(false);
+  const listRequestId = useRef(0);
   const [advanced, setAdvanced] = useState({
     company: filters.company ?? "",
     employmentType: filters.employmentType ?? "",
@@ -130,36 +139,43 @@ export function RadarFeed() {
     [pathname, router, searchParams],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const requestId = ++listRequestId.current;
+    const hasRows = jobsRef.current.length > 0;
+    if (hasRows) setRefreshing(true);
+    else setLoading(true);
     setError(undefined);
     try {
-      const result = await radarApi.searchJobs({
-        q: filters.q,
-        location: filters.location,
-        remote: arrangement === "any" ? undefined : arrangement,
-        freshnessPreset: filters.freshnessPreset,
-        freshnessBasis: filters.freshnessBasis,
-        freshnessType: filters.freshnessType,
-        verifiedOpenOnly: filters.verifiedOpenOnly,
-        companyDirectOnly: filters.companyDirectOnly,
-        company: filters.company,
-        employmentType: filters.employmentType,
-        seniority: filters.seniority,
-        sponsorship: filters.sponsorship,
-        compensationMin: filters.compensationMin,
-        includeReposts: filters.includeReposts,
-        hidePossibleDuplicates: filters.hidePossibleDuplicates,
-        requireKnownOriginalDate: filters.requireKnownOriginalDate,
-        customStart: filters.customStart,
-        customEnd: filters.customEnd,
-        timezone: filters.timezone,
-        excludedCompanies: filters.excludedCompanies,
-        savedOnly: filters.tab === "saved",
-        sort: filters.sort,
-        limit: 20,
-        cursor: undefined,
-      });
+      const result = await radarApi.searchJobs(
+        {
+          q: filters.q,
+          location: filters.location,
+          remotePolicy: filters.arrangement === "any" ? undefined : filters.arrangement,
+          freshnessPreset: filters.freshnessPreset,
+          freshnessBasis: filters.freshnessBasis,
+          freshnessType: filters.freshnessType,
+          verifiedOpenOnly: filters.verifiedOpenOnly,
+          companyDirectOnly: filters.companyDirectOnly,
+          company: filters.company,
+          employmentType: filters.employmentType,
+          seniority: filters.seniority,
+          sponsorship: filters.sponsorship,
+          compensationMin: filters.compensationMin,
+          includeReposts: filters.includeReposts,
+          hidePossibleDuplicates: filters.hidePossibleDuplicates,
+          requireKnownOriginalDate: filters.requireKnownOriginalDate,
+          customStart: filters.customStart,
+          customEnd: filters.customEnd,
+          timezone: filters.timezone,
+          excludedCompanies: filters.excludedCompanies,
+          savedOnly: filters.tab === "saved",
+          sort: filters.sort,
+          limit: 20,
+          cursor: undefined,
+        },
+        { signal },
+      );
+      if (signal?.aborted || requestId !== listRequestId.current) return;
       setJobs(result.jobs);
       setTotal(result.total);
       setNextCursor(result.nextCursor);
@@ -168,16 +184,24 @@ export function RadarFeed() {
         current && result.jobs.some((job) => job.id === current) ? current : result.jobs[0]?.id,
       );
     } catch (err) {
+      if (isCancelledError(err) || signal?.aborted || requestId !== listRequestId.current) return;
       setError(err instanceof Error ? err.message : "Could not load jobs");
-      setJobs([]);
-      setTotal(0);
+      if (!hasRows) {
+        setJobs([]);
+        setTotal(0);
+      }
     } finally {
-      setLoading(false);
+      if (!signal?.aborted && requestId === listRequestId.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [arrangement, filters]);
+  }, [filters]);
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
   }, [load]);
 
   useEffect(() => {
@@ -209,28 +233,67 @@ export function RadarFeed() {
   }
 
   async function tailor(job: RadarJob) {
+    if (tailoringRef.current) return;
+    tailoringRef.current = true;
+    setTailoringId(job.id);
+    setPendingJobId(job.id);
+    setPendingKind("tailor");
     try {
       const result = await radarApi.tailorResume(job.id);
       router.push(`/app/resumes/${result.workflowId}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not start resume generation");
+      tailoringRef.current = false;
+      setTailoringId(undefined);
+      setPendingJobId(undefined);
+      setPendingKind(undefined);
     }
   }
 
   async function hide(job: RadarJob) {
+    if (actionRef.current) return;
+    actionRef.current = true;
+    const snapshot = jobsRef.current;
+    setPendingJobId(job.id);
+    setPendingKind("hide");
+    setJobs((current) => current.filter((item) => item.id !== job.id));
+    if (selectedId === job.id) {
+      setSelectedId(snapshot.find((item) => item.id !== job.id)?.id);
+    }
     try {
       await radarApi.hideJob(job.id);
-      await load();
       toast.message("Job hidden from this feed", {
         action: {
           label: "Undo hide",
           onClick: () => {
-            void radarApi.unhideJob(job.id).then(() => load());
+            void (async () => {
+              setPendingJobId(job.id);
+              setPendingKind("unhide");
+              try {
+                await radarApi.unhideJob(job.id);
+                setJobs((current) => {
+                  if (current.some((item) => item.id === job.id)) return current;
+                  return [job, ...current];
+                });
+                setSelectedId(job.id);
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Could not restore job");
+              } finally {
+                setPendingJobId(undefined);
+                setPendingKind(undefined);
+              }
+            })();
           },
         },
       });
     } catch (err) {
+      setJobs(snapshot);
+      setSelectedId(job.id);
       toast.error(err instanceof Error ? err.message : "Could not hide job");
+    } finally {
+      actionRef.current = false;
+      setPendingJobId(undefined);
+      setPendingKind(undefined);
     }
   }
 
@@ -241,7 +304,7 @@ export function RadarFeed() {
       const result = await radarApi.searchJobs({
         q: filters.q,
         location: filters.location,
-        remote: arrangement === "any" ? undefined : arrangement,
+        remotePolicy: filters.arrangement === "any" ? undefined : filters.arrangement,
         freshnessPreset: filters.freshnessPreset,
         freshnessBasis: filters.freshnessBasis,
         freshnessType: filters.freshnessType,
@@ -275,12 +338,36 @@ export function RadarFeed() {
   }
 
   async function save(job: RadarJob) {
+    if (actionRef.current) return;
+    actionRef.current = true;
+    // Invalidate in-flight list fetches before mutating so stale savedOnly pages cannot resurrect rows.
+    listRequestId.current += 1;
+    const previous = job.saved;
+    setPendingJobId(job.id);
+    setPendingKind("save");
+    setJobs((current) => {
+      if (filters.tab === "saved" && job.saved) {
+        return current.filter((item) => item.id !== job.id);
+      }
+      return current.map((item) => (item.id === job.id ? { ...item, saved: !item.saved } : item));
+    });
     try {
       if (job.saved) await radarApi.unsaveJob(job.id);
       else await radarApi.saveJob(job.id);
-      await load();
     } catch (err) {
+      setJobs((current) => {
+        if (filters.tab === "saved" && previous) {
+          return current.some((item) => item.id === job.id)
+            ? current.map((item) => (item.id === job.id ? { ...item, saved: previous } : item))
+            : [...current, { ...job, saved: previous }];
+        }
+        return current.map((item) => (item.id === job.id ? { ...item, saved: previous } : item));
+      });
       toast.error(err instanceof Error ? err.message : "Could not update saved job");
+    } finally {
+      actionRef.current = false;
+      setPendingJobId(undefined);
+      setPendingKind(undefined);
     }
   }
 
@@ -676,9 +763,10 @@ export function RadarFeed() {
         <section
           className="overflow-hidden rounded-md border border-border bg-background"
           aria-label="Job results"
-          aria-busy={loading}
+          aria-busy={loading || refreshing}
+          data-pending-kind={pendingKind}
         >
-          {loading ? (
+          {loading && jobs.length === 0 ? (
             <div className="space-y-0 p-3">
               <Skeleton className="mb-2 h-16 w-full" />
               <Skeleton className="mb-2 h-16 w-full" />
@@ -717,9 +805,16 @@ export function RadarFeed() {
                 onSave={save}
                 onHide={hide}
                 onTailorResume={tailor}
+                busy={pendingJobId === job.id}
+                tailoring={tailoringId === job.id}
               />
             ))
           )}
+          {refreshing ? (
+            <p className="px-3 py-1 text-xs text-foreground-muted" data-testid="jobs-refreshing">
+              Updating results…
+            </p>
+          ) : null}
           {nextCursor ? (
             <div className="p-3">
               <Button type="button" variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
@@ -737,6 +832,8 @@ export function RadarFeed() {
               onTailorResume={() => void tailor(selected)}
               onSave={() => void save(selected)}
               onHide={() => void hide(selected)}
+              tailoring={tailoringId === selected.id}
+              actionPending={pendingJobId === selected.id}
             />
           ) : (
             <div className="flex min-h-64 items-center justify-center border border-dashed border-border px-6 text-center text-sm text-foreground-muted">

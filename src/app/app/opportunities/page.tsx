@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MoreHorizontal, Search } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
@@ -13,7 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState, Skeleton } from "@/components/ui/feedback";
+import { EmptyState, ErrorState, Skeleton } from "@/components/ui/feedback";
 import { Input, Label } from "@/components/ui/input";
 import {
   CANDIDATE_STATUS_OPTIONS,
@@ -24,7 +24,7 @@ import {
   type CandidateApplicationStatus,
 } from "@/lib/application-presentation";
 import { cn, formatRelative } from "@/lib/utils";
-import { api, ApiError } from "@/services/api";
+import { api, ApiError, isCancelledError } from "@/services/api";
 import type { Application } from "@/types/domain";
 
 type Row = Application & { candidateStatus: CandidateApplicationStatus };
@@ -38,8 +38,15 @@ export default function OpportunitiesPage() {
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
 
-  useEffect(() => {
-    void api.listApplications(true).then((items) => {
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestId = useRef(0);
+
+  const load = useCallback(async () => {
+    const id = ++requestId.current;
+    setLoadError(null);
+    try {
+      const items = await api.listApplications(true);
+      if (id !== requestId.current) return;
       setApps(
         items.map((a) => ({
           ...a,
@@ -50,8 +57,16 @@ export default function OpportunitiesPage() {
         })),
       );
       setLoaded(true);
-    });
+    } catch (err) {
+      if (isCancelledError(err) || id !== requestId.current) return;
+      setLoadError(err instanceof Error ? err.message : "Could not load applications");
+      setLoaded(true);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const visible = useMemo(
     () => apps.filter((app) => (showArchived ? app.archived : !app.archived)),
@@ -211,10 +226,13 @@ export default function OpportunitiesPage() {
       </div>
 
       {!loaded ? (
-        <div className="space-y-2">
+        <div role="status" aria-live="polite" className="space-y-2">
+          <span className="sr-only">Loading applications</span>
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-full" />
         </div>
+      ) : loadError ? (
+        <ErrorState description={loadError} onRetry={() => { setLoaded(false); void load(); }} />
       ) : filtered.length === 0 ? (
         <EmptyState
           title={visible.length === 0 ? (showArchived ? "No archived applications" : "No applications yet") : "No applications match"}

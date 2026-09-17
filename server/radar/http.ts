@@ -146,6 +146,7 @@ export function parseJobSearchParams(url: URL): JobSearchQuery {
     "location",
     "remote",
     "remotePolicy",
+    "arrangement",
     "savedOnly",
     "employmentType",
     "seniority",
@@ -200,7 +201,11 @@ export function parseJobSearchParams(url: URL): JobSearchQuery {
     if (sort === "recently_discovered") raw.freshnessBasis = "discovered";
   }
 
-  // remote policy: UI may send remote|hybrid|onsite|any as `remote`
+  // remote policy: UI may send remote|hybrid|onsite|any as `remote` or `arrangement`
+  if (raw.arrangement === "remote" || raw.arrangement === "hybrid" || raw.arrangement === "onsite") {
+    if (!raw.remotePolicy) raw.remotePolicy = raw.arrangement;
+    delete raw.arrangement;
+  }
   if (raw.remote === "any" || raw.remote === "unspecified") {
     delete raw.remote;
   } else if (raw.remote === "remote" || raw.remote === "hybrid" || raw.remote === "onsite") {

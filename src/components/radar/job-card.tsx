@@ -85,6 +85,8 @@ export function JobCard({
   onHide,
   onTailorResume,
   navigateOnSelect,
+  busy,
+  tailoring,
 }: {
   job: RadarJob;
   selected?: boolean;
@@ -94,6 +96,8 @@ export function JobCard({
   onTailorResume?: (job: RadarJob) => void;
   dense?: boolean;
   navigateOnSelect?: boolean;
+  busy?: boolean;
+  tailoring?: boolean;
 }) {
   const fit = fitCategoryFromLabel(job.matchLabel, job.matchScore);
   const reasons = (job.matchReasons ?? job.matchBreakdown?.notes ?? []).filter(Boolean).slice(0, 2);
@@ -156,20 +160,26 @@ export function JobCard({
               size="icon"
               variant="ghost"
               aria-label={job.saved ? "Unsave job" : "Save job"}
-              onClick={() => onSave(job)}
+              aria-busy={busy || undefined}
+              disabled={busy}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onSave(job);
+              }}
             >
               {job.saved ? <BookmarkCheck className="h-4 w-4 text-accent" /> : <Bookmark className="h-4 w-4" />}
             </Button>
           ) : null}
           {onHide ? (
-            <Button type="button" size="icon" variant="ghost" aria-label="Hide job" onClick={() => onHide(job)}>
+            <Button type="button" size="icon" variant="ghost" aria-label="Hide job" disabled={busy} onClick={() => onHide(job)}>
               <EyeOff className="h-4 w-4" />
             </Button>
           ) : null}
           {onTailorResume ? (
-            <Button type="button" size="sm" onClick={() => onTailorResume(job)}>
+            <Button type="button" size="sm" onClick={() => onTailorResume(job)} disabled={busy || tailoring}>
               <FileText className="h-3.5 w-3.5" />
-              Tailor
+              {tailoring ? "Starting…" : "Tailor"}
             </Button>
           ) : (
             <Link

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -14,14 +14,17 @@ function csrfToken() {
 export function GenerateForm() {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const [form, setForm] = useState({ jobDescription: "", jobUrl: "", company: "", role: "", location: "" });
 
-  async function submit(event: React.FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
+    if (submittingRef.current) return;
     if (!form.jobDescription.trim() && !form.jobUrl.trim()) {
       toast.error("Paste a job description or enter a job URL");
       return;
     }
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       const storageKey = `resume-idempotency:${form.jobUrl || form.jobDescription.slice(0, 120)}`;
@@ -47,6 +50,7 @@ export function GenerateForm() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not start resume generation");
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }

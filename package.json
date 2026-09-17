@@ -27,6 +27,7 @@
     "test:python-cutover": "vitest run src/test/architecture-python-only.test.ts src/test/python-cutover-routing.test.ts src/test/final-qa-authority.test.ts src/test/python-cutover-journey.test.ts && npm run test:python-mode",
     "verify:python-cutover": "node scripts/verify-python-cutover.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:built": "playwright test -c playwright.built.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx server/database/migrate.ts",
     "db:seed": "tsx server/database/seed-cli.ts",

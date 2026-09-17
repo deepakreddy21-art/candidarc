@@ -17,7 +17,8 @@ import {
   radarJobs,
   radarSourceCoverage,
 } from "@/data/radar-seed";
-import { api, allowDemoFallback, ApiError } from "@/services/api";
+import { api, allowDemoFallback, ApiError, isCancelledError, RequestCancelledError } from "@/services/api";
+import { clientFetch, jsonHeaders, LONG_WRITE_TIMEOUT_MS } from "@/lib/http-client";
 import { coerceJobSearchQueryInput } from "@server/radar/http";
 
 // NOTE: Removed artificial delay - no longer needed
@@ -25,20 +26,12 @@ const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
+async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
   try {
-    const csrf = typeof document === "undefined"
-      ? undefined
-      : document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
-    const res = await fetch(`/api/v1${path}`, {
+    const res = await clientFetch(`/api/v1${path}`, {
       ...init,
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-        ...(init?.headers ?? {}),
-      },
+      headers: jsonHeaders(init?.headers, { jsonBody: init?.body != null }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null) as { error?: { message?: string } } | null;
@@ -49,6 +42,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!allowDemoFallback()) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(error instanceof Error ? error.message : "Network request failed");
@@ -304,9 +298,10 @@ const mock = {
 };
 
 export const radarApi = {
-  async searchJobs(params: RadarSearchParams = {}): Promise<RadarSearchResult> {
+  async searchJobs(params: RadarSearchParams = {}, init?: { signal?: AbortSignal }): Promise<RadarSearchResult> {
     const res = await apiFetch<{ jobs: RadarJob[]; total?: number; nextCursor?: string }>(
       `/jobs/search${toQuery(params)}`,
+      { signal: init?.signal },
     );
     if (res.ok) {
       return {
@@ -316,8 +311,8 @@ export const radarApi = {
         usingDemoFixtures: false,
       };
     }
-    // Network/transport failures must surface Retry UI — never silently substitute seed jobs.
-    if (res.network || !allowDemoFallback()) {
+    // HTTP and transport failures must surface Retry UI — never silently substitute seed jobs.
+    if (res.network || typeof res.status === "number" || !allowDemoFallback()) {
       throw new ApiError("Could not load jobs", res.status ?? 503);
     }
     return mock.searchJobs(params);
@@ -340,12 +335,18 @@ export const radarApi = {
   async saveJob(id: string): Promise<void> {
     const res = await apiFetch(`/jobs/${id}/save`, { method: "POST", body: "{}" });
     if (res.ok) return;
+    if (typeof res.status === "number" || res.network || !allowDemoFallback()) {
+      throw new ApiError("Could not save job", res.status ?? 503);
+    }
     return mock.saveJob(id);
   },
 
   async unsaveJob(id: string): Promise<void> {
     const res = await apiFetch(`/jobs/${id}/save`, { method: "DELETE" });
     if (res.ok) return;
+    if (typeof res.status === "number" || res.network || !allowDemoFallback()) {
+      throw new ApiError("Could not unsave job", res.status ?? 503);
+    }
     return mock.unsaveJob(id);
   },
 
@@ -464,7 +465,7 @@ export const radarApi = {
   async tailorResume(jobId: string): Promise<{ workflowId: string; applicationId: string }> {
     const res = await apiFetch<{ workflowId: string; applicationId: string }>(
       `/jobs/${jobId}/tailor-resume`,
-      { method: "POST", body: "{}" },
+      { method: "POST", body: "{}", timeoutMs: LONG_WRITE_TIMEOUT_MS },
     );
     if (res.ok) return res.data;
     throw new ApiError("Could not tailor resume for this job", res.status ?? 500);

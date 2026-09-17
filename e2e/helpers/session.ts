@@ -18,6 +18,34 @@ async function csrf(page: Page): Promise<string> {
   return csrfFromCookies(await page.context().cookies());
 }
 
+async function apiRequest(
+  page: Page,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  options?: { headers?: Record<string, string>; data?: unknown },
+) {
+  // Prefer document-bound fetch so session cookies from UI signup always apply
+  // (APIRequestContext can miss Set-Cookie under next start on some hosts).
+  return page.evaluate(
+    async ({ method: m, path: p, headers, data }) => {
+      const response = await fetch(p, {
+        method: m,
+        credentials: "include",
+        headers: headers ?? {},
+        body: data === undefined ? undefined : JSON.stringify(data),
+      });
+      const text = await response.text();
+      return { ok: response.ok, status: response.status, text };
+    },
+    {
+      method,
+      path,
+      headers: options?.headers,
+      data: options?.data,
+    },
+  );
+}
+
 export async function signupViaApi(
   page: Page,
   input?: { name?: string; email?: string; password?: string },
@@ -37,13 +65,13 @@ export async function signupViaApi(
 export async function completeOnboardingViaApi(page: Page, user: { name: string; email: string }): Promise<void> {
   const token = await csrf(page);
   const headers = { "x-csrf-token": token, "content-type": "application/json" };
-  const progress = await page.request.get("/api/v1/profile/onboarding");
-  if (!progress.ok()) throw new Error(`onboarding get failed ${progress.status()}: ${await progress.text()}`);
-  const body = (await progress.json()) as { version?: number; data?: { version?: number } };
+  const progress = await apiRequest(page, "GET", "/api/v1/profile/onboarding");
+  if (!progress.ok) throw new Error(`onboarding get failed ${progress.status}: ${progress.text}`);
+  const body = JSON.parse(progress.text) as { version?: number; data?: { version?: number } };
   const expectedVersion = body.version ?? body.data?.version;
   if (typeof expectedVersion !== "number") throw new Error("onboarding version missing");
 
-  const save = await page.request.patch("/api/v1/profile/onboarding", {
+  const save = await apiRequest(page, "PATCH", "/api/v1/profile/onboarding", {
     headers,
     data: {
       expectedVersion,
@@ -57,27 +85,35 @@ export async function completeOnboardingViaApi(page: Page, user: { name: string;
         fullName: user.name,
         email: user.email,
         phone: "+1 555 0100",
-        location: "Austin, TX",
+        location: "São Paulo, Brazil",
         linkedIn: "linkedin.com/in/audit",
         skills: ["TypeScript", "Kubernetes"],
-        employment: [{ title: "Engineer", company: "Harbor Systems", bullets: ["Built APIs"] }],
+        employment: [{ title: "Engineer", company: "Harbor Systems", bullets: ["Built APIs for naïve clustering"] }],
         careerProfileMode: "manual",
       },
     },
   });
-  if (!save.ok()) throw new Error(`onboarding save failed ${save.status()}: ${await save.text()}`);
-  const saved = (await save.json()) as { version?: number };
-  const complete = await page.request.patch("/api/v1/profile/onboarding", {
+  if (!save.ok) throw new Error(`onboarding save failed ${save.status}: ${save.text}`);
+  const saved = JSON.parse(save.text) as { version?: number };
+  const complete = await apiRequest(page, "PATCH", "/api/v1/profile/onboarding", {
     headers,
     data: { expectedVersion: saved.version ?? expectedVersion + 1, step: 2, completed: true },
   });
-  if (!complete.ok()) throw new Error(`onboarding complete failed ${complete.status()}: ${await complete.text()}`);
+  if (!complete.ok) throw new Error(`onboarding complete failed ${complete.status}: ${complete.text}`);
 }
 
 export async function seedOnboardedUser(page: Page, prefix = "audit") {
-  const user = await signupViaApi(page, { email: uniqueEmail(prefix) });
-  await completeOnboardingViaApi(page, user);
-  return user;
+  const name = "Audit Tester";
+  const email = uniqueEmail(prefix);
+  const password = DEFAULT_PASSWORD;
+  await page.goto("/sign-up");
+  await page.locator("#name").fill(name);
+  await page.locator("#email").fill(email);
+  await page.locator("#password").fill(password);
+  await page.getByRole("button", { name: /create account/i }).click();
+  await page.waitForURL(/\/onboarding/, { timeout: 60_000 });
+  await completeOnboardingViaApi(page, { name, email });
+  return { name, email, password };
 }
 
 export async function loginViaUi(page: Page, email: string, password = DEFAULT_PASSWORD) {
@@ -95,7 +131,7 @@ export async function openJobs(page: Page) {
 
 export async function generateResumeViaApi(page: Page) {
   const token = await csrf(page);
-  const response = await page.request.post("/api/v1/resumes/generate", {
+  const response = await apiRequest(page, "POST", "/api/v1/resumes/generate", {
     headers: { "x-csrf-token": token, "content-type": "application/json" },
     data: {
       company: "Northwind Labs",
@@ -107,10 +143,10 @@ Responsibilities include building reliable services.
 Requirements: 5+ years experience, strong ownership.`,
     },
   });
-  if (!response.ok()) {
-    throw new Error(`generate failed ${response.status()}: ${await response.text()}`);
+  if (!response.ok) {
+    throw new Error(`generate failed ${response.status}: ${response.text}`);
   }
-  return (await response.json()) as { workflowId: string; applicationId?: string };
+  return JSON.parse(response.text) as { workflowId: string; applicationId?: string };
 }
 
 export async function waitForResumeReady(page: Page) {

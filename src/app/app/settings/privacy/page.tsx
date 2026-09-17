@@ -14,10 +14,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { product } from "@/config/product";
+import { api, ApiError } from "@/services/api";
 
-const PRIVACY_STORAGE_KEY = "candidarc-privacy";
 const DELETE_DOCS_REASON =
   "Per-document deletion is not available yet. Export your data, or delete the account to remove all uploads.";
+const RETENTION_REASON =
+  "Automatic retention windows are not available. CandidArc does not currently delete inactive artifacts on a timer. Export or delete the account to remove data.";
+const EVIDENCE_VISIBILITY_REASON =
+  "Workspace evidence visibility is controlled per STAR item, not by a global account switch. This control is unavailable because it would not change server behavior.";
+const MODEL_IMPROVEMENT_COPY =
+  "Stored on your account. CandidArc does not currently train models on your content, regardless of this setting. No training pipeline exists to honor an opt-in.";
 
 function csrfToken() {
   const raw =
@@ -28,27 +34,20 @@ function csrfToken() {
 }
 
 export default function PrivacySettingsPage() {
-  const [retention, setRetention] = useState("12");
-  const [evidenceVisibility, setEvidenceVisibility] = useState(true);
-  const [modelImprovement, setModelImprovement] = useState(true);
+  const [modelImprovement, setModelImprovement] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(PRIVACY_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as {
-        retention?: string;
-        evidenceVisibility?: boolean;
-        modelImprovement?: boolean;
-      };
-      if (parsed.retention) setRetention(parsed.retention);
-      if (typeof parsed.evidenceVisibility === "boolean") setEvidenceVisibility(parsed.evidenceVisibility);
-      if (typeof parsed.modelImprovement === "boolean") setModelImprovement(parsed.modelImprovement);
-    } catch {
-      /* ignore corrupt local preferences */
-    }
+    void api
+      .getProfile()
+      .then((profile) => {
+        setModelImprovement(Boolean(profile.modelImprovementOptIn));
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
   }, []);
 
   async function exportData() {
@@ -89,25 +88,24 @@ export default function PrivacySettingsPage() {
     }
   }
 
-  function persistPrivacy(next?: {
-    retention?: string;
-    evidenceVisibility?: boolean;
-    modelImprovement?: boolean;
-  }) {
-    const payload = {
-      retention: next?.retention ?? retention,
-      evidenceVisibility: next?.evidenceVisibility ?? evidenceVisibility,
-      modelImprovement: next?.modelImprovement ?? modelImprovement,
-    };
-    localStorage.setItem(PRIVACY_STORAGE_KEY, JSON.stringify(payload));
-    return payload;
+  async function saveModelImprovement() {
+    setSaving(true);
+    try {
+      const saved = await api.updateProfile({ modelImprovementOptIn: modelImprovement });
+      setModelImprovement(Boolean(saved.modelImprovementOptIn));
+      toast.success("Model-improvement preference saved to your account");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not save privacy preference");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Privacy"
-        description={`Control retention, exports, and what ${product.name} may learn from your work.`}
+        description={`Export, account deletion, and the privacy choices ${product.name} can actually enforce.`}
       />
 
       <Card>
@@ -133,32 +131,26 @@ export default function PrivacySettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>Retention</CardTitle>
-          <CardDescription>How long inactive application artifacts remain available.</CardDescription>
+          <CardDescription>Timed deletion of inactive artifacts is not implemented.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-3">
           <label className="flex items-center justify-between gap-3 text-sm">
             <span>Retention window</span>
             <select
               aria-label="Retention window"
               className="h-10 rounded-[11px] border border-border-strong bg-surface px-3"
-              value={retention}
-              onChange={(e) => setRetention(e.target.value)}
+              disabled
+              value="unavailable"
             >
-              <option value="3">3 months</option>
-              <option value="6">6 months</option>
-              <option value="12">12 months</option>
-              <option value="24">24 months</option>
+              <option value="unavailable">Not available</option>
             </select>
           </label>
-          <Button
-            type="button"
-            onClick={() => {
-              persistPrivacy({ retention });
-              toast.success("Retention preference saved");
-            }}
-          >
+          <Button type="button" disabled title={RETENTION_REASON} aria-describedby="retention-unavailable">
             Save retention
           </Button>
+          <p id="retention-unavailable" className="text-xs text-foreground-muted">
+            {RETENTION_REASON}
+          </p>
         </CardContent>
       </Card>
 
@@ -169,28 +161,23 @@ export default function PrivacySettingsPage() {
         <CardContent className="space-y-4">
           <label className="flex items-center justify-between gap-3 text-sm">
             <span>Show share-safe evidence in application workspaces</span>
-            <Switch
-              checked={evidenceVisibility}
-              onCheckedChange={setEvidenceVisibility}
-              aria-label="Evidence visibility"
-            />
+            <Switch checked={false} disabled aria-label="Evidence visibility" aria-describedby="evidence-visibility-unavailable" />
           </label>
+          <p id="evidence-visibility-unavailable" className="text-xs text-foreground-muted">
+            {EVIDENCE_VISIBILITY_REASON}
+          </p>
           <label className="flex items-center justify-between gap-3 text-sm">
             <span>Allow model improvement on anonymized patterns</span>
             <Switch
               checked={modelImprovement}
               onCheckedChange={setModelImprovement}
+              disabled={!loaded || saving}
               aria-label="Model improvement"
             />
           </label>
-          <Button
-            type="button"
-            onClick={() => {
-              persistPrivacy({ evidenceVisibility, modelImprovement });
-              toast.success("Privacy controls saved");
-            }}
-          >
-            Save privacy controls
+          <p className="text-xs text-foreground-muted">{MODEL_IMPROVEMENT_COPY}</p>
+          <Button type="button" onClick={() => void saveModelImprovement()} disabled={!loaded || saving}>
+            {saving ? "Saving…" : "Save privacy controls"}
           </Button>
         </CardContent>
       </Card>

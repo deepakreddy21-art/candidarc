@@ -1,54 +1,31 @@
 import { defineConfig, devices } from "@playwright/test";
+import base from "./playwright.config";
 
 const TOKEN = process.env.PYTHON_BACKEND_TOKEN || "dev-python-backend-token-change-me";
 const PYTHON_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8090";
 
 /**
- * Interaction audit + customer journey E2E.
- * Starts FastAPI (mock AI) + Next.js unless PLAYWRIGHT_SKIP_WEBSERVER=1.
- * One failed test does not stop the rest of the suite.
+ * Built-application browser pass (`next start`).
+ * Run `npm run build` with the same NEXT_PUBLIC_* values first.
  */
 export default defineConfig({
+  ...base,
   testDir: "./e2e",
-  fullyParallel: false,
-  forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
-  workers: 1,
-  maxFailures: 0,
-  reporter: process.env.CI
-    ? [
-        ["list"],
-        ["github"],
-        ["html", { open: "never", outputFolder: "playwright-report" }],
-      ]
-    : [
-        ["list"],
-        ["html", { open: "never", outputFolder: "playwright-report" }],
-      ],
-  timeout: 120_000,
-  expect: { timeout: 15_000 },
+  retries: 0,
+  reporter: [
+    ["list"],
+    ["html", { open: "never", outputFolder: "playwright-report-built" }],
+  ],
   use: {
+    ...base.use,
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000",
-    trace: "retain-on-first-failure",
-    screenshot: "only-on-failure",
-    video: "retain-on-failure",
     ...devices["Desktop Chrome"],
   },
   projects: [
     {
-      name: "desktop",
-      testIgnore: /mobile\.interactions\.spec\.ts/,
+      name: "built-desktop",
+      testMatch: /navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
-    },
-    {
-      name: "mobile",
-      testMatch: /mobile\.interactions\.spec\.ts/,
-      use: {
-        ...devices["Desktop Chrome"],
-        viewport: { width: 390, height: 844 },
-        isMobile: true,
-        hasTouch: true,
-      },
     },
   ],
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER
@@ -67,7 +44,7 @@ export default defineConfig({
           },
         },
         {
-          command: "npm run dev:web",
+          command: "npx next start --port 3000",
           url: "http://127.0.0.1:3000",
           reuseExistingServer: !process.env.CI,
           timeout: 180_000,

@@ -32,15 +32,29 @@ export function AskPanel({
   const [error, setError] = useState<string | null>(null);
   const [lastSent, setLastSent] = useState("");
 
+  const [loaded, setLoaded] = useState(false);
+
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
+    setLoaded(false);
     void fetch(
       `/api/v1/assistant?contextType=${encodeURIComponent(contextType)}&contextId=${encodeURIComponent(contextId)}`,
       { credentials: "include" },
     )
       .then((res) => res.json())
-      .then((body) => setMessages(body.messages ?? []))
-      .catch(() => setMessages([]));
+      .then((body) => {
+        if (cancelled) return;
+        setMessages(body.messages ?? []);
+        setLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open, contextType, contextId]);
 
   async function send(text = message) {
@@ -69,6 +83,7 @@ export function AskPanel({
       if (!response.ok) throw new Error(body?.error?.message ?? "Could not send that question");
       setMessages(body.messages ?? []);
       setMessage("");
+      setLoaded(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send that question");
     } finally {
@@ -114,9 +129,10 @@ export function AskPanel({
       <p className="mb-2 text-xs text-foreground-muted">
         Read-only by default. Suggested edits require your approval. This assistant will not invent facts.
       </p>
-      <div className="mb-2 max-h-56 space-y-2 overflow-y-auto text-sm">
+      <div className="mb-2 max-h-56 space-y-2 overflow-y-auto text-sm" data-testid="assistant-thread">
+        {!loaded ? <p className="text-xs text-foreground-muted">Loading conversation…</p> : null}
         {messages.map((item) => (
-          <div key={item.id} className="rounded-md border border-border p-2">
+          <div key={item.id} className="rounded-md border border-border p-2" data-role={item.role}>
             <p className="text-xs uppercase text-foreground-muted">{item.role}</p>
             <p className="mt-1 whitespace-pre-wrap">{item.content}</p>
             {item.citations?.length ? (

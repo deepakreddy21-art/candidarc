@@ -113,7 +113,10 @@ export function ErrorState({
   onRetry?: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-[color-mix(in_oklab,var(--destructive)_30%,transparent)] bg-[color-mix(in_oklab,var(--destructive)_6%,transparent)] p-6">
+    <div
+      role="alert"
+      className="rounded-2xl border border-[color-mix(in_oklab,var(--destructive)_30%,transparent)] bg-[color-mix(in_oklab,var(--destructive)_6%,transparent)] p-6"
+    >
       <h3 className="text-base font-semibold text-destructive">{title}</h3>
       <p className="mt-2 text-sm text-foreground-secondary">{description}</p>
       {onRetry ? (

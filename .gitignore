@@ -31,3 +31,5 @@ services/python-backend/.pytest_cache/
 *.pyc
 
 resume-import-screenshots/
+
+playwright-report-built/

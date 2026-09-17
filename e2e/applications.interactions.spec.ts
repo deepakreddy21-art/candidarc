@@ -56,13 +56,22 @@ test.describe("application interactions", () => {
     await page.goto("/app/opportunities");
     await page.getByRole("link", { name: /platform engineer/i }).click();
     await page.locator("#notes").fill("Follow up Thursday");
+    const saved = page.waitForResponse(
+      (res) => res.url().includes("/api/v1/applications/") && res.request().method() === "PATCH",
+    );
     await page.getByRole("button", { name: /save workspace/i }).click();
+    expect((await saved).ok()).toBeTruthy();
     await expect(page.getByText(/application workspace saved/i)).toBeVisible();
     await page.reload();
     await expect(page.locator("#notes")).toHaveValue("Follow up Thursday");
     await page.locator("#notes").fill("should not persist");
-    await page.goto("/app/opportunities");
-    await page.getByRole("link", { name: /platform engineer/i }).click();
+    await page
+      .locator("div")
+      .filter({ has: page.getByRole("button", { name: /save workspace/i }) })
+      .getByRole("button", { name: /^cancel$/i })
+      .click();
+    await expect(page.locator("#notes")).toHaveValue("Follow up Thursday");
+    await page.reload();
     await expect(page.locator("#notes")).toHaveValue("Follow up Thursday");
   });
 

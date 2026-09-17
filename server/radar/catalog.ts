@@ -699,6 +699,86 @@ export class CanonicalJobCatalog {
     usajobsJob.visaSponsorship = false;
     this.canonicalJobs.set(usajobsJob.id, usajobsJob);
 
+    this.ingestListing(
+      {
+        sourceListingId: "example-handoff-engineer",
+        sourceRequisitionId: "REQ-EXAMPLE-HANDOFF-1",
+        sourceCompanyIdentifier: "example",
+        title: "Example Handoff Engineer",
+        companyName: "Example Corp",
+        location: "Remote US",
+        locations: ["Remote US"],
+        description: "Controlled employer-site handoff fixture. TypeScript and Kubernetes.",
+        employmentType: "Full-time",
+        seniority: "Senior",
+        department: "Engineering",
+        applyUrl: "https://example.com/jobs/candidarc-handoff",
+        sourceUrl: "https://example.com/jobs/candidarc-handoff",
+        postedAt: iso(3 * 60 * 60_000),
+        postedPrecision: "EXACT_TIMESTAMP",
+        remotePolicy: "remote",
+        techStack: ["TypeScript", "Kubernetes"],
+        demoData: true,
+        attribution: "Controlled example.com handoff fixture",
+      },
+      "greenhouse",
+    );
+
+    const extraTitles = [
+      "Pagination Fixture Engineer 01",
+      "Pagination Fixture Engineer 02",
+      "Pagination Fixture Engineer 03",
+      "Pagination Fixture Engineer 04",
+      "Pagination Fixture Engineer 05",
+      "Pagination Fixture Engineer 06",
+      "Pagination Fixture Engineer 07",
+      "Pagination Fixture Engineer 08",
+      "Pagination Fixture Engineer 09",
+      "Pagination Fixture Engineer 10",
+      "Pagination Fixture Engineer 11",
+      "Pagination Fixture Engineer 12",
+      "Pagination Fixture Engineer 13",
+      "Pagination Fixture Engineer 14",
+      "Pagination Fixture Engineer 15",
+      "Pagination Fixture Engineer 16",
+      "Pagination Fixture Engineer 17",
+      "Pagination Fixture Engineer 18",
+      "Pagination Fixture Engineer 19",
+      "Pagination Fixture Engineer 20",
+      "Pagination Fixture Engineer 21",
+      "Pagination Fixture Engineer 22",
+      "Pagination Fixture Engineer 23",
+      "Pagination Fixture Engineer 24",
+    ] as const;
+    extraTitles.forEach((title, index) => {
+      // Keep pagination fixtures remote so filtered Remote + Load more can exceed one page.
+      const remotePolicy = "remote" as const;
+      this.ingestListing(
+        {
+          sourceListingId: `pagination-fixture-${index + 1}`,
+          sourceRequisitionId: `REQ-PAGE-${index + 1}`,
+          sourceCompanyIdentifier: `fixtureco-${index + 1}`,
+          title,
+          companyName: `Fixture Co ${index + 1}`,
+          location: remotePolicy === "remote" ? "Remote US" : "Austin, TX",
+          locations: remotePolicy === "remote" ? ["Remote US"] : ["Austin, TX"],
+          description: `${title} for catalog pagination. TypeScript, Python, Kubernetes.`,
+          employmentType: "Full-time",
+          seniority: "Mid-Senior",
+          department: "Engineering",
+          applyUrl: `https://example.com/jobs/pagination-${index + 1}`,
+          sourceUrl: `https://example.com/jobs/pagination-${index + 1}`,
+          postedAt: iso((index + 1) * 60 * 60_000),
+          postedPrecision: "EXACT_TIMESTAMP",
+          remotePolicy,
+          techStack: ["TypeScript", "Python", "Kubernetes"],
+          demoData: true,
+          attribution: "Pagination demo fixture",
+        },
+        "greenhouse",
+      );
+    });
+
     this.indexedAt = nowIso();
   }
 

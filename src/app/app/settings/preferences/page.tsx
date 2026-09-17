@@ -50,7 +50,7 @@ export default function PreferencesPage() {
             <Switch checked={onePageDefault} onCheckedChange={setOnePageDraft} aria-label="One page default" />
           </label>
           <p className="text-xs text-foreground-muted">
-            Email delivery stays off until a mail provider is configured. This preference is stored on this device.
+            Theme, digest, and resume-length defaults are stored on this device only. Email delivery stays off until a mail provider is configured.
           </p>
           <Button
             type="button"

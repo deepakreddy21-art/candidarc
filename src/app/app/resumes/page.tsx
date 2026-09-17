@@ -1,27 +1,41 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/layout/page-header";
 import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { EmptyState, Skeleton } from "@/components/ui/feedback";
+import { EmptyState, ErrorState, Skeleton } from "@/components/ui/feedback";
 import { customerResumePath, mapResumeProgress } from "@/lib/application-presentation";
 import { formatRelative } from "@/lib/utils";
-import { api } from "@/services/api";
+import { api, isCancelledError } from "@/services/api";
 import type { Application } from "@/types/domain";
 
 export default function ResumesPage() {
   const [apps, setApps] = useState<Application[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const requestId = useRef(0);
 
-  useEffect(() => {
-    void api.listApplications().then((items) => {
+  const load = useCallback(async () => {
+    const id = ++requestId.current;
+    setError(null);
+    try {
+      const items = await api.listApplications();
+      if (id !== requestId.current) return;
       setApps(items.filter((app) => !app.archived && Boolean(customerResumePath(app))));
       setLoaded(true);
-    });
+    } catch (err) {
+      if (isCancelledError(err) || id !== requestId.current) return;
+      setError(err instanceof Error ? err.message.replace(/applications/i, "resumes") : "Could not load resumes");
+      setLoaded(true);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   return (
     <div className="space-y-6">
@@ -35,9 +49,16 @@ export default function ResumesPage() {
         }
       />
 
-      {!loaded ? <Skeleton className="h-40 w-full" /> : null}
+      {!loaded ? (
+        <div role="status" aria-live="polite">
+          <span className="sr-only">Loading resumes</span>
+          <Skeleton className="h-40 w-full" />
+        </div>
+      ) : null}
 
-      {loaded && apps.length === 0 ? (
+      {loaded && error ? <ErrorState description={error} onRetry={() => { setLoaded(false); void load(); }} /> : null}
+
+      {loaded && !error && apps.length === 0 ? (
         <EmptyState
           title="No tailored resumes yet"
           description="Pick a job in Radar, then tailor a resume from your career evidence."
@@ -49,7 +70,7 @@ export default function ResumesPage() {
         />
       ) : null}
 
-      {loaded && apps.length > 0 ? (
+      {loaded && !error && apps.length > 0 ? (
         <>
           <Input
             aria-label="Search resumes"

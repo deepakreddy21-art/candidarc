@@ -18,6 +18,17 @@ import type {
   AppInsights,
 } from "@/types/domain";
 import { allowDemoFallback as isDemoFallbackAllowed } from "@/lib/app-mode";
+import {
+  clientFetch,
+  clearClientRequestCaches,
+  isCancelledError,
+  jsonHeaders,
+  RequestCancelledError,
+  UPLOAD_TIMEOUT_MS,
+  LONG_WRITE_TIMEOUT_MS,
+} from "@/lib/http-client";
+
+export { isCancelledError, RequestCancelledError, clearClientRequestCaches };
 
 export { isDemoFallbackAllowed as allowDemoFallback };
 
@@ -154,16 +165,10 @@ export type WorkflowResponse = {
 async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
   try {
-    const csrf = typeof document === "undefined"
-      ? undefined
-      : document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
-    const res = await fetch(`/api/v1${path}`, {
+    const res = await clientFetch(`/api/v1${path}`, {
       method: "POST",
       body: form,
-      credentials: "include",
-      headers: {
-        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-      },
+      timeoutMs: UPLOAD_TIMEOUT_MS,
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
@@ -173,6 +178,7 @@ async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>>
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(error instanceof Error ? error.message : "Network request failed");
@@ -181,20 +187,12 @@ async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>>
   }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
+async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
   try {
-    const csrf = typeof document === "undefined"
-      ? undefined
-      : document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
-    const res = await fetch(`/api/v1${path}`, {
+    const res = await clientFetch(`/api/v1${path}`, {
       ...init,
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-        ...(init?.headers ?? {}),
-      },
+      headers: jsonHeaders(init?.headers, { jsonBody: init?.body != null }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
@@ -204,6 +202,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(error instanceof Error ? error.message : "Network request failed");
@@ -405,6 +404,10 @@ export const api = {
       body: JSON.stringify(patch),
     });
     if (res.ok) return res.data.profile;
+    // HTTP failures must surface to the UI — never pretend a rejected write succeeded via mock.
+    if (typeof res.status === "number") {
+      throw new ApiError("Could not save profile", res.status);
+    }
     if (!isDemoFallbackAllowed()) throw new ApiError("Could not save profile", res.status);
     return mock.updateProfile(patch);
   },
@@ -491,7 +494,11 @@ export const api = {
     const q = includeArchived ? "?includeArchived=true" : "";
     const res = await apiFetch<{ applications: Application[] }>(`/applications${q}`);
     if (res.ok) return res.data.applications;
-    if (!isDemoFallbackAllowed()) return [];
+    // Server errors must reach page Retry UI; mock only covers transport-unavailable demo boots.
+    if (typeof res.status === "number") {
+      throw new ApiError("Could not load applications", res.status);
+    }
+    if (!isDemoFallbackAllowed()) throw new ApiError("Could not load applications", 503);
     return mock.listApplications(includeArchived);
   },
   async getApplication(id: string): Promise<Application | undefined> {
@@ -503,6 +510,7 @@ export const api = {
   async createApplication(input: CreateApplicationRequest): Promise<Application> {
     const res = await apiFetch<{ application: Application }>("/applications", {
       method: "POST",
+      timeoutMs: LONG_WRITE_TIMEOUT_MS,
       body: JSON.stringify({
         company: input.company,
         role: input.role,

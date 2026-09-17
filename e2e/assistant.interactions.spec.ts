@@ -21,11 +21,30 @@ test.describe("assistant interactions", () => {
     await waitForResumeReady(page);
     await page.getByRole("button", { name: /ask about this resume/i }).click();
     await page.getByRole("textbox", { name: /ask the copilot/i }).fill("Summarize my strongest evidence.");
+    const posted = page.waitForResponse(
+      (res) => res.url().includes("/api/v1/assistant") && res.request().method() === "POST",
+    );
     await page.getByRole("button", { name: /^send$/i }).click();
-    await expect(page.getByText("Summarize my strongest evidence.", { exact: true })).toBeVisible({ timeout: 30_000 });
+    expect((await posted).ok()).toBeTruthy();
+    await expect(page.getByTestId("assistant-thread").locator('[data-role="user"]')).toContainText(
+      "Summarize my strongest evidence.",
+    );
+    await expect(page.getByTestId("assistant-thread").locator('[data-role="assistant"]').first()).toBeVisible({
+      timeout: 30_000,
+    });
+    const reply = (
+      await page.getByTestId("assistant-thread").locator('[data-role="assistant"]').first().innerText()
+    ).trim();
+    expect(reply.length).toBeGreaterThan(12);
+    expect(await page.getByTestId("assistant-thread").locator('[data-role="user"]').count()).toBe(1);
     await page.reload();
     await page.getByRole("button", { name: /ask about this resume/i }).click();
-    await expect(page.getByText("Summarize my strongest evidence.", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("assistant-thread").locator('[data-role="user"]')).toContainText(
+      "Summarize my strongest evidence.",
+    );
+    await expect(page.getByTestId("assistant-thread").locator('[data-role="assistant"]').first()).toContainText(
+      /strongest evidence|Harbor Systems/i,
+    );
   });
 
   test("a failed send shows an error and retry recovers", async ({ page }) => {
@@ -51,10 +70,17 @@ test.describe("assistant interactions", () => {
       }
       await route.continue();
     });
-    await page.getByRole("textbox", { name: /ask the copilot/i }).fill("What should I emphasize?");
+    const draft = "What should I emphasize?";
+    await page.getByRole("textbox", { name: /ask the copilot/i }).fill(draft);
     await page.getByRole("button", { name: /^send$/i }).click();
     await expect(page.getByRole("alert").filter({ hasText: /assistant unavailable/i })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: /ask the copilot/i })).toHaveValue(draft);
     await page.getByRole("button", { name: /^retry$/i }).click();
-    await expect(page.getByText("What should I emphasize?", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("assistant-thread").locator('[data-role="user"]')).toHaveCount(1);
+    await expect(page.getByTestId("assistant-thread").locator('[data-role="user"]')).toContainText(draft);
+    await expect(page.getByTestId("assistant-thread").locator('[data-role="assistant"]').first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByRole("textbox", { name: /ask the copilot/i })).toHaveValue("");
   });
 });

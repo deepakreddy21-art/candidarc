@@ -259,10 +259,16 @@ export class CustomerGenerateService {
     const files = (currentApp.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
     const { pdfReady, docxReady } = await documentsReady(this.storage, tenantId, files);
     const documentsAreReady = pdfReady && docxReady;
+    const anyDocumentReady = pdfReady || docxReady;
+    const hasFinalVersion =
+      Array.isArray(currentApp.metadata?.customerFinalVersions) &&
+      (currentApp.metadata.customerFinalVersions as unknown[]).some((id) => typeof id === "string");
+    const previewable = hasFinalVersion && anyDocumentReady;
 
     if (
       currentApp.workflowStage === "FINAL_READY" &&
       !documentsAreReady &&
+      !anyDocumentReady &&
       currentApp.metadata?.documentRenderFailed !== true
     ) {
       const timedOut = await failStaleDocumentPreparation(this.repos, this.engine, {
@@ -277,16 +283,17 @@ export class CustomerGenerateService {
     }
 
     const questions = (currentApp.metadata?.techQuestions ?? []) as TechQuestion[];
+    const generationFailed =
+      latestRun.status === "failed" ||
+      currentApp.workflowStage === "FINAL_QA_FAILED" ||
+      currentApp.workflowStage === "FAILED" ||
+      latestRun.stage === "FINAL_QA_FAILED" ||
+      latestRun.stage === "FAILED" ||
+      currentApp.status === "failed" ||
+      currentApp.metadata?.documentRenderFailed === true;
     const mapped = mapInternalStageToCustomer(currentApp.workflowStage, {
-      failed:
-        latestRun.status === "failed" ||
-        currentApp.workflowStage === "FINAL_QA_FAILED" ||
-        currentApp.workflowStage === "FAILED" ||
-        latestRun.stage === "FINAL_QA_FAILED" ||
-        latestRun.stage === "FAILED" ||
-        currentApp.metadata?.documentRenderFailed === true ||
-        currentApp.status === "failed",
-      documentsReady: documentsAreReady,
+      failed: generationFailed && !previewable,
+      documentsReady: previewable || documentsAreReady,
       startedAt: latestRun.startedAt ?? latestRun.createdAt,
       needsInput:
         needsInputForTechQuestions(currentApp.workflowStage, questions) ||
@@ -305,6 +312,7 @@ export class CustomerGenerateService {
       pipelineLabel: mapped.pipelineLabel,
       elapsedMs: mapped.elapsedMs,
       downloads: { pdfReady, docxReady },
+      documentRetryAvailable: previewable && !documentsAreReady,
     };
     // Optional tech confirmation only while generation is waiting on input — hide after advance.
     if (mapped.status === "needs_input" && questions.length) {
