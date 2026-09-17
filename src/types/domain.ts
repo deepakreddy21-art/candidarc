@@ -66,6 +66,7 @@ export interface CandidateProfile {
   modelImprovementOptIn?: boolean;
   resumeImportStatus?: string | null;
   version?: number;
+  onboardingFlowVersion?: number;
 }
 
 export type ResumeImportExtraction = {
@@ -379,6 +380,14 @@ export interface Application {
   version?: number;
   /** Latest customer resume workflow public id for deep links. */
   workflowId?: string;
+  notes?: string;
+  contacts?: Array<{ name: string; role?: string; email?: string; url?: string }>;
+  appliedAt?: string;
+  followUpAt?: string;
+  interviewAt?: string;
+  interviewTimezone?: string;
+  coverLetter?: string;
+  outreachDraft?: string;
 }
 
 export interface ActivityEvent {

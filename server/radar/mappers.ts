@@ -10,6 +10,7 @@ import type {
   SourceCoverage,
 } from "./types";
 import { getMatchLabel } from "./match-labels";
+import { classifySponsorship } from "./sponsorship";
 
 /** UI-facing Radar job card / detail shape (matches src/types/radar.ts). */
 export type RadarJobView = {
@@ -84,6 +85,10 @@ export type RadarJobView = {
   saved?: boolean;
   hidden?: boolean;
   demoData?: boolean;
+  sponsorshipLabel?: string;
+  sponsorshipExplanation?: string;
+  visaSponsorship?: boolean | null;
+  historicalSponsorship?: boolean | null;
 };
 
 function sourceKind(sourceId: string): string {
@@ -231,6 +236,10 @@ export function toRadarJobView(
     saved: "saved" in item ? item.saved : false,
     hidden: "hidden" in item ? item.hidden : false,
     demoData: job.demoData,
+    sponsorshipLabel: classifySponsorship(job).label,
+    sponsorshipExplanation: classifySponsorship(job).explanation,
+    visaSponsorship: job.visaSponsorship ?? null,
+    historicalSponsorship: job.historicalSponsorship ?? null,
     // Match labels
     matchLabel: matchLabelInfo?.label ?? match?.matchLabel,
     matchTone: matchLabelInfo?.tone ?? match?.matchTone,

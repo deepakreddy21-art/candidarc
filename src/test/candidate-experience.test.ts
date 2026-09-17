@@ -5,6 +5,7 @@ import {
 } from "@/lib/resume-evidence-policy";
 import {
   customerNextAction,
+  customerResumePath,
   defaultCandidateStatus,
   mapResumeProgress,
 } from "@/lib/application-presentation";
@@ -68,6 +69,11 @@ describe("application presentation", () => {
     expect(mapResumeProgress({ status: "draft", resumeScore: 0, stage: "research" })).toBe("Not started");
     expect(mapResumeProgress({ status: "auditing", resumeScore: 40, stage: "hr-audit-1" })).toBe("Preparing");
     expect(mapResumeProgress({ status: "ready", resumeScore: 90, stage: "ready" })).toBe("Ready");
+  });
+
+  it("links the resume library only to customer workflow ids", () => {
+    expect(customerResumePath({ workflowId: "wf_live" })).toBe("/app/resumes/wf_live");
+    expect(customerResumePath({})).toBeNull();
   });
 
   it("maps candidate application status without exposing audits", () => {

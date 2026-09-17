@@ -16,6 +16,7 @@ import {
 import type { JobSourceListing } from "./providers/types";
 import { getLinkedInDemoListings } from "./providers/linkedin-licensed";
 import { listProviders } from "./providers/registry";
+import { matchesSponsorshipFilter } from "./sponsorship";
 import type {
   CandidateProfileForMatch,
   CanonicalJob,
@@ -516,6 +517,8 @@ export class CanonicalJobCatalog {
     ciscoJob.repostCount = Math.max(1, ciscoJob.repostCount);
     ciscoJob.repostedAt = iso(42 * 60_000);
     ciscoJob.originalPostedAt = iso(19 * 86_400_000);
+    ciscoJob.historicalSponsorship = true;
+    ciscoJob.visaSponsorship = null;
     ciscoJob.updatedAt = nowIso();
     this.canonicalJobs.set(ciscoJob.id, ciscoJob);
     this.pushHistory(
@@ -526,7 +529,7 @@ export class CanonicalJobCatalog {
     );
 
     // Superhuman — NEW, discovered recently (Ashby)
-    this.ingestListing(
+    const superhuman = this.ingestListing(
       {
         sourceListingId: "ashby-superhuman-sse-ai",
         sourceRequisitionId: "REQ-SH-SSE-AI-901",
@@ -552,6 +555,9 @@ export class CanonicalJobCatalog {
       },
       "ashby",
     );
+    const superhumanJob = this.canonicalJobs.get(superhuman.job.id)!;
+    superhumanJob.visaSponsorship = true;
+    this.canonicalJobs.set(superhumanJob.id, superhumanJob);
 
     // DoorDash ML Platform — REFRESHED
     const dd = this.ingestListing(
@@ -666,7 +672,7 @@ export class CanonicalJobCatalog {
       "ashby",
     );
 
-    this.ingestListing(
+    const usajobs = this.ingestListing(
       {
         sourceListingId: "usajobs-data-scientist-gs13",
         sourceRequisitionId: "DE-2026-44102",
@@ -689,6 +695,9 @@ export class CanonicalJobCatalog {
       },
       "usajobs",
     );
+    const usajobsJob = this.canonicalJobs.get(usajobs.job.id)!;
+    usajobsJob.visaSponsorship = false;
+    this.canonicalJobs.set(usajobsJob.id, usajobsJob);
 
     this.indexedAt = nowIso();
   }
@@ -796,6 +805,10 @@ export class CanonicalJobCatalog {
     if (query.seniority) {
       const s = query.seniority.toLowerCase();
       jobs = jobs.filter((j) => (j.seniority ?? "").toLowerCase().includes(s));
+    }
+
+    if (query.sponsorship) {
+      jobs = jobs.filter((j) => matchesSponsorshipFilter(j, query.sponsorship!));
     }
 
     jobs = jobs.filter((j) => this.matchesFreshnessType(j, query.freshnessType));

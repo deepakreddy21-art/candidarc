@@ -25,7 +25,7 @@ test.describe("primary customer journey", () => {
     }
 
     await expect(page.getByRole("navigation", { name: "Primary" })).toContainText(
-      /Jobs|Applications|Resume/,
+      /Jobs|Applications|Resumes|Profile/,
     );
     await expect(page.getByRole("navigation", { name: "Primary" })).not.toContainText(
       /Resume Studio|Application Copilot|Interview|Home|Find Jobs|My Applications/,

@@ -123,11 +123,61 @@ export class ApplicationsService {
     nextAction: string;
     candidateStatus?: string;
     expectedVersion?: number;
+    notes?: string;
+    contacts?: Array<{ name: string; role?: string; email?: string; url?: string }>;
+    appliedAt?: string;
+    followUpAt?: string;
+    interviewAt?: string;
+    interviewTimezone?: string;
+    coverLetter?: string;
+    outreachDraft?: string;
   }>) {
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
-    const { candidateStatus, expectedVersion, ...rest } = patch;
+    const {
+      candidateStatus,
+      expectedVersion,
+      notes,
+      contacts,
+      appliedAt,
+      followUpAt,
+      interviewAt,
+      interviewTimezone,
+      coverLetter,
+      outreachDraft,
+      ...rest
+    } = patch;
+
+    const tracker =
+      notes !== undefined ||
+      contacts !== undefined ||
+      appliedAt !== undefined ||
+      followUpAt !== undefined ||
+      interviewAt !== undefined ||
+      interviewTimezone !== undefined ||
+      coverLetter !== undefined ||
+      outreachDraft !== undefined;
+
+    if (tracker) {
+      const current = await this.applications.getByPublicId(tenantId, applicationPublicId);
+      if (!current) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
+      const metadata = { ...(current.metadata ?? {}) };
+      if (notes !== undefined) metadata.notes = notes;
+      if (contacts !== undefined) metadata.contacts = contacts;
+      if (appliedAt !== undefined) metadata.appliedAt = appliedAt;
+      if (followUpAt !== undefined) metadata.followUpAt = followUpAt;
+      if (interviewAt !== undefined) metadata.interviewAt = interviewAt;
+      if (interviewTimezone !== undefined) metadata.interviewTimezone = interviewTimezone;
+      if (coverLetter !== undefined) metadata.coverLetter = coverLetter;
+      if (outreachDraft !== undefined) metadata.outreachDraft = outreachDraft;
+      await this.applications.update(tenantId, applicationPublicId, { ...rest, metadata });
+    }
+
     if (candidateStatus === undefined) {
+      if (tracker) return this.applications.getByPublicId(tenantId, applicationPublicId).then((row) => {
+        if (!row) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
+        return row;
+      });
       return this.applications.update(tenantId, applicationPublicId, rest);
     }
 

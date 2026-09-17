@@ -1754,6 +1754,16 @@ export class MemoryStore {
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
+  markNotificationRead(tenantId: string, userId: string, publicId: string): MemNotification | null {
+    for (const row of this.notifications.values()) {
+      if (row.tenantId === tenantId && row.userId === userId && row.publicId === publicId && notDeleted(row)) {
+        row.read = true;
+        return row;
+      }
+    }
+    return null;
+  }
+
   appendAuditLog(input: Omit<MemAuditLog, "id" | "createdAt" | "publicId"> & { id?: string; publicId?: string }): MemAuditLog {
     const row: MemAuditLog = {
       id: input.id ?? id(),

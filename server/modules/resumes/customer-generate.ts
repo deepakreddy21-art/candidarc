@@ -61,6 +61,8 @@ export const techAnswersInputSchema = z.object({
 export const refineResumeInputSchema = z.object({
   instruction: z.string().min(3).max(4000),
   quickAction: z.string().max(100).optional(),
+  selectedText: z.string().max(4000).optional(),
+  sectionId: z.string().max(120).optional(),
 });
 
 type GenerateInput = z.infer<typeof customerGenerateInputSchema>;
@@ -661,7 +663,7 @@ export class CustomerGenerateService {
     }
   }
 
-  async refine(ctx: AuthContext, workflowId: string, input: { instruction: string; quickAction?: string }) {
+  async refine(ctx: AuthContext, workflowId: string, input: { instruction: string; quickAction?: string; selectedText?: string; sectionId?: string }) {
     const { tenantId, user } = this.tenant(ctx);
     const original = await this.repos.workflows.getByPublicId(tenantId, workflowId);
     if (!original) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
@@ -670,6 +672,10 @@ export class CustomerGenerateService {
     if (app.ownerUserId && app.ownerUserId !== user.id) {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
+    const selected = input.selectedText?.trim();
+    const instruction = selected
+      ? `Improve only this selected text (do not rewrite the rest of the resume unless required for grammar). Selected text:\n${selected}\n\nInstruction: ${input.instruction}`
+      : input.instruction;
     const resume = await this.repos.resumes.getByApplication(tenantId, app.publicId);
     const versions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
     const cycleBase = (versions.at(-1)?.versionNumber ?? -1) + 1;
@@ -678,9 +684,17 @@ export class CustomerGenerateService {
       applicationId: app.id,
       applicationPublicId: app.publicId,
       stage: "RESEARCH_QUEUED",
-      idempotencyKey: `customer-refine:${app.publicId}:${createHash("sha256").update(`${input.quickAction ?? ""}:${input.instruction}`).digest("hex")}:${cycleBase}`,
+      idempotencyKey: `customer-refine:${app.publicId}:${createHash("sha256").update(`${input.quickAction ?? ""}:${instruction}`).digest("hex")}:${cycleBase}`,
       message: "Resume refinement queued",
-      payload: { customerFacing: true, autoAdvanceAudits: true, cycleBase, refinementInstruction: input.instruction, quickAction: input.quickAction },
+      payload: {
+        customerFacing: true,
+        autoAdvanceAudits: true,
+        cycleBase,
+        refinementInstruction: instruction,
+        quickAction: input.quickAction,
+        selectedText: selected,
+        sectionId: input.sectionId,
+      },
     });
     await this.repos.applications.update(tenantId, app.publicId, {
       stage: "RESEARCH_QUEUED",
@@ -689,7 +703,7 @@ export class CustomerGenerateService {
       metadata: {
         ...app.metadata,
         customerFiles: undefined,
-        refinementInstruction: input.instruction,
+        refinementInstruction: instruction,
         enhancementAvailable: false,
         customerWorkflowPublicId: workflow.publicId,
       },

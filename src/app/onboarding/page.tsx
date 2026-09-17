@@ -14,6 +14,7 @@ import {
   validateStepClient,
   type OnboardingFormState,
 } from "@/components/onboarding/types";
+import { mapLoadedOnboardingStep, ONBOARDING_LAST_STEP } from "@/lib/onboarding-flow";
 import { createOnboardingSaveQueue } from "@/lib/onboarding-save-queue";
 import { mergeExtractionPreservingPreferences, profileToForm } from "@/lib/onboarding-form-map";
 import { api, ApiError } from "@/services/api";
@@ -49,7 +50,7 @@ export default function OnboardingPage() {
       const nextForm = profileToForm(saved.data, importState.extraction);
       formRef.current = nextForm;
       setForm(nextForm);
-      setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
+      setStep(mapLoadedOnboardingStep(saved.step, saved.data.onboardingFlowVersion));
       setSaveStatus("Needs review");
     } catch {
       setSaveStatus("Save failed");
@@ -125,31 +126,36 @@ export default function OnboardingPage() {
   }
 
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       try {
         const saved = await api.getOnboardingProgress();
+        if (cancelled) return;
         if (saved.completedAt) {
           router.replace("/app");
           return;
         }
         const importState = await api.getResumeImportStatus();
+        if (cancelled) return;
         setImportStatus(importState.status);
         const nextForm = profileToForm(saved.data, importState.extraction);
         formRef.current = nextForm;
         setForm(nextForm);
-        setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
+        setStep(mapLoadedOnboardingStep(saved.step, saved.data.onboardingFlowVersion));
         versionRef.current = saved.version ?? saved.data.version;
       } catch (err) {
+        if (cancelled) return;
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           router.replace("/sign-in?next=/onboarding");
           return;
         }
         toast.error("Could not load onboarding");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
+      cancelled = true;
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [router]);
@@ -268,21 +274,21 @@ export default function OnboardingPage() {
     const message = validateStepClient(step, current, importStatus);
     if (message) {
       if (step === 0 && !current.targetRoles.length) setErrors({ targetRoles: message });
-      else if (step === 0) setErrors({ seniority: message });
-      else if (step === 1 && !current.jobTypes.length) setErrors({ jobTypes: message });
-      else if (step === 1) setErrors({ workplaceModes: message });
-      else if (step === 2 && !current.fullName.trim()) setErrors({ fullName: message });
+      else if (step === 0 && !current.seniority) setErrors({ seniority: message });
+      else if (step === 0 && !current.jobTypes.length) setErrors({ jobTypes: message });
+      else if (step === 0) setErrors({ workplaceModes: message });
+      else if (step === 1 && !current.fullName.trim()) setErrors({ fullName: message });
       else setErrors({ career: message });
       toast.error(message);
       return;
     }
 
-    if (step === 2 && importStatus === "ready_for_review") {
+    if (step === 1 && importStatus === "ready_for_review") {
       const ok = await handleConfirmImport();
       if (!ok) return;
     }
 
-    if (step < 3) {
+    if (step < ONBOARDING_LAST_STEP) {
       try {
         await flushQueue({ form: formRef.current, step: step + 1 });
       } catch (err) {
@@ -294,7 +300,7 @@ export default function OnboardingPage() {
     }
 
     try {
-      await flushQueue({ form: formRef.current, step: 3, completed: true });
+      await flushQueue({ form: formRef.current, step: ONBOARDING_LAST_STEP, completed: true });
       router.push("/onboarding/complete");
     } catch (err) {
       if (!(err instanceof ApiError && err.status === 409)) {
@@ -344,11 +350,15 @@ export default function OnboardingPage() {
       onBack={() => void handleBack()}
       onContinue={() => void handleContinue()}
       onLogout={() => void handleLogout()}
-      continueLabel={step === 3 ? "Finish setup" : "Continue"}
+      continueLabel={step === ONBOARDING_LAST_STEP ? "Finish setup" : "Continue"}
     >
-      {step === 0 ? <StepCareerDirection form={form} onChange={patchForm} errors={errors} /> : null}
-      {step === 1 ? <StepWorkPreferences form={form} onChange={patchForm} errors={errors} /> : null}
-      {step === 2 ? (
+      {step === 0 ? (
+        <div className="space-y-8">
+          <StepCareerDirection form={form} onChange={patchForm} errors={errors} />
+          <StepWorkPreferences form={form} onChange={patchForm} errors={errors} />
+        </div>
+      ) : null}
+      {step === 1 ? (
         <StepCareerProfile
           form={form}
           onChange={patchForm}
@@ -361,7 +371,7 @@ export default function OnboardingPage() {
           importErrorCode={importErrorCode}
         />
       ) : null}
-      {step === 3 ? (
+      {step === 2 ? (
         <StepReview
           form={form}
           importStatus={importStatus}

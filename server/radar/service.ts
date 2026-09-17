@@ -2,6 +2,8 @@ import type { AuthContext } from "../auth/guards";
 import { requireTenantMembership, requireUser } from "../auth/guards";
 import { AppError, type CreateApplicationInput } from "../domain/types";
 import type { ApplicationsService } from "../modules/applications/service";
+import { NotificationsService } from "../modules/notifications/service";
+import { deliverCurrentAlertMatches } from "./alert-delivery";
 import type { CustomerGenerateService } from "../modules/resumes/customer-generate";
 import type { Repositories } from "../database/repositories";
 import {
@@ -372,6 +374,9 @@ export class RadarService {
     const alert = this.catalog.createAlert(tenantId, userId, input);
     if (this.store) {
       await this.persistOrThrow("job alert", () => this.store!.createAlert(alert));
+    }
+    if (alert.enabled && alert.cadence !== "paused") {
+      await deliverCurrentAlertMatches(this.catalog, new NotificationsService(), alert);
     }
     return alert;
   }

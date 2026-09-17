@@ -93,10 +93,26 @@ async function ensureDemoStore() {
 const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string,
+    public readonly requestId?: string,
+  ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+type ErrorBody = { error?: { message?: string; code?: string; requestId?: string }; message?: string };
+
+function apiErrorFromBody(body: ErrorBody | null, status: number): ApiError {
+  return new ApiError(
+    body?.error?.message ?? body?.message ?? `Request failed (${status})`,
+    status,
+    body?.error?.code,
+    body?.error?.requestId,
+  );
 }
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
@@ -150,8 +166,8 @@ async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>>
       },
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => null) as { error?: { message?: string }; message?: string } | null;
-      if (!isDemoFallbackAllowed()) throw new ApiError(body?.error?.message ?? body?.message ?? `Request failed (${res.status})`, res.status);
+      const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
+      if (!isDemoFallbackAllowed()) throw apiErrorFromBody(body, res.status);
       return { ok: false, network: false, status: res.status };
     }
     const data = (await res.json()) as T;
@@ -181,8 +197,8 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<
       },
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => null) as { error?: { message?: string }; message?: string } | null;
-      if (!isDemoFallbackAllowed()) throw new ApiError(body?.error?.message ?? body?.message ?? `Request failed (${res.status})`, res.status);
+      const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
+      if (!isDemoFallbackAllowed()) throw apiErrorFromBody(body, res.status);
       return { ok: false, network: false, status: res.status };
     }
     const data = (await res.json()) as T;
@@ -445,7 +461,10 @@ export const api = {
       form,
     );
     if (res.ok) return res.data;
-    throw new ApiError("Resume upload failed", res.status);
+    throw apiErrorFromBody(
+      { error: { message: "Resume upload failed" } },
+      res.status ?? 500,
+    );
   },
   async getResumeImportStatus(): Promise<{
     status: string | null;
@@ -526,6 +545,14 @@ export const api = {
       nextAction: string;
       candidateStatus: Application["candidateStatus"];
       expectedVersion: number;
+      notes: string;
+      contacts: Application["contacts"];
+      appliedAt: string;
+      followUpAt: string;
+      interviewAt: string;
+      interviewTimezone: string;
+      coverLetter: string;
+      outreachDraft: string;
     }>,
   ): Promise<Application> {
     const res = await apiFetch<{ application: Application }>(`/applications/${id}`, {
@@ -717,10 +744,14 @@ export const api = {
     return mock.listActivities();
   },
   async listNotifications(): Promise<Notification[]> {
+    const res = await apiFetch<{ notifications: Notification[] }>("/notifications");
+    if (res.ok) return res.data.notifications;
     if (!isDemoFallbackAllowed()) return [];
     return mock.listNotifications();
   },
   async markNotificationRead(id: string): Promise<void> {
+    const res = await apiFetch<{ ok: boolean }>(`/notifications/${id}`, { method: "POST", body: JSON.stringify({}) });
+    if (res.ok) return;
     if (!isDemoFallbackAllowed()) return;
     return mock.markNotificationRead(id);
   },

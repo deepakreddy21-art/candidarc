@@ -28,6 +28,7 @@ import type { QueueName } from "../domain/types";
 import { normalizeTitle, descriptionHash } from "./repost";
 import { setCheckpoint, createCheckpoint } from "./providers/checkpoints";
 import { verifyJobFromSource } from "./verification";
+import { NotificationsService } from "../modules/notifications/service";
 
 export const RADAR_QUEUE_NAMES = [
   "source-discovery",
@@ -168,6 +169,14 @@ export function registerRadarQueueHandlers(
       const j = catalog.getJob(payload.jobPublicId);
       if (j) {
         const deliveries = catalog.evaluateAlertsForJob(j);
+        const inbox = new NotificationsService();
+        for (const delivery of deliveries) {
+          await inbox.create(delivery.tenantId, delivery.userId, {
+            title: "Job alert",
+            body: delivery.message,
+            href: `/app/radar/jobs/${j.publicId}`,
+          });
+        }
         logger.debug(
           { jobId: j.id, deliveryCount: deliveries.length },
           "radar job-alerting: evaluated for specific job",
@@ -179,6 +188,14 @@ export function registerRadarQueueHandlers(
       for (const j of catalog.canonicalJobs.values()) {
         if (j.status !== "open") continue;
         const deliveries = catalog.evaluateAlertsForJob(j);
+        const inbox = new NotificationsService();
+        for (const delivery of deliveries) {
+          await inbox.create(delivery.tenantId, delivery.userId, {
+            title: "Job alert",
+            body: delivery.message,
+            href: `/app/radar/jobs/${j.publicId}`,
+          });
+        }
         totalDeliveries += deliveries.length;
       }
       logger.info(

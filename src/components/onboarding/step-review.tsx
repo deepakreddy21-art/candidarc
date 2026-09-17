@@ -31,7 +31,7 @@ export function StepReview({ form, importStatus, onEditStep }: Props) {
         ) : null}
       </ReviewCard>
 
-      <ReviewCard title="Work preferences" onEdit={() => onEditStep(1)}>
+      <ReviewCard title="Work preferences" onEdit={() => onEditStep(0)}>
         <p>Types: {form.jobTypes.join(", ") || "None"}</p>
         <p>Workplace: {form.workplaceModes.join(", ") || "None"}</p>
         <p className="text-foreground-muted">
@@ -39,7 +39,7 @@ export function StepReview({ form, importStatus, onEditStep }: Props) {
         </p>
       </ReviewCard>
 
-      <ReviewCard title="Career profile" onEdit={() => onEditStep(2)}>
+      <ReviewCard title="Career profile" onEdit={() => onEditStep(1)}>
         <p>Status: {profileStatus}</p>
         <p>Name: {form.fullName || "Not set"}</p>
         <p className="text-foreground-muted">

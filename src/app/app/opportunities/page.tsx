@@ -18,6 +18,7 @@ import { Input, Label } from "@/components/ui/input";
 import {
   CANDIDATE_STATUS_OPTIONS,
   customerNextAction,
+  customerResumePath,
   defaultCandidateStatus,
   mapResumeProgress,
   type CandidateApplicationStatus,
@@ -52,6 +53,17 @@ export default function OpportunitiesPage() {
       setLoaded(true);
     });
   }, []);
+
+  const counts = useMemo(() => {
+    const followUpsDue = apps.filter((a) => a.followUpAt && new Date(a.followUpAt).getTime() <= Date.now()).length;
+    return {
+      saved: apps.filter((a) => a.candidateStatus === "Saved").length,
+      applied: apps.filter((a) => a.candidateStatus === "Applied").length,
+      interviewing: apps.filter((a) => a.candidateStatus === "Interviewing").length,
+      offers: apps.filter((a) => a.candidateStatus === "Offer").length,
+      followUpsDue,
+    };
+  }, [apps]);
 
   const filtered = useMemo(() => {
     return apps.filter((app) => {
@@ -138,6 +150,14 @@ export default function OpportunitiesPage() {
         }
       />
 
+      <dl className="grid gap-2 text-sm sm:grid-cols-5">
+        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Saved</dt><dd className="font-medium">{counts.saved}</dd></div>
+        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Applied</dt><dd className="font-medium">{counts.applied}</dd></div>
+        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Interviewing</dt><dd className="font-medium">{counts.interviewing}</dd></div>
+        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Offers</dt><dd className="font-medium">{counts.offers}</dd></div>
+        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Follow-ups due</dt><dd className="font-medium">{counts.followUpsDue}</dd></div>
+      </dl>
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end" role="search" aria-label="Filter applications">
         <div className="min-w-0 flex-1 space-y-1.5">
           <Label htmlFor="apps-search">Search</Label>
@@ -207,10 +227,13 @@ export default function OpportunitiesPage() {
                 {filtered.map((app) => {
                   const resume = mapResumeProgress(app);
                   const next = customerNextAction({ ...app, candidateStatus: app.candidateStatus });
+                  const resumeHref = customerResumePath(app);
                   return (
                     <tr key={app.id} className="border-b border-border last:border-0">
                       <td className="px-3 py-3">
-                        <p className="font-medium text-foreground">{app.role}</p>
+                        <Link href={`/app/opportunities/${app.id}`} className="font-medium text-foreground hover:underline">
+                          {app.role}
+                        </Link>
                         <p className="text-foreground-secondary">{app.company}</p>
                       </td>
                       <td className="px-3 py-3">
@@ -234,8 +257,8 @@ export default function OpportunitiesPage() {
                       <td className="px-3 py-3">
                         <div className="flex flex-wrap gap-2">
                           <span className="text-foreground-secondary">{next}</span>
-                          {app.workflowId || app.resumeId ? (
-                            <Link href={`/app/resumes/${app.workflowId ?? app.resumeId}`} className="text-accent hover:underline">
+                          {resumeHref ? (
+                            <Link href={resumeHref} className="text-accent hover:underline">
                               View resume
                             </Link>
                           ) : null}
@@ -277,10 +300,13 @@ export default function OpportunitiesPage() {
             {filtered.map((app) => {
               const resume = mapResumeProgress(app);
               const next = customerNextAction({ ...app, candidateStatus: app.candidateStatus });
+              const resumeHref = customerResumePath(app);
               return (
                 <li key={app.id} className="space-y-2 p-3">
                   <div>
-                    <p className="font-medium">{app.role}</p>
+                    <Link href={`/app/opportunities/${app.id}`} className="font-medium hover:underline">
+                      {app.role}
+                    </Link>
                     <p className="text-sm text-foreground-secondary">{app.company}</p>
                   </div>
                   <div className="flex flex-wrap gap-2 text-xs">
@@ -304,8 +330,8 @@ export default function OpportunitiesPage() {
                   </select>
                   <div className={cn("flex flex-wrap gap-3 text-sm")}>
                     <span className="text-foreground-secondary">{next}</span>
-                    {app.workflowId || app.resumeId ? (
-                      <Link href={`/app/resumes/${app.workflowId ?? app.resumeId}`} className="text-accent">
+                    {resumeHref ? (
+                      <Link href={resumeHref} className="text-accent">
                         View resume
                       </Link>
                     ) : null}

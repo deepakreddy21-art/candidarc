@@ -37,6 +37,7 @@ export const ALLOWED_RESUME_MIMES = new Set([
 export const ALLOWED_RESUME_EXTENSIONS = new Set([".pdf", ".docx"]);
 
 const CONFIRMED_BASELINE_KEY = "__confirmedBaseline";
+const DRAFT_BASELINE_KEY = "__draftBaseline";
 
 function asExtractionRecord(
   value: ResumeExtractionSection | Record<string, unknown> | null | undefined,
@@ -63,6 +64,34 @@ function wrapWithConfirmedBaseline(
   return { [CONFIRMED_BASELINE_KEY]: clean };
 }
 
+function wrapWithDraftBaseline(
+  prior: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!prior) return null;
+  const { [CONFIRMED_BASELINE_KEY]: _c, [DRAFT_BASELINE_KEY]: _d, error: _e, errorCode: _code, ...clean } = prior;
+  void _c;
+  void _d;
+  void _e;
+  void _code;
+  if (!Object.keys(clean).length) return null;
+  return { [DRAFT_BASELINE_KEY]: clean };
+}
+
+function readDraftBaseline(extraction: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!extraction || typeof extraction !== "object") return null;
+  const baseline = extraction[DRAFT_BASELINE_KEY];
+  if (!baseline || typeof baseline !== "object") return null;
+  return baseline as Record<string, unknown>;
+}
+
+function hasCareerContent(extraction: Record<string, unknown> | null): boolean {
+  if (!extraction) return false;
+  const employment = Array.isArray(extraction.employment) ? extraction.employment : [];
+  const projects = Array.isArray(extraction.projects) ? extraction.projects : [];
+  const skills = Array.isArray(extraction.skills) ? extraction.skills : [];
+  return Boolean(employment.length || projects.length || skills.length || extraction.contact);
+}
+
 async function restoreConfirmedOrFail(
   repos: Repositories,
   tenantId: string,
@@ -76,6 +105,18 @@ async function restoreConfirmedOrFail(
     await repos.candidateProfiles.update(tenantId, userId, {
       resumeImportStatus: "confirmed",
       resumeImportExtraction: baseline,
+    });
+    return;
+  }
+  const draft = readDraftBaseline(extraction);
+  if (draft && hasCareerContent(draft)) {
+    await repos.candidateProfiles.update(tenantId, userId, {
+      resumeImportStatus: "failed",
+      resumeImportExtraction: {
+        ...draft,
+        error: message,
+        errorCode,
+      },
     });
     return;
   }
@@ -268,6 +309,8 @@ export class ResumeImportService {
         : readConfirmedBaseline(priorExtraction)
           ? wrapWithConfirmedBaseline(readConfirmedBaseline(priorExtraction))
           : null;
+    const draftBaseline =
+      !confirmedBaseline && hasCareerContent(priorExtraction) ? wrapWithDraftBaseline(priorExtraction) : null;
 
     const filePublicId = newId("sfp");
 
@@ -322,7 +365,7 @@ export class ResumeImportService {
       resumeImportStatus: "pending_scan",
 
       // Keep confirmed extraction baseline so a failed replacement cannot wipe career data.
-      resumeImportExtraction: confirmedBaseline,
+      resumeImportExtraction: confirmedBaseline ?? draftBaseline,
 
     });
 
@@ -399,6 +442,9 @@ export class ResumeImportService {
           const raw = profile.resumeImportExtraction as Record<string, unknown> | null;
           if (raw && CONFIRMED_BASELINE_KEY in raw && !raw.employment && !raw.error) {
             // Replacement in progress — do not surface baseline as a staged ready extraction.
+            return null;
+          }
+          if (raw && DRAFT_BASELINE_KEY in raw && !raw.employment && !raw.error) {
             return null;
           }
           return raw as ResumeExtractionSection | null;

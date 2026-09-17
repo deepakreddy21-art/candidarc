@@ -30,6 +30,11 @@ const WORKFLOW_HIDDEN = new Set([
   "draft",
 ]);
 
+/** Customer resume editor is keyed by workflow public id, never demo resume artifacts. */
+export function customerResumePath(app: Pick<Application, "workflowId">): string | null {
+  return app.workflowId ? `/app/resumes/${app.workflowId}` : null;
+}
+
 export function mapResumeProgress(app: Pick<Application, "status" | "resumeScore" | "stage">): ResumeProgress {
   if (app.status === "archived") return "Needs attention";
   if (app.status === "ready" || app.resumeScore >= 85) return "Ready";

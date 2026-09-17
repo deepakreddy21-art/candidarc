@@ -130,7 +130,7 @@ async function main() {
     { cwd: backendRoot, env: pythonEnv, shell: false },
   );
 
-  await waitHttp(`http://127.0.0.1:${PYTHON_PORT}/health/live`);
+  await waitHttp(`http://127.0.0.1:${PYTHON_PORT}/health/ready`);
   log(`FastAPI ready on :${PYTHON_PORT}`);
 
   const appEnv = {
@@ -144,7 +144,12 @@ async function main() {
   spawnChild("web", win ? "npx.cmd" : "npx", ["next", "dev", "--turbopack", "-p", String(WEB_PORT)], {
     env: appEnv,
   });
-  spawnChild("worker", win ? "npx.cmd" : "npx", ["tsx", "server/worker/main.ts"], { env: appEnv });
+  const queueBackend = process.env.QUEUE_BACKEND || "inprocess";
+  if (queueBackend === "redis") {
+    spawnChild("worker", win ? "npx.cmd" : "npx", ["tsx", "server/worker/main.ts"], { env: appEnv });
+  } else {
+    log("QUEUE_BACKEND=inprocess — Next.js owns the queue; extra worker not started");
+  }
 
   log("stack starting — Ctrl+C to stop all");
 }

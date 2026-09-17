@@ -6,6 +6,7 @@ import { jobAlertBodySchema } from "@server/radar/http";
 import { toAlertView } from "@server/radar/mappers";
 import { assertCsrf } from "@server/http/csrf";
 import { getRadarService } from "@server/http/feature-guards";
+import { deliverCurrentAlertMatches } from "@server/radar/alert-delivery";
 
 export async function GET(request: Request) {
   let requestId = "";
@@ -30,7 +31,8 @@ export async function POST(request: Request) {
     requireUser(ctx);
     const body = await parseJsonBody(request, jobAlertBodySchema);
     const runtime = await getRuntime();
-    const created = await getRadarService(runtime.services.radar).createAlert(ctx, {
+    const radar = getRadarService(runtime.services.radar);
+    const created = await radar.createAlert(ctx, {
       name: body.name,
       query: body.query,
       cadence: body.cadence,
@@ -39,8 +41,10 @@ export async function POST(request: Request) {
       savedSearchId: body.savedSearchId,
     });
     if (body.active === false) {
-      await getRadarService(runtime.services.radar).updateAlert(ctx, created.publicId, { enabled: false });
+      await radar.updateAlert(ctx, created.publicId, { enabled: false });
       created.enabled = false;
+    } else {
+      await deliverCurrentAlertMatches(radar.catalog, runtime.services.notifications, created);
     }
     return jsonOk({ alert: toAlertView(created) }, { status: 201 });
   } catch (err) {

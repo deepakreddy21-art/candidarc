@@ -10,38 +10,30 @@ async function signup(page: import("@playwright/test").Page, email: string) {
 }
 
 async function expectStep(page: import("@playwright/test").Page, n: number) {
-  await expect(page.locator("header").getByText(new RegExp(`step ${n} of 4`, "i"))).toBeVisible({
+  await expect(page.getByTestId("onboarding-step")).toHaveText(new RegExp(`step ${n} of 3`, "i"), {
     timeout: 30_000,
   });
 }
 
-async function fillStep1(page: import("@playwright/test").Page) {
+async function fillPreferences(page: import("@playwright/test").Page) {
   await expectStep(page, 1);
   await page.locator("#target-roles").click();
   await page.locator("#target-roles").type("Platform Engineer", { delay: 20 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("chip-Platform Engineer")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Senior", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Senior", exact: true })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await page.getByRole("button", { name: /^continue$/i }).click();
-  await expectStep(page, 2);
-}
-
-async function fillStep2(page: import("@playwright/test").Page) {
-  await expectStep(page, 2);
+  await expect(page.getByRole("button", { name: "Senior", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("group", { name: /job types/i }).getByRole("button", { name: "Full-time" }).click();
   await page.getByRole("group", { name: /workplace modes/i }).getByRole("button", { name: "Remote" }).click();
   await page.getByRole("button", { name: /^continue$/i }).click();
-  await expectStep(page, 3);
+  await expectStep(page, 2);
 }
 
-async function fillStep3Manual(page: import("@playwright/test").Page) {
-  await expectStep(page, 3);
+async function fillCareerManual(page: import("@playwright/test").Page) {
+  await expectStep(page, 2);
   await page.getByRole("button", { name: /enter manually/i }).click();
   await page.locator("#full-name").fill("Onboarding Tester");
+  await page.locator("#skills").scrollIntoViewIfNeeded();
   await page.locator("#skills").fill("TypeScript");
   await page.locator("#skills").press("Enter");
   await page.getByRole("button", { name: /add role/i }).click();
@@ -54,10 +46,9 @@ test.describe("onboarding v2", () => {
   test("password signup completes onboarding to Jobs", async ({ page }) => {
     const email = `onb-${Date.now()}@example.com`;
     await signup(page, email);
-    await fillStep1(page);
-    await fillStep2(page);
-    await fillStep3Manual(page);
-    await expectStep(page, 4);
+    await fillPreferences(page);
+    await fillCareerManual(page);
+    await expectStep(page, 3);
     await page.getByRole("button", { name: /finish setup/i }).click();
     await page.waitForURL(/\/onboarding\/complete/, { timeout: 60_000 });
     await expect(page.getByRole("link", { name: /see jobs for you/i })).toBeVisible();
@@ -68,7 +59,7 @@ test.describe("onboarding v2", () => {
   test("incomplete login resumes exact saved step", async ({ page }) => {
     const email = `resume-${Date.now()}@example.com`;
     await signup(page, email);
-    await fillStep1(page);
+    await fillPreferences(page);
     await expectStep(page, 2);
     await page.getByRole("button", { name: /log out/i }).click();
     await page.waitForURL(/\/sign-in/, { timeout: 30_000 });
@@ -77,7 +68,7 @@ test.describe("onboarding v2", () => {
     await page.getByRole("button", { name: /sign in|log in/i }).click();
     await page.waitForURL(/\/onboarding/, { timeout: 60_000 });
     await expectStep(page, 2);
-    await expect(page.getByRole("button", { name: "Full-time" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /upload a resume|enter manually/i }).first()).toBeVisible();
   });
 
   test("completed demo login bypasses onboarding", async ({ page }) => {
@@ -103,13 +94,12 @@ test.describe("onboarding v2", () => {
   test("incomplete authenticated user opening /app is redirected to onboarding", async ({ page }) => {
     const email = `gate-app-${Date.now()}@example.com`;
     await signup(page, email);
-    await fillStep1(page);
+    await fillPreferences(page);
     await expectStep(page, 2);
     const sessionCookie = (await page.context().cookies()).find((c) => c.name === "candidarc_session");
     expect(sessionCookie?.value).toBeTruthy();
     const probe = await page.request.get("/api/v1/profile/onboarding");
     expect(probe.status()).toBe(200);
-    // Authoritative server gate — do not rely on login redirectTo alone.
     await page.goto("/app");
     await expect(page).toHaveURL(/\/onboarding/, { timeout: 60_000 });
     await expectStep(page, 2);
@@ -118,7 +108,7 @@ test.describe("onboarding v2", () => {
   test("incomplete authenticated user opening /app/radar is redirected to onboarding", async ({ page }) => {
     const email = `gate-radar-${Date.now()}@example.com`;
     await signup(page, email);
-    await fillStep1(page);
+    await fillPreferences(page);
     await page.goto("/app/radar");
     await expect(page).toHaveURL(/\/onboarding/, { timeout: 60_000 });
     await expectStep(page, 2);
@@ -127,13 +117,12 @@ test.describe("onboarding v2", () => {
   test("direct /app stays blocked until onboarding completion finishes", async ({ page }) => {
     const email = `gate-finish-${Date.now()}@example.com`;
     await signup(page, email);
-    await fillStep1(page);
-    await fillStep2(page);
-    await fillStep3Manual(page);
-    await expectStep(page, 4);
+    await fillPreferences(page);
+    await fillCareerManual(page);
+    await expectStep(page, 3);
     await page.goto("/app");
     await expect(page).toHaveURL(/\/onboarding/, { timeout: 60_000 });
-    await expectStep(page, 4);
+    await expectStep(page, 3);
     await page.getByRole("button", { name: /finish setup/i }).click();
     await page.waitForURL(/\/onboarding\/complete/, { timeout: 60_000 });
     await page.goto("/app");

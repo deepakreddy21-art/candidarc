@@ -13,6 +13,7 @@ import { ResumePreview } from "./resume-preview";
 import { RefinePanel } from "./refine-panel";
 import { VersionHistory } from "./version-history";
 import { QualityReport } from "./quality-report";
+import { AskPanel } from "@/components/assistant/ask-panel";
 
 type ReadyData = {
   workflowId: string;
@@ -44,6 +45,8 @@ type ReadyData = {
 export function ResumeReady({ data }: { data: ReadyData }) {
   const router = useRouter();
   const [enhancing, setEnhancing] = useState(false);
+  const [selectedText, setSelectedText] = useState("");
+  const [compareId, setCompareId] = useState<string | undefined>(data.versions?.[1]?.id);
 
   const resumeDoc = useMemo(() => {
     if (data.resume?.document) return data.resume.document;
@@ -120,7 +123,14 @@ export function ResumeReady({ data }: { data: ReadyData }) {
         </CardHeader>
         <CardContent>
           {resumeDoc ? (
-            <ResumePreview document={resumeDoc} />
+            <div
+              onMouseUp={() => {
+                const text = window.getSelection()?.toString().trim() ?? "";
+                if (text.length >= 8) setSelectedText(text);
+              }}
+            >
+              <ResumePreview document={resumeDoc} />
+            </div>
           ) : data.resume?.previewHtml ? (
             <iframe
               title="Resume preview"
@@ -133,9 +143,23 @@ export function ResumeReady({ data }: { data: ReadyData }) {
         </CardContent>
       </Card>
       <div className="grid gap-5 lg:grid-cols-2">
-        <RefinePanel workflowId={data.workflowId} />
-        <VersionHistory versions={data.versions ?? []} />
+        <RefinePanel workflowId={data.workflowId} selectedText={selectedText} />
+        <VersionHistory
+          versions={data.versions ?? []}
+          currentId={data.versions?.[0]?.id}
+          onRestore={(id) => {
+            const label = data.versions?.find((v) => v.id === id)?.label ?? "prior version";
+            toast.message(`Prior versions stay immutable. Create a new version if you want to return to ${label}.`);
+            setCompareId(id);
+          }}
+        />
       </div>
+      {compareId && data.versions?.length ? (
+        <p className="text-xs text-foreground-muted">
+          Comparing against {data.versions.find((v) => v.id === compareId)?.label ?? "a prior version"}. Downloads always use the latest checked document.
+        </p>
+      ) : null}
+      <AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />
       <QualityReport report={data.qualityReport} />
     </div>
   );

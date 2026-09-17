@@ -50,7 +50,7 @@ export default function OnboardingCompletePage() {
           <Link href="/app/radar" className={cn(buttonVariants(), "w-full")}>
             See jobs for you
           </Link>
-          <Link href="/app/settings/profile" className={cn(buttonVariants({ variant: "secondary" }), "w-full")}>
+          <Link href="/app/profile" className={cn(buttonVariants({ variant: "secondary" }), "w-full")}>
             Review career profile
           </Link>
         </div>

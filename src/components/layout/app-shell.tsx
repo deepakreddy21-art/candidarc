@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
-import { Bell, Briefcase, FileText, Menu, Search, Settings, X } from "lucide-react";
+import { Bell, Briefcase, ClipboardList, FileText, Menu, Search, Settings, User, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Logo } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,15 @@ import { CommandPalette } from "@/components/command-palette";
 import { Tooltip } from "@/components/ui/tabs";
 import { useUiStore } from "@/stores/ui";
 import { cn, isMacPlatform } from "@/lib/utils";
-import { isRadarFeatureEnabled } from "@/lib/app-mode";
+import {
+  breadcrumbLabel,
+  getPrimaryNavItems,
+  isPrimaryNavActive,
+  JOBS_HREF,
+  NOTIFICATIONS_HREF,
+  PROFILE_HREF,
+  SETTINGS_HREF,
+} from "@/lib/primary-nav";
 import { api } from "@/services/api";
 import {
   DropdownMenu,
@@ -23,13 +31,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const JOBS_HREF = "/app/radar";
+const NAV_ICONS = {
+  Jobs: Briefcase,
+  Applications: ClipboardList,
+  Resumes: FileText,
+  Profile: User,
+} as const;
 
-const primaryNav = [
-  ...(isRadarFeatureEnabled() ? [{ href: JOBS_HREF, label: "Jobs", icon: Briefcase }] : []),
-  { href: "/app/opportunities", label: "Applications", icon: FileText },
-  { href: "/app/settings/profile", label: "Resume", icon: FileText },
-];
+const primaryNav = getPrimaryNavItems().map((item) => ({
+  ...item,
+  icon: NAV_ICONS[item.label],
+}));
 
 function NavItem({
   href,
@@ -61,13 +73,7 @@ function NavItem({
 }
 
 function isNavActive(pathname: string, href: string) {
-  if (href === JOBS_HREF) {
-    return pathname === "/app" || pathname === JOBS_HREF || pathname.startsWith(`${JOBS_HREF}/`);
-  }
-  if (href === "/app/settings/profile") {
-    return pathname === "/app/settings/profile" || pathname.startsWith("/app/settings/profile/");
-  }
-  return pathname === href || pathname.startsWith(`${href}/`);
+  return isPrimaryNavActive(pathname, href);
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -99,20 +105,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const crumbs = useMemo(() => {
     const parts = pathname.split("/").filter(Boolean);
     return parts.map((part, idx) => ({
-      label:
-        part === "app"
-          ? "Jobs"
-          : part === "opportunities"
-            ? "Applications"
-            : part === "radar"
-              ? "Jobs"
-              : part === "settings"
-                ? "Settings"
-                : part === "profile"
-                  ? "Resume"
-                  : part.startsWith("app-")
-                    ? "Application"
-                    : part,
+      label: breadcrumbLabel(part),
       href: "/" + parts.slice(0, idx + 1).join("/"),
     }));
   }, [pathname]);
@@ -244,7 +237,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </Button>
             <Tooltip content="Notifications">
               <Button variant="ghost" size="icon" aria-label="Notifications" asChild>
-                <Link href={JOBS_HREF}>
+                <Link href={NOTIFICATIONS_HREF}>
                   <Bell className="h-4 w-4" />
                 </Link>
               </Button>
@@ -264,11 +257,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <div className="text-xs font-normal text-foreground-muted">{displayEmail}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => router.push("/app/settings")}>
+                <DropdownMenuItem onClick={() => router.push(PROFILE_HREF)}>
+                  <User className="mr-2 h-3.5 w-3.5" />
+                  Profile
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => router.push(SETTINGS_HREF)}>
                   <Settings className="mr-2 h-3.5 w-3.5" />
                   Settings
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => router.push("/app/settings")}>Account</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={async () => {

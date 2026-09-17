@@ -274,7 +274,7 @@ export function StepCareerProfile({
             </div>
           )}
 
-          <details open={form.employment.length > 0} className="rounded-md border border-border p-3">
+          <details open={form.employment.length > 0 || form.careerProfileMode === "manual"} className="rounded-md border border-border p-3">
             <summary className="cursor-pointer text-sm font-medium">Professional experience</summary>
             <div className="mt-3 space-y-3">
               {form.employment.length === 0 ? (
@@ -422,7 +422,7 @@ export function StepCareerProfile({
             </div>
           </details>
 
-          <details open={form.skills.length > 0} className="rounded-md border border-border p-3">
+          <details open={form.skills.length > 0 || form.careerProfileMode === "manual"} className="rounded-md border border-border p-3">
             <summary className="cursor-pointer text-sm font-medium">Skills</summary>
             <div className="mt-3">
               <ChipInput

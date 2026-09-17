@@ -28,17 +28,15 @@ async function signUpForOnboarding(page: import("@playwright/test").Page) {
   await page.locator("#password").fill("OnboardTest!123");
   await page.getByRole("button", { name: /create|sign up|register/i }).click();
   await page.waitForURL(/\/onboarding/, { timeout: 60_000 });
-  await expect(page.locator("header").getByText(/step 1 of 4/i)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("onboarding-step")).toHaveText(/step 1 of 3/i, { timeout: 30_000 });
   await page.locator("#target-roles").click();
   await page.locator("#target-roles").type("Platform Engineer", { delay: 10 });
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Senior", exact: true }).click();
-  await page.getByRole("button", { name: /^continue$/i }).click();
-  await expect(page.locator("header").getByText(/step 2 of 4/i)).toBeVisible();
   await page.getByRole("group", { name: /job types/i }).getByRole("button", { name: "Full-time" }).click();
   await page.getByRole("group", { name: /workplace modes/i }).getByRole("button", { name: "Remote" }).click();
   await page.getByRole("button", { name: /^continue$/i }).click();
-  await expect(page.locator("header").getByText(/step 3 of 4/i)).toBeVisible();
+  await expect(page.getByTestId("onboarding-step")).toHaveText(/step 2 of 3/i);
   await page.getByRole("button", { name: /upload a resume/i }).click();
 }
 
@@ -246,7 +244,7 @@ test.describe("candidate screenshots", () => {
       });
     });
     await page.reload();
-    await expect(page.locator("header").getByText(/step 3 of 4/i)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("onboarding-step")).toHaveText(/step 2 of 3/i, { timeout: 30_000 });
     await page.getByRole("button", { name: /upload a resume/i }).click();
     await page.locator('input[type="file"]').setInputFiles({
       name: "harbor-systems-resume.pdf",

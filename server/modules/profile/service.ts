@@ -240,9 +240,12 @@ export class ProfileService {
     const touchesCareerDraft =
       data.skills !== undefined ||
       data.employment !== undefined ||
+      data.projects !== undefined ||
+      data.publications !== undefined ||
       data.education !== undefined ||
       data.certifications !== undefined ||
       data.careerProfileMode !== undefined ||
+      data.onboardingFlowVersion !== undefined ||
       data.fullName !== undefined ||
       data.email !== undefined;
 
@@ -301,19 +304,39 @@ export class ProfileService {
     // Validate required fields only when advancing past a step (not on autosave).
     if (typeof patch.step === "number" && patch.step > current.onboardingStep) {
       const leaving = current.onboardingStep;
-      if (leaving <= 1) {
-        assertStepPayload(leaving, patch.data);
-      }
-      if (leaving === 2) {
-        const probe = patch.data
-          ? ({ ...current, ...this.applyStepData(patch.data, current) } as CandidateProfileRecord)
-          : current;
-        if (!hasCareerProfileReady(probe) && !hasManualCareerReady(probe)) {
-          throw new AppError(
-            "ONBOARDING_VALIDATION",
-            "Confirm a resume import or enter career experience before continuing",
-            400,
-          );
+      const v3 = Boolean(
+        patch.data?.onboardingFlowVersion === 3 ||
+          (current.resumeImportExtraction as { onboardingFlowVersion?: number } | null)?.onboardingFlowVersion === 3,
+      );
+      if (v3) {
+        if (leaving === 0) assertStepPayload(0, patch.data);
+        if (leaving === 1) {
+          const probe = patch.data
+            ? ({ ...current, ...this.applyStepData(patch.data, current) } as CandidateProfileRecord)
+            : current;
+          if (!hasCareerProfileReady(probe) && !hasManualCareerReady(probe)) {
+            throw new AppError(
+              "ONBOARDING_VALIDATION",
+              "Confirm a resume import or enter career experience before continuing",
+              400,
+            );
+          }
+        }
+      } else {
+        if (leaving <= 1) {
+          assertStepPayload(leaving, patch.data);
+        }
+        if (leaving === 2) {
+          const probe = patch.data
+            ? ({ ...current, ...this.applyStepData(patch.data, current) } as CandidateProfileRecord)
+            : current;
+          if (!hasCareerProfileReady(probe) && !hasManualCareerReady(probe)) {
+            throw new AppError(
+              "ONBOARDING_VALIDATION",
+              "Confirm a resume import or enter career experience before continuing",
+              400,
+            );
+          }
         }
       }
     }

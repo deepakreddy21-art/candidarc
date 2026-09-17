@@ -20,8 +20,23 @@ test.describe("candidate experience journey", () => {
     const primaryNav = page.getByRole("navigation", { name: "Primary" });
     await expect(primaryNav).toContainText(/Jobs/);
     await expect(primaryNav).toContainText(/Applications/);
-    await expect(primaryNav).toContainText(/Resume/);
+    await expect(primaryNav).toContainText(/Resumes/);
+    await expect(primaryNav).toContainText(/Profile/);
     await expect(primaryNav).not.toContainText(/Home|Research|Evidence|Audits|Find Jobs|My Applications/);
+
+    await primaryNav.getByRole("link", { name: "Resumes" }).click();
+    await page.waitForURL(/\/app\/resumes/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: /^Resumes$|^Resume$/i })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Settings" })).toHaveCount(0);
+
+    await primaryNav.getByRole("link", { name: "Profile" }).click();
+    await page.waitForURL(/\/app\/profile/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: /^Profile$/i })).toBeVisible();
+
+    await page.goto("/app/radar");
+    await expect(page.getByRole("heading", { name: /jobs for you/i })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: /save search/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /create alert/i })).toBeVisible();
 
     // Filters drawer
     await page.getByRole("button", { name: /^filters$/i }).click();
@@ -58,6 +73,9 @@ test.describe("candidate experience journey", () => {
     await expect(page.getByText(/Download|PDF|Word|Refine|ready/i).first()).toBeVisible({
       timeout: 90_000,
     });
+
+    await page.goto("/app/notifications");
+    await expect(page.getByRole("heading", { name: /notifications/i })).toBeVisible();
 
     await page.goto("/app/opportunities");
     await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();

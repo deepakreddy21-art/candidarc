@@ -18,6 +18,7 @@ import {
   radarSourceCoverage,
 } from "@/data/radar-seed";
 import { api, allowDemoFallback, ApiError } from "@/services/api";
+import { coerceJobSearchQueryInput } from "@server/radar/http";
 
 // NOTE: Removed artificial delay - no longer needed
 const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
@@ -134,6 +135,10 @@ function mapJob(raw: Partial<RadarJob> & { id?: string; publicId?: string }): Ra
       preferred: raw.preferred ?? [],
       hiringSignals: raw.hiringSignals ?? [],
       freshnessExplanation: raw.freshnessExplanation ?? "Posting freshness unknown",
+      sponsorshipLabel: raw.sponsorshipLabel,
+      sponsorshipExplanation: raw.sponsorshipExplanation,
+      visaSponsorship: raw.visaSponsorship,
+      historicalSponsorship: raw.historicalSponsorship,
       repostExplanation: raw.repostExplanation,
       saved: raw.saved,
       hidden: raw.hidden,
@@ -373,10 +378,10 @@ export const radarApi = {
   async saveSearch(input: { name: string; query: RadarSearchParams }): Promise<SavedSearch> {
     const res = await apiFetch<{ savedSearch: SavedSearch }>("/saved-searches", {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify({ name: input.name, query: coerceJobSearchQueryInput(input.query) }),
     });
     if (res.ok) return res.data.savedSearch;
-    return mock.saveSearch(input);
+    throw new ApiError("Could not save search", res.status ?? 500);
   },
 
   async listAlerts(): Promise<JobAlert[]> {
@@ -388,10 +393,10 @@ export const radarApi = {
   async createAlert(input: Omit<JobAlert, "id" | "createdAt">): Promise<JobAlert> {
     const res = await apiFetch<{ alert: JobAlert }>("/job-alerts", {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify({ ...input, query: coerceJobSearchQueryInput(input.query) }),
     });
     if (res.ok) return res.data.alert;
-    return mock.createAlert(input);
+    throw new ApiError("Could not create alert", res.status ?? 500);
   },
 
   async getSourceCoverage(): Promise<SourceCoverageSummary> {

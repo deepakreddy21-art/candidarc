@@ -90,5 +90,16 @@ export function mapApplicationToUi(app: ApplicationRecord): Application {
       typeof app.metadata?.customerWorkflowPublicId === "string"
         ? app.metadata.customerWorkflowPublicId
         : undefined,
+    notes: typeof app.metadata?.notes === "string" ? app.metadata.notes : undefined,
+    contacts: Array.isArray(app.metadata?.contacts)
+      ? (app.metadata.contacts as Application["contacts"])
+      : undefined,
+    appliedAt: typeof app.metadata?.appliedAt === "string" ? app.metadata.appliedAt : undefined,
+    followUpAt: typeof app.metadata?.followUpAt === "string" ? app.metadata.followUpAt : undefined,
+    interviewAt: typeof app.metadata?.interviewAt === "string" ? app.metadata.interviewAt : undefined,
+    interviewTimezone:
+      typeof app.metadata?.interviewTimezone === "string" ? app.metadata.interviewTimezone : undefined,
+    coverLetter: typeof app.metadata?.coverLetter === "string" ? app.metadata.coverLetter : undefined,
+    outreachDraft: typeof app.metadata?.outreachDraft === "string" ? app.metadata.outreachDraft : undefined,
   };
 }

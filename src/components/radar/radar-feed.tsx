@@ -12,6 +12,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui/feedback";
 import { JobCard } from "@/components/radar/job-card";
 import { JobDetailPanel } from "@/components/radar/job-detail-panel";
+import { SavedSearchForm } from "@/components/radar/saved-search-form";
+import { AlertForm } from "@/components/radar/alert-form";
 import { radarApi } from "@/services/radar-api";
 import { api } from "@/services/api";
 import type {
@@ -41,6 +43,7 @@ function paramsFromUrl(sp: URLSearchParams): RadarSearchParams & { tab: FeedTab;
     company: sp.get("company") ?? undefined,
     employmentType: sp.get("employmentType") ?? undefined,
     seniority: sp.get("seniority") ?? undefined,
+    sponsorship: (sp.get("sponsorship") as RadarSearchParams["sponsorship"]) || undefined,
     compensationMin: sp.get("compensationMin") ? Number(sp.get("compensationMin")) : undefined,
     includeReposts: sp.get("includeReposts") !== "0",
     hidePossibleDuplicates: sp.get("hideDuplicates") === "1",
@@ -71,6 +74,9 @@ export function RadarFeed() {
   const [error, setError] = useState<string | undefined>();
   const [selectedId, setSelectedId] = useState<string | undefined>();
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [saveSearchOpen, setSaveSearchOpen] = useState(false);
+  const [alertOpen, setAlertOpen] = useState(false);
+  const [savingSearch, setSavingSearch] = useState(false);
   const [isNarrow, setIsNarrow] = useState(false);
   const [prefSummary, setPrefSummary] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
@@ -78,6 +84,7 @@ export function RadarFeed() {
     company: filters.company ?? "",
     employmentType: filters.employmentType ?? "",
     seniority: filters.seniority ?? "",
+    sponsorship: filters.sponsorship ?? "",
     compensationMin: filters.compensationMin?.toString() ?? "",
     freshnessBasis: filters.freshnessBasis ?? ("discovered" as FreshnessBasis),
     includeReposts: filters.includeReposts !== false,
@@ -137,6 +144,7 @@ export function RadarFeed() {
         company: filters.company,
         employmentType: filters.employmentType,
         seniority: filters.seniority,
+        sponsorship: filters.sponsorship,
         compensationMin: filters.compensationMin,
         includeReposts: filters.includeReposts,
         hidePossibleDuplicates: filters.hidePossibleDuplicates,
@@ -205,6 +213,15 @@ export function RadarFeed() {
     }
   }
 
+  async function hide(job: RadarJob) {
+    try {
+      await radarApi.hideJob(job.id);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not hide job");
+    }
+  }
+
   async function save(job: RadarJob) {
     try {
       if (job.saved) await radarApi.unsaveJob(job.id);
@@ -229,9 +246,26 @@ export function RadarFeed() {
         title="Jobs for you"
         description="Roles matched to your profile — open one to see fit, team signals, and how we’d tailor your resume."
         actions={
-          <Link href="/app/settings/preferences" className={buttonVariants({ variant: "secondary", size: "sm" })}>
-            Edit preferences
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/app/resumes/new" className={buttonVariants({ size: "sm" })}>
+              Tailor a job I found
+            </Link>
+            <Link href="/app/radar/saved" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+              Saved searches
+            </Link>
+            <Button type="button" variant="secondary" size="sm" onClick={() => setSaveSearchOpen(true)}>
+              Save search
+            </Button>
+            <Button type="button" variant="secondary" size="sm" onClick={() => setAlertOpen(true)}>
+              Create alert
+            </Button>
+            <Link href="/app/radar/alerts" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+              Alerts
+            </Link>
+            <Link href="/app/settings/preferences" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+              Preferences
+            </Link>
+          </div>
         }
       />
 
@@ -325,6 +359,19 @@ export function RadarFeed() {
                   onChange={(e) => setAdvanced({ ...advanced, seniority: e.target.value })}
                 />
               </Field>
+              <Field label="Sponsorship in this posting">
+                <select
+                  className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
+                  value={advanced.sponsorship}
+                  onChange={(e) => setAdvanced({ ...advanced, sponsorship: e.target.value })}
+                >
+                  <option value="">Any / not filtered</option>
+                  <option value="stated">Stated in this posting</option>
+                  <option value="historical">Company historical evidence</option>
+                  <option value="not_offered">Not offered</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </Field>
               <Field label="Minimum salary">
                 <Input
                   type="number"
@@ -389,6 +436,7 @@ export function RadarFeed() {
                   company: advanced.company || undefined,
                   employmentType: advanced.employmentType || undefined,
                   seniority: advanced.seniority || undefined,
+                  sponsorship: advanced.sponsorship || undefined,
                   compensationMin: advanced.compensationMin || undefined,
                   freshnessBasis: advanced.freshnessBasis,
                   freshnessPreset: advanced.freshnessPreset,
@@ -411,6 +459,90 @@ export function RadarFeed() {
           Search
         </Button>
       </div>
+
+      <div className="flex flex-wrap gap-2">
+        {[
+          filters.q ? `Keywords: ${filters.q}` : null,
+          filters.location ? `Location: ${filters.location}` : null,
+          filters.arrangement && filters.arrangement !== "any" ? filters.arrangement : null,
+          filters.sponsorship ? `Sponsorship: ${filters.sponsorship}` : null,
+          filters.company ? `Company: ${filters.company}` : null,
+          filters.seniority ? `Seniority: ${filters.seniority}` : null,
+        ]
+          .filter(Boolean)
+          .map((chip) => (
+            <span key={String(chip)} className="rounded-md border border-border px-2 py-1 text-xs">
+              {chip}
+            </span>
+          ))}
+        {(filters.q || filters.location || filters.sponsorship || filters.company) ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              writeUrl({
+                q: undefined,
+                location: undefined,
+                sponsorship: undefined,
+                company: undefined,
+                seniority: undefined,
+                arrangement: undefined,
+              })
+            }
+          >
+            Reset filters
+          </Button>
+        ) : null}
+      </div>
+
+      <Dialog open={saveSearchOpen} onOpenChange={setSaveSearchOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save this search</DialogTitle>
+          </DialogHeader>
+          <SavedSearchForm
+            initialQuery={filters}
+            submitting={savingSearch}
+            onSubmit={async ({ name, query }) => {
+              setSavingSearch(true);
+              try {
+                await radarApi.saveSearch({ name, query });
+                toast.success("Search saved");
+                setSaveSearchOpen(false);
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Could not save search");
+              } finally {
+                setSavingSearch(false);
+              }
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={alertOpen} onOpenChange={setAlertOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create alert from current filters</DialogTitle>
+          </DialogHeader>
+          <AlertForm
+            initialQuery={filters}
+            submitting={savingSearch}
+            onSubmit={async (input) => {
+              setSavingSearch(true);
+              try {
+                await radarApi.createAlert(input);
+                toast.success("In-app alert created. Email stays off until a provider is configured.");
+                setAlertOpen(false);
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Could not create alert");
+              } finally {
+                setSavingSearch(false);
+              }
+            }}
+          />
+        </DialogContent>
+      </Dialog>
 
       <div className="flex flex-wrap items-center gap-2 border-b border-border pb-2" role="tablist" aria-label="Job views">
         {(
@@ -499,6 +631,7 @@ export function RadarFeed() {
               compact
               onTailorResume={() => void tailor(selected)}
               onSave={() => void save(selected)}
+              onHide={() => void hide(selected)}
             />
           ) : (
             <div className="flex min-h-64 items-center justify-center border border-dashed border-border px-6 text-center text-sm text-foreground-muted">

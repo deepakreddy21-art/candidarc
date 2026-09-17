@@ -27,9 +27,11 @@ const commands = [
       ]
     : [{ id: "home", label: "Jobs", href: "/app", icon: Home }]),
   { id: "applications", label: "Applications", href: "/app/opportunities", icon: Briefcase },
-  { id: "new-resume", label: "Tailor a resume", href: "/app/resumes/new", icon: FileText },
-  { id: "profile", label: "Resume / Profile", href: "/app/settings/profile", icon: User },
+  { id: "resumes", label: "Resumes", href: "/app/resumes", icon: FileText },
+  { id: "new-resume", label: "Tailor a job I found", href: "/app/resumes/new", icon: FileText },
+  { id: "profile", label: "Profile", href: "/app/profile", icon: User },
   { id: "settings", label: "Settings", href: "/app/settings", icon: Settings },
+  { id: "billing", label: "Settings / Billing", href: "/app/settings/billing", icon: Settings },
 ];
 
 export function CommandPalette() {

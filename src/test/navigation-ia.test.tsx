@@ -20,7 +20,7 @@ vi.mock("@/services/api", () => ({
 }));
 
 describe("primary information architecture", () => {
-  it("shows Jobs / Applications / Resume navigation only", () => {
+  it("shows Jobs, Applications, Resumes, and Profile as separate primary destinations", () => {
     render(
       <TooltipProvider>
         <AppShell>
@@ -28,9 +28,15 @@ describe("primary information architecture", () => {
         </AppShell>
       </TooltipProvider>,
     );
-    expect(screen.getAllByText("Jobs").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Applications").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Resume").length).toBeGreaterThan(0);
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(nav).toHaveTextContent("Jobs");
+    expect(nav).toHaveTextContent("Applications");
+    expect(nav).toHaveTextContent("Resumes");
+    expect(nav).toHaveTextContent("Profile");
+    expect(nav.querySelector('a[href="/app/resumes"]')).toBeTruthy();
+    expect(nav.querySelector('a[href="/app/profile"]')).toBeTruthy();
+    expect(nav.querySelector('a[href="/app/settings"]')).toBeNull();
+    expect(nav.querySelector('a[href="/app/settings/profile"]')).toBeNull();
     expect(screen.queryByText("Home")).not.toBeInTheDocument();
     expect(screen.queryByText("Find Jobs")).not.toBeInTheDocument();
     expect(screen.queryByText("My Applications")).not.toBeInTheDocument();

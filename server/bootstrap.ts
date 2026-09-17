@@ -13,6 +13,8 @@ import {
 } from "./database/repositories";
 import { seedDemoAppsIntoMemory, getDemoExtras } from "./database/seed-demo-apps";
 import { ApplicationsService } from "./modules/applications/service";
+import { NotificationsService } from "./modules/notifications/service";
+import { AssistantService } from "./modules/assistant/service";
 import { ResearchService } from "./modules/research/service";
 import { EvidenceService } from "./modules/evidence/service";
 import { ResumesService } from "./modules/resumes/service";
@@ -58,6 +60,8 @@ export type RuntimeServices = {
   radar: RadarService | null;
   copilot: CopilotService | null;
   customerResumes: CustomerGenerateService;
+  notifications: NotificationsService;
+  assistant: AssistantService;
 };
 
 export type Runtime = {
@@ -129,6 +133,10 @@ export function mapProfileToUi(p: CandidateProfileRecord): CandidateProfile {
     modelImprovementOptIn: p.modelImprovementOptIn,
     resumeImportStatus: p.resumeImportStatus,
     version: p.version,
+    onboardingFlowVersion:
+      typeof (p.resumeImportExtraction as { onboardingFlowVersion?: number } | null)?.onboardingFlowVersion === "number"
+        ? (p.resumeImportExtraction as { onboardingFlowVersion?: number }).onboardingFlowVersion
+        : undefined,
   };
 }
 
@@ -674,6 +682,8 @@ async function buildRuntime(): Promise<Runtime> {
     radar,
     copilot,
     customerResumes,
+    notifications: new NotificationsService(),
+    assistant: new AssistantService(),
   };
 
   if (mode === "memory" && env.QUEUE_BACKEND === "inprocess" && !queueDrainStarted) {

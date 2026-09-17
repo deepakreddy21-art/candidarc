@@ -1,25 +1,19 @@
 export const ONBOARDING_STEPS = [
   {
     id: 0,
-    title: "What roles are you targeting?",
-    panel:
-      "Tell us where you want to go. CandidArc will use this to focus your Job Radar and resume recommendations.",
+    title: "What kind of work are you looking for?",
+    panel: "Roles and work setup first. CandidArc uses this to focus Jobs and resume recommendations.",
   },
   {
     id: 1,
-    title: "Where and how do you want to work?",
-    panel: "These preferences remove irrelevant jobs before they reach your Radar.",
+    title: "Add your career profile",
+    panel: "Upload a résumé or enter details. This is the evidence CandidArc can safely use when tailoring.",
   },
   {
     id: 2,
-    title: "Build your career profile",
-    panel: "Your career profile is the evidence CandidArc can safely use when tailoring a resume.",
-  },
-  {
-    id: 3,
-    title: "Review what CandidArc can use",
+    title: "Review and start",
     panel:
-      "When you choose a job, CandidArc analyzes its requirements and public company or team signals—such as likely technologies, initiatives and hiring patterns. Those signals help prioritize your real experience. They never become claims about you unless your career evidence supports them.",
+      "When you choose a job, CandidArc uses posting requirements and public team signals to prioritize your real experience—never to invent claims.",
   },
 ] as const;
 
@@ -213,6 +207,7 @@ export function normalizeList(values: string[]): string[] {
 
 export function formToPayload(form: OnboardingFormState): Record<string, unknown> {
   return {
+    onboardingFlowVersion: 3,
     targetRoles: normalizeList(form.targetRoles),
     seniority: form.seniority || null,
     targetCompanies: normalizeList(form.targetCompanies),
@@ -252,12 +247,10 @@ export function validateStepClient(
   if (step === 0) {
     if (!normalizeList(form.targetRoles).length) return "Add at least one target role";
     if (!form.seniority) return "Select a seniority level";
-  }
-  if (step === 1) {
     if (!form.jobTypes.length) return "Select at least one job type";
     if (!form.workplaceModes.length) return "Select at least one workplace mode";
   }
-  if (step === 2) {
+  if (step === 1) {
     if (importStatus === "confirmed" || importStatus === "ready_for_review") return null;
     if (["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "")) {
       return "Wait for résumé import to finish, or choose Enter manually";

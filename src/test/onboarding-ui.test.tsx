@@ -26,21 +26,27 @@ describe("onboarding helpers", () => {
     form.targetRoles = ["Backend Engineer"];
     expect(validateStepClient(0, form)).toMatch(/seniority/i);
     form.seniority = "senior";
+    expect(validateStepClient(0, form)).toMatch(/job type/i);
+    form.jobTypes = ["full-time"];
+    expect(validateStepClient(0, form)).toMatch(/workplace/i);
+    form.workplaceModes = ["remote"];
     expect(validateStepClient(0, form)).toBeNull();
   });
 
-  it("requires job types and workplace modes on step 1", () => {
+  it("requires job types and workplace modes on combined preferences step", () => {
     const form = emptyOnboardingForm();
+    form.targetRoles = ["Backend Engineer"];
+    form.seniority = "senior";
     form.jobTypes = ["full-time"];
-    expect(validateStepClient(1, form)).toMatch(/workplace/i);
+    expect(validateStepClient(0, form)).toMatch(/workplace/i);
     form.workplaceModes = ["remote"];
-    expect(validateStepClient(1, form)).toBeNull();
+    expect(validateStepClient(0, form)).toBeNull();
   });
 
   it("allows confirmed upload path without manual employment", () => {
     const form = emptyOnboardingForm();
     form.fullName = "";
-    expect(validateStepClient(2, form, "confirmed")).toBeNull();
+    expect(validateStepClient(1, form, "confirmed")).toBeNull();
   });
 
   it("maps form payload for persistence", () => {

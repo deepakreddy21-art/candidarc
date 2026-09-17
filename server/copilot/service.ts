@@ -88,12 +88,60 @@ export class CopilotService {
   }
 
   listAnswers(tenantId: string, userId: string): ReusableAnswer[] {
-    return [...this.answers.values()].map((answer) => ({
-      ...answer,
-      tenantId,
-      userId,
-      approvedForOpportunityIds: [...answer.approvedForOpportunityIds],
-    }));
+    return [...this.answers.values()]
+      .filter((answer) =>
+        (answer.tenantId === tenantId && answer.userId === userId) ||
+        answer.tenantId === "demo",
+      )
+      .map((answer) => ({
+        ...answer,
+        tenantId,
+        userId,
+        approvedForOpportunityIds: [...answer.approvedForOpportunityIds],
+      }));
+  }
+
+  upsertProfileAnswers(
+    tenantId: string,
+    userId: string,
+    profile: {
+      fullName?: string | null;
+      email?: string | null;
+      phone?: string | null;
+      location?: string | null;
+      linkedIn?: string | null;
+      workAuthorization?: string | null;
+      requiresSponsorship?: boolean | null;
+    },
+  ) {
+    const now = new Date().toISOString();
+    const rows: Array<[string, string, string | boolean | null, boolean]> = [
+      ["full_name", "Full name", profile.fullName ?? null, false],
+      ["email", "Email", profile.email ?? null, false],
+      ["phone", "Phone", profile.phone ?? null, false],
+      ["location", "Location", profile.location ?? null, false],
+      ["linkedin", "LinkedIn", profile.linkedIn ?? null, false],
+      ["work_authorization", "Work authorization", profile.workAuthorization ?? null, true],
+      ["sponsorship", "Requires employer sponsorship", profile.requiresSponsorship ?? null, true],
+    ];
+    for (const [intent, label, answer, sensitive] of rows) {
+      if (answer == null || answer === "") continue;
+      const recordId = `answer_${tenantId}_${userId}_${intent}`;
+      this.answers.set(recordId, {
+        id: recordId,
+        tenantId,
+        userId,
+        intent,
+        label,
+        answer,
+        confidence: sensitive ? "SENSITIVE" : "VERIFIED",
+        source: "profile",
+        sensitive,
+        requiresApproval: sensitive,
+        approvedForOpportunityIds: [],
+        updatedAt: now,
+      });
+    }
   }
 
   approveAnswer(

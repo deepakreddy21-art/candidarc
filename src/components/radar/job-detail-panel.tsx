@@ -18,6 +18,7 @@ import { buildTeamSignals, type TeamSignal } from "@/lib/team-signals";
 import { decideTechnologyClaim } from "@/lib/resume-evidence-policy";
 import { formatRelative } from "@/lib/utils";
 import type { MatchLabel, RadarHistoryEvent, RadarJob } from "@/types/radar";
+import { AskPanel } from "@/components/assistant/ask-panel";
 
 export function JobDetailPanel({
   job,
@@ -96,6 +97,7 @@ export function JobDetailPanel({
                 </Badge>
               ) : null}
               {job.demoData || job.primarySource.demoData ? <Badge tone="neutral">Demo fixture</Badge> : null}
+              {job.sponsorshipLabel ? <Badge tone="neutral">{job.sponsorshipLabel}</Badge> : null}
             </div>
             <p className="mt-2 text-xs text-foreground-muted">
               {job.primarySource?.name ? `Source: ${job.primarySource.name}` : null}
@@ -114,6 +116,11 @@ export function JobDetailPanel({
               <Button type="button" size="sm" onClick={onTailorResume} disabled={tailoring}>
                 <FileText className="h-4 w-4" />
                 {tailoring ? "Starting…" : "Tailor my resume"}
+              </Button>
+            ) : null}
+            {onHide ? (
+              <Button type="button" size="sm" variant="ghost" onClick={onHide}>
+                Hide / report stale
               </Button>
             ) : null}
             {applyUrl ? (
@@ -224,6 +231,13 @@ export function JobDetailPanel({
         ) : null}
       </Section>
 
+      <Section title="Sponsorship">
+        <p className="text-sm text-foreground-secondary">{job.sponsorshipLabel ?? "Unknown"}</p>
+        <p className="mt-1 text-xs text-foreground-muted">
+          {job.sponsorshipExplanation ?? "Sponsorship for this posting is unknown. Historical company evidence is never treated as this role’s policy."}
+        </p>
+      </Section>
+
       <Section title="Interview preparation">
         {gaps.length ? (
           <div className="space-y-3">
@@ -236,7 +250,7 @@ export function JobDetailPanel({
               </ul>
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">Likely questions</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">Practice questions (generated, not sourced company questions)</p>
               <ul className="mt-1 space-y-1 text-sm text-foreground-secondary">
                 {signals.slice(0, 3).map((s) => (
                   <li key={`q-${s.id}`}>• How have you worked with {s.name} or a close equivalent?</li>
@@ -279,6 +293,13 @@ export function JobDetailPanel({
           Hide this job
         </Button>
       ) : null}
+      <AskPanel
+        contextType="job"
+        contextId={job.id}
+        company={job.company}
+        role={job.title}
+        jobDescription={job.description}
+      />
     </div>
   );
 }
