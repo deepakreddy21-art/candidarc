@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
@@ -80,6 +80,8 @@ export function RadarFeed() {
   const [isNarrow, setIsNarrow] = useState(false);
   const [prefSummary, setPrefSummary] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | undefined>();
+  const [loadingMore, setLoadingMore] = useState(false);
   const [advanced, setAdvanced] = useState({
     company: filters.company ?? "",
     employmentType: filters.employmentType ?? "",
@@ -120,7 +122,7 @@ export function RadarFeed() {
     (patch: Record<string, string | undefined>) => {
       const next = new URLSearchParams(searchParams.toString());
       for (const [key, value] of Object.entries(patch)) {
-        if (value === undefined || value === "" || value === "any" || value === "false" || value === "0") next.delete(key);
+        if (value === undefined || value === "") next.delete(key);
         else next.set(key, value);
       }
       router.replace(`${pathname}?${next.toString()}`, { scroll: false });
@@ -156,9 +158,11 @@ export function RadarFeed() {
         savedOnly: filters.tab === "saved",
         sort: filters.sort,
         limit: 20,
+        cursor: undefined,
       });
       setJobs(result.jobs);
       setTotal(result.total);
+      setNextCursor(result.nextCursor);
       setLastUpdated(new Date().toISOString());
       setSelectedId((current) =>
         current && result.jobs.some((job) => job.id === current) ? current : result.jobs[0]?.id,
@@ -217,8 +221,56 @@ export function RadarFeed() {
     try {
       await radarApi.hideJob(job.id);
       await load();
+      toast.message("Job hidden from this feed", {
+        action: {
+          label: "Undo hide",
+          onClick: () => {
+            void radarApi.unhideJob(job.id).then(() => load());
+          },
+        },
+      });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not hide job");
+    }
+  }
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const result = await radarApi.searchJobs({
+        q: filters.q,
+        location: filters.location,
+        remote: arrangement === "any" ? undefined : arrangement,
+        freshnessPreset: filters.freshnessPreset,
+        freshnessBasis: filters.freshnessBasis,
+        freshnessType: filters.freshnessType,
+        verifiedOpenOnly: filters.verifiedOpenOnly,
+        companyDirectOnly: filters.companyDirectOnly,
+        company: filters.company,
+        employmentType: filters.employmentType,
+        seniority: filters.seniority,
+        sponsorship: filters.sponsorship,
+        compensationMin: filters.compensationMin,
+        includeReposts: filters.includeReposts,
+        hidePossibleDuplicates: filters.hidePossibleDuplicates,
+        requireKnownOriginalDate: filters.requireKnownOriginalDate,
+        excludedCompanies: filters.excludedCompanies,
+        savedOnly: filters.tab === "saved",
+        sort: filters.sort,
+        limit: 20,
+        cursor: nextCursor,
+      });
+      setJobs((current) => {
+        const seen = new Set(current.map((item) => item.id));
+        return [...current, ...result.jobs.filter((job) => !seen.has(job.id))];
+      });
+      setTotal(result.total);
+      setNextCursor(result.nextCursor);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load more jobs");
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -313,8 +365,9 @@ export function RadarFeed() {
               <DialogTitle>Filters</DialogTitle>
             </DialogHeader>
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Work arrangement">
+              <Field label="Work arrangement" htmlFor="filter-arrangement">
                 <select
+                  id="filter-arrangement"
                   className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
                   value={arrangement}
                   onChange={(e) => setArrangement(e.target.value as RemotePolicy | "any")}
@@ -325,8 +378,9 @@ export function RadarFeed() {
                   <option value="onsite">On-site</option>
                 </select>
               </Field>
-              <Field label="Date posted">
+              <Field label="Date posted" htmlFor="filter-freshness">
                 <select
+                  id="filter-freshness"
                   className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
                   value={advanced.freshnessPreset}
                   onChange={(e) =>
@@ -340,27 +394,31 @@ export function RadarFeed() {
                   <option value="custom">Custom</option>
                 </select>
               </Field>
-              <Field label="Company">
+              <Field label="Company" htmlFor="filter-company">
                 <Input
+                  id="filter-company"
                   value={advanced.company}
                   onChange={(e) => setAdvanced({ ...advanced, company: e.target.value })}
                 />
               </Field>
-              <Field label="Job type">
+              <Field label="Job type" htmlFor="filter-job-type">
                 <Input
+                  id="filter-job-type"
                   value={advanced.employmentType}
                   onChange={(e) => setAdvanced({ ...advanced, employmentType: e.target.value })}
                   placeholder="Full-time, contract…"
                 />
               </Field>
-              <Field label="Seniority">
+              <Field label="Seniority" htmlFor="filter-seniority">
                 <Input
+                  id="filter-seniority"
                   value={advanced.seniority}
                   onChange={(e) => setAdvanced({ ...advanced, seniority: e.target.value })}
                 />
               </Field>
-              <Field label="Sponsorship in this posting">
+              <Field label="Sponsorship in this posting" htmlFor="filter-sponsorship">
                 <select
+                  id="filter-sponsorship"
                   className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
                   value={advanced.sponsorship}
                   onChange={(e) => setAdvanced({ ...advanced, sponsorship: e.target.value })}
@@ -372,22 +430,25 @@ export function RadarFeed() {
                   <option value="unknown">Unknown</option>
                 </select>
               </Field>
-              <Field label="Minimum salary">
+              <Field label="Minimum salary" htmlFor="filter-salary">
                 <Input
+                  id="filter-salary"
                   type="number"
                   value={advanced.compensationMin}
                   onChange={(e) => setAdvanced({ ...advanced, compensationMin: e.target.value })}
                 />
               </Field>
-              <Field label="Company exclusions">
+              <Field label="Company exclusions" htmlFor="filter-exclusions">
                 <Input
+                  id="filter-exclusions"
                   value={advanced.excludedCompanies}
                   onChange={(e) => setAdvanced({ ...advanced, excludedCompanies: e.target.value })}
                   placeholder="Comma-separated"
                 />
               </Field>
-              <Field label="Freshness basis">
+              <Field label="Freshness basis" htmlFor="filter-freshness-basis">
                 <select
+                  id="filter-freshness-basis"
                   className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm"
                   value={advanced.freshnessBasis}
                   onChange={(e) =>
@@ -475,12 +536,37 @@ export function RadarFeed() {
               {chip}
             </span>
           ))}
-        {(filters.q || filters.location || filters.sponsorship || filters.company) ? (
+        {(filters.q ||
+          filters.location ||
+          filters.sponsorship ||
+          filters.company ||
+          filters.seniority ||
+          (filters.arrangement && filters.arrangement !== "any") ||
+          filters.verifiedOpenOnly ||
+          filters.companyDirectOnly) ? (
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            onClick={() =>
+            onClick={() => {
+              setQ("");
+              setLocation("");
+              setArrangement("any");
+              setAdvanced({
+                company: "",
+                employmentType: "",
+                seniority: "",
+                sponsorship: "",
+                compensationMin: "",
+                freshnessBasis: "discovered",
+                includeReposts: true,
+                hideDuplicates: false,
+                requireOriginal: false,
+                excludedCompanies: "",
+                verifiedOpen: false,
+                companyDirect: false,
+                freshnessPreset: "7d",
+              });
               writeUrl({
                 q: undefined,
                 location: undefined,
@@ -488,8 +574,19 @@ export function RadarFeed() {
                 company: undefined,
                 seniority: undefined,
                 arrangement: undefined,
-              })
-            }
+                employmentType: undefined,
+                compensationMin: undefined,
+                verifiedOpen: undefined,
+                companyDirect: undefined,
+                hideDuplicates: undefined,
+                includeReposts: undefined,
+                freshnessPreset: undefined,
+                freshnessBasis: undefined,
+                excludedCompanies: undefined,
+                requireOriginal: undefined,
+                genuinelyNew: undefined,
+              });
+            }}
           >
             Reset filters
           </Button>
@@ -618,10 +715,18 @@ export function RadarFeed() {
                 onSelect={selectJob}
                 navigateOnSelect={isNarrow}
                 onSave={save}
+                onHide={hide}
                 onTailorResume={tailor}
               />
             ))
           )}
+          {nextCursor ? (
+            <div className="p-3">
+              <Button type="button" variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore ? "Loading…" : "Load more"}
+              </Button>
+            </div>
+          ) : null}
         </section>
 
         <aside className={cn("hidden lg:block", selected ? "lg:sticky lg:top-20 lg:self-start" : "")}>
@@ -644,11 +749,12 @@ export function RadarFeed() {
   );
 }
 
-function ToggleChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function ToggleChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
         "inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium transition focus-visible:outline-2 focus-visible:outline-ring",
         active ? "border-accent bg-accent/10 text-foreground" : "border-border bg-background text-foreground-secondary",
@@ -659,10 +765,10 @@ function ToggleChip({ active, onClick, children }: { active: boolean; onClick: (
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
   return (
     <div className="space-y-1.5">
-      <Label>{label}</Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
     </div>
   );

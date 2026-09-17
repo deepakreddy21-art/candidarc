@@ -10,6 +10,7 @@ import {
   RotateCcw,
   ExternalLink,
   FileText,
+  EyeOff,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -81,6 +82,7 @@ export function JobCard({
   selected,
   onSelect,
   onSave,
+  onHide,
   onTailorResume,
   navigateOnSelect,
 }: {
@@ -157,6 +159,11 @@ export function JobCard({
               onClick={() => onSave(job)}
             >
               {job.saved ? <BookmarkCheck className="h-4 w-4 text-accent" /> : <Bookmark className="h-4 w-4" />}
+            </Button>
+          ) : null}
+          {onHide ? (
+            <Button type="button" size="icon" variant="ghost" aria-label="Hide job" onClick={() => onHide(job)}>
+              <EyeOff className="h-4 w-4" />
             </Button>
           ) : null}
           {onTailorResume ? (

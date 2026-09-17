@@ -92,6 +92,10 @@ export function coerceJobSearchQueryInput(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const o = { ...(value as Record<string, unknown>) };
   if (typeof o.q === "string" && o.keywords == null) o.keywords = o.q;
+  if (o.remote === "remote" || o.remote === "hybrid" || o.remote === "onsite") {
+    if (o.remotePolicy == null) o.remotePolicy = o.remote;
+    delete o.remote;
+  }
   if (
     o.remotePolicy == null &&
     (o.arrangement === "remote" || o.arrangement === "hybrid" || o.arrangement === "onsite")

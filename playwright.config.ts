@@ -4,8 +4,9 @@ const TOKEN = process.env.PYTHON_BACKEND_TOKEN || "dev-python-backend-token-chan
 const PYTHON_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8090";
 
 /**
- * Primary customer journey E2E.
- * Starts FastAPI (mock AI) + Next.js. Memory mode uses in-process queues in the web process.
+ * Interaction audit + customer journey E2E.
+ * Starts FastAPI (mock AI) + Next.js unless PLAYWRIGHT_SKIP_WEBSERVER=1.
+ * One failed test does not stop the rest of the suite.
  */
 export default defineConfig({
   testDir: "./e2e",
@@ -13,13 +14,37 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: "list",
+  maxFailures: 0,
+  reporter: [
+    ["list"],
+    ["html", { open: "never", outputFolder: "playwright-report" }],
+  ],
   timeout: 120_000,
+  expect: { timeout: 15_000 },
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000",
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+    video: "retain-on-failure",
     ...devices["Desktop Chrome"],
   },
+  projects: [
+    {
+      name: "desktop",
+      testIgnore: /mobile\.interactions\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "mobile",
+      testMatch: /mobile\.interactions\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+      },
+    },
+  ],
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER
     ? undefined
     : [

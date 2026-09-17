@@ -15,7 +15,7 @@ const outDir = join(process.cwd(), "candidate-screenshots");
 async function signInDemo(page: import("@playwright/test").Page) {
   await page.goto("/sign-in");
   await page.getByLabel(/email/i).fill("deepak@candidarc.dev");
-  await page.getByLabel(/password/i).fill("CandidArc!Demo1");
+  await page.locator("#password").fill("CandidArc!Demo1");
   await page.getByRole("button", { name: /sign in|log in/i }).click();
   await page.waitForURL(/\/app/, { timeout: 60_000 });
 }

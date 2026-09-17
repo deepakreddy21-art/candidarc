@@ -36,43 +36,48 @@ export default function OpportunitiesPage() {
   const [statusFilter, setStatusFilter] = useState<CandidateApplicationStatus | "all">("all");
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
-    void api.listApplications().then((items) => {
+    void api.listApplications(true).then((items) => {
       setApps(
-        items
-          .filter((a) => !a.archived)
-          .map((a) => ({
+        items.map((a) => ({
+          ...a,
+          candidateStatus: defaultCandidateStatus({
             ...a,
-            candidateStatus: defaultCandidateStatus({
-              ...a,
-              candidateStatus: a.candidateStatus,
-            }),
-          })),
+            candidateStatus: a.candidateStatus,
+          }),
+        })),
       );
       setLoaded(true);
     });
   }, []);
 
+  const visible = useMemo(
+    () => apps.filter((app) => (showArchived ? app.archived : !app.archived)),
+    [apps, showArchived],
+  );
+
   const counts = useMemo(() => {
-    const followUpsDue = apps.filter((a) => a.followUpAt && new Date(a.followUpAt).getTime() <= Date.now()).length;
+    const active = apps.filter((a) => !a.archived);
+    const followUpsDue = active.filter((a) => a.followUpAt && new Date(a.followUpAt).getTime() <= Date.now()).length;
     return {
-      saved: apps.filter((a) => a.candidateStatus === "Saved").length,
-      applied: apps.filter((a) => a.candidateStatus === "Applied").length,
-      interviewing: apps.filter((a) => a.candidateStatus === "Interviewing").length,
-      offers: apps.filter((a) => a.candidateStatus === "Offer").length,
+      saved: active.filter((a) => a.candidateStatus === "Saved").length,
+      applied: active.filter((a) => a.candidateStatus === "Applied").length,
+      interviewing: active.filter((a) => a.candidateStatus === "Interviewing").length,
+      offers: active.filter((a) => a.candidateStatus === "Offer").length,
       followUpsDue,
     };
   }, [apps]);
 
   const filtered = useMemo(() => {
-    return apps.filter((app) => {
+    return visible.filter((app) => {
       const q = query.trim().toLowerCase();
       if (q && !`${app.company} ${app.role}`.toLowerCase().includes(q)) return false;
       if (statusFilter !== "all" && app.candidateStatus !== statusFilter) return false;
       return true;
     });
-  }, [apps, query, statusFilter]);
+  }, [visible, query, statusFilter]);
 
   async function updateStatus(id: string, candidateStatus: CandidateApplicationStatus) {
     const current = apps.find((a) => a.id === id);
@@ -108,15 +113,13 @@ export default function OpportunitiesPage() {
             onClick: () => {
               void api.listApplications().then((items) => {
                 setApps(
-                  items
-                    .filter((a) => !a.archived)
-                    .map((a) => ({
+                  items.map((a) => ({
+                    ...a,
+                    candidateStatus: defaultCandidateStatus({
                       ...a,
-                      candidateStatus: defaultCandidateStatus({
-                        ...a,
-                        candidateStatus: a.candidateStatus,
-                      }),
-                    })),
+                      candidateStatus: a.candidateStatus,
+                    }),
+                  })),
                 );
               });
             },
@@ -133,9 +136,15 @@ export default function OpportunitiesPage() {
 
   async function archiveId(id: string) {
     await api.archiveApplications([id]);
-    setApps((prev) => prev.filter((a) => a.id !== id));
+    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, archived: true } : a)));
     setConfirmId(null);
     toast.success("Application archived");
+  }
+
+  async function restoreId(id: string) {
+    await api.restoreApplication(id);
+    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, archived: false } : a)));
+    toast.success("Application restored");
   }
 
   return (
@@ -144,9 +153,20 @@ export default function OpportunitiesPage() {
         title="Applications"
         description="Track resume readiness and where you are in each application."
         actions={
-          <Link href="/app/radar" className={buttonVariants({ size: "sm" })}>
-            Browse jobs
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={showArchived ? "default" : "secondary"}
+              aria-pressed={showArchived}
+              onClick={() => setShowArchived((value) => !value)}
+            >
+              {showArchived ? "Show active" : "Show archived"}
+            </Button>
+            <Link href="/app/radar" className={buttonVariants({ size: "sm" })}>
+              Browse jobs
+            </Link>
+          </div>
         }
       />
 
@@ -197,10 +217,12 @@ export default function OpportunitiesPage() {
         </div>
       ) : filtered.length === 0 ? (
         <EmptyState
-          title={apps.length === 0 ? "No applications yet" : "No applications match"}
+          title={visible.length === 0 ? (showArchived ? "No archived applications" : "No applications yet") : "No applications match"}
           description={
-            apps.length === 0
-              ? "Open a job and tailor your resume — applications you start will show up here."
+            visible.length === 0
+              ? showArchived
+                ? "Archived applications will appear here."
+                : "Open a job and tailor your resume — applications you start will show up here."
               : "Try another status or search term."
           }
           action={
@@ -281,10 +303,11 @@ export default function OpportunitiesPage() {
                               className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-surface-2"
                               onClick={() => {
                                 setMenuOpen(null);
-                                setConfirmId(app.id);
+                                if (app.archived) void restoreId(app.id);
+                                else setConfirmId(app.id);
                               }}
                             >
-                              Archive
+                              {app.archived ? "Restore" : "Archive"}
                             </button>
                           </div>
                         ) : null}
@@ -335,8 +358,12 @@ export default function OpportunitiesPage() {
                         View resume
                       </Link>
                     ) : null}
-                    <button type="button" className="text-foreground-muted" onClick={() => setConfirmId(app.id)}>
-                      Archive
+                    <button
+                      type="button"
+                      className="text-foreground-muted"
+                      onClick={() => (app.archived ? void restoreId(app.id) : setConfirmId(app.id))}
+                    >
+                      {app.archived ? "Restore" : "Archive"}
                     </button>
                   </div>
                 </li>

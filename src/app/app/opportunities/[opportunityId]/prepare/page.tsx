@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { EmptyState, Skeleton } from "@/components/ui/feedback";
+import { Label, Textarea } from "@/components/ui/input";
 import { api } from "@/services/api";
 import type { Application } from "@/types/domain";
 
@@ -23,6 +25,8 @@ export default function InterviewPrepPage() {
   const params = useParams<{ opportunityId: string }>();
   const [app, setApp] = useState<Application | null | undefined>(undefined);
   const [prep, setPrep] = useState<Prep | null>(null);
+  const [practice, setPractice] = useState("");
+  const storageKey = `interview-practice:${params.opportunityId}`;
 
   useEffect(() => {
     void api.getApplication(params.opportunityId).then((found) => setApp(found ?? null));
@@ -32,7 +36,12 @@ export default function InterviewPrepPage() {
         if (body.sourced) setPrep(body);
       })
       .catch(() => setPrep(null));
-  }, [params.opportunityId]);
+    try {
+      setPractice(localStorage.getItem(storageKey) ?? "");
+    } catch {
+      setPractice("");
+    }
+  }, [params.opportunityId, storageKey]);
 
   if (app === undefined) return <Skeleton className="h-40 w-full" />;
   if (!app) {
@@ -83,6 +92,26 @@ export default function InterviewPrepPage() {
         ) : (
           <p className="text-sm text-foreground-muted">Add employment or projects on Profile to build STAR outlines.</p>
         )}
+      </section>
+      <section className="space-y-3 rounded-xl border border-border p-4">
+        <h2 className="text-sm font-medium">Saved practice response</h2>
+        <Label htmlFor="practice-response">Your answer</Label>
+        <Textarea
+          id="practice-response"
+          rows={6}
+          value={practice}
+          onChange={(event) => setPractice(event.target.value)}
+          placeholder="Write a practice answer from your evidence. This stays private."
+        />
+        <Button
+          type="button"
+          onClick={() => {
+            localStorage.setItem(storageKey, practice);
+            toast.success("Practice response saved on this device");
+          }}
+        >
+          Save practice response
+        </Button>
       </section>
       <ol className="list-decimal space-y-3 pl-5 text-sm text-foreground-secondary">
         {(prep?.generated ?? []).map((item) => (

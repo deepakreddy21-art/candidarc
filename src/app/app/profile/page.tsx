@@ -19,12 +19,14 @@ export default function ProfilePage() {
   const [uploading, setUploading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [importErrorCode, setImportErrorCode] = useState<string | null>(null);
+  const [identitySnapshot, setIdentitySnapshot] = useState<CandidateProfile | null>(null);
   const versionRef = useRef<number | undefined>(undefined);
 
   const reload = useCallback(async () => {
     const [saved, importState] = await Promise.all([api.getOnboardingProgress(), api.getResumeImportStatus()]);
     versionRef.current = saved.version ?? saved.data.version;
     setProfile(saved.data);
+    setIdentitySnapshot(saved.data);
     setForm(profileToForm(saved.data, importState.extraction));
     setImportStatus(importState.status);
     setImportErrorCode(importState.extraction?.errorCode ?? null);
@@ -75,29 +77,30 @@ export default function ProfilePage() {
             ] as const
           ).map(([key, label]) => (
             <div key={key} className="space-y-2">
-              <Label htmlFor={key}>{label}</Label>
+              <Label htmlFor={`identity-${key}`}>{label}</Label>
               <Input
-                id={key}
+                id={`identity-${key}`}
                 value={String(profile[key] ?? "")}
                 onChange={(e) => setProfile({ ...profile, [key]: e.target.value })}
               />
             </div>
           ))}
           <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor="summary">Summary</Label>
+            <Label htmlFor="identity-summary">Summary</Label>
             <Textarea
-              id="summary"
+              id="identity-summary"
               value={profile.summary}
               onChange={(e) => setProfile({ ...profile, summary: e.target.value })}
             />
           </div>
-          <div className="sm:col-span-2">
+          <div className="flex flex-wrap gap-2 sm:col-span-2">
             <Button
               type="button"
               onClick={async () => {
                 try {
                   const saved = await api.updateProfile(profile);
                   setProfile(saved);
+                  setIdentitySnapshot(saved);
                   toast.success("Identity saved");
                 } catch (err) {
                   toast.error(err instanceof ApiError ? err.message : "Could not save profile");
@@ -105,6 +108,16 @@ export default function ProfilePage() {
               }}
             >
               Save identity
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                if (identitySnapshot) setProfile(identitySnapshot);
+                toast.message("Identity edits discarded");
+              }}
+            >
+              Cancel
             </Button>
           </div>
         </CardContent>

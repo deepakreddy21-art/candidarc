@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,10 @@ import {
 } from "@/components/ui/dialog";
 import { product } from "@/config/product";
 
+const PRIVACY_STORAGE_KEY = "candidarc-privacy";
+const DELETE_DOCS_REASON =
+  "Per-document deletion is not available yet. Export your data, or delete the account to remove all uploads.";
+
 function csrfToken() {
   const raw =
     document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ??
@@ -27,9 +31,25 @@ export default function PrivacySettingsPage() {
   const [retention, setRetention] = useState("12");
   const [evidenceVisibility, setEvidenceVisibility] = useState(true);
   const [modelImprovement, setModelImprovement] = useState(true);
-  const [deleteDocsOpen, setDeleteDocsOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(PRIVACY_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        retention?: string;
+        evidenceVisibility?: boolean;
+        modelImprovement?: boolean;
+      };
+      if (parsed.retention) setRetention(parsed.retention);
+      if (typeof parsed.evidenceVisibility === "boolean") setEvidenceVisibility(parsed.evidenceVisibility);
+      if (typeof parsed.modelImprovement === "boolean") setModelImprovement(parsed.modelImprovement);
+    } catch {
+      /* ignore corrupt local preferences */
+    }
+  }, []);
 
   async function exportData() {
     setBusy(true);
@@ -69,6 +89,20 @@ export default function PrivacySettingsPage() {
     }
   }
 
+  function persistPrivacy(next?: {
+    retention?: string;
+    evidenceVisibility?: boolean;
+    modelImprovement?: boolean;
+  }) {
+    const payload = {
+      retention: next?.retention ?? retention,
+      evidenceVisibility: next?.evidenceVisibility ?? evidenceVisibility,
+      modelImprovement: next?.modelImprovement ?? modelImprovement,
+    };
+    localStorage.setItem(PRIVACY_STORAGE_KEY, JSON.stringify(payload));
+    return payload;
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -81,13 +115,18 @@ export default function PrivacySettingsPage() {
           <CardTitle>Export and deletion</CardTitle>
           <CardDescription>Downloads and irreversible removals always confirm first.</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button type="button" variant="secondary" disabled={busy} onClick={() => void exportData()}>
-            Export my data
-          </Button>
-          <Button type="button" variant="secondary" onClick={() => setDeleteDocsOpen(true)}>
-            Delete documents
-          </Button>
+        <CardContent className="space-y-2">
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" disabled={busy} onClick={() => void exportData()}>
+              Export my data
+            </Button>
+            <Button type="button" variant="secondary" disabled title={DELETE_DOCS_REASON} aria-describedby="delete-docs-reason">
+              Delete documents
+            </Button>
+          </div>
+          <p id="delete-docs-reason" className="text-xs text-foreground-muted">
+            {DELETE_DOCS_REASON}
+          </p>
         </CardContent>
       </Card>
 
@@ -100,6 +139,7 @@ export default function PrivacySettingsPage() {
           <label className="flex items-center justify-between gap-3 text-sm">
             <span>Retention window</span>
             <select
+              aria-label="Retention window"
               className="h-10 rounded-[11px] border border-border-strong bg-surface px-3"
               value={retention}
               onChange={(e) => setRetention(e.target.value)}
@@ -110,7 +150,13 @@ export default function PrivacySettingsPage() {
               <option value="24">24 months</option>
             </select>
           </label>
-          <Button type="button" onClick={() => toast.success("Retention preference saved")}>
+          <Button
+            type="button"
+            onClick={() => {
+              persistPrivacy({ retention });
+              toast.success("Retention preference saved");
+            }}
+          >
             Save retention
           </Button>
         </CardContent>
@@ -137,7 +183,13 @@ export default function PrivacySettingsPage() {
               aria-label="Model improvement"
             />
           </label>
-          <Button type="button" onClick={() => toast.success("Privacy controls saved")}>
+          <Button
+            type="button"
+            onClick={() => {
+              persistPrivacy({ evidenceVisibility, modelImprovement });
+              toast.success("Privacy controls saved");
+            }}
+          >
             Save privacy controls
           </Button>
         </CardContent>
@@ -155,14 +207,6 @@ export default function PrivacySettingsPage() {
         </CardContent>
       </Card>
 
-      <ConfirmDialog
-        open={deleteDocsOpen}
-        onOpenChange={setDeleteDocsOpen}
-        title="Delete uploaded documents?"
-        description="Resume PDFs and job-description files will be removed. This cannot be undone."
-        confirmLabel="Delete documents"
-        onConfirm={() => toast.success("Documents deleted")}
-      />
       <ConfirmDialog
         open={deleteAccountOpen}
         onOpenChange={setDeleteAccountOpen}

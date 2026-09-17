@@ -1309,7 +1309,8 @@ export class CanonicalJobCatalog {
         (a.id === id || a.publicId === id) && a.tenantId === tenantId && a.userId === userId,
     );
     if (!row) throw new AppError("ALERT_NOT_FOUND", "Alert not found", 404);
-    Object.assign(row, patch, { updatedAt: nowIso() });
+    const cleaned = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+    Object.assign(row, cleaned, { updatedAt: nowIso() });
     this.alerts.set(row.id, row);
     return row;
   }

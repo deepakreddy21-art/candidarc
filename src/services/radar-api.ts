@@ -399,6 +399,49 @@ export const radarApi = {
     throw new ApiError("Could not create alert", res.status ?? 500);
   },
 
+  async updateAlert(
+    id: string,
+    patch: Partial<Pick<JobAlert, "name" | "query" | "cadence" | "active" | "channels">>,
+  ): Promise<JobAlert> {
+    const res = await apiFetch<{ alert: JobAlert }>(`/job-alerts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) return res.data.alert;
+    throw new ApiError("Could not update alert", res.status ?? 500);
+  },
+
+  async deleteAlert(id: string): Promise<void> {
+    const res = await apiFetch(`/job-alerts/${id}`, { method: "DELETE" });
+    if (res.ok) return;
+    throw new ApiError("Could not delete alert", res.status ?? 500);
+  },
+
+  async updateSavedSearch(
+    id: string,
+    patch: { name?: string; query?: RadarSearchParams; alertEnabled?: boolean },
+  ): Promise<SavedSearch> {
+    const res = await apiFetch<{ savedSearch: SavedSearch }>(`/saved-searches/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) return res.data.savedSearch;
+    throw new ApiError("Could not update saved search", res.status ?? 500);
+  },
+
+  async deleteSavedSearch(id: string): Promise<void> {
+    const res = await apiFetch(`/saved-searches/${id}`, { method: "DELETE" });
+    if (res.ok) return;
+    throw new ApiError("Could not delete saved search", res.status ?? 500);
+  },
+
+  async unhideJob(id: string): Promise<void> {
+    const res = await apiFetch(`/jobs/${id}/hide`, { method: "DELETE" });
+    if (res.ok) return;
+    const state = getMutableRadarState();
+    state.hiddenIds.delete(id);
+  },
+
   async getSourceCoverage(): Promise<SourceCoverageSummary> {
     const res = await apiFetch<SourceCoverageSummary>("/job-sources/coverage");
     if (res.ok) return res.data;

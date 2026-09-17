@@ -533,6 +533,17 @@ export const api = {
       await mock.archiveApplications(ids);
     }
   },
+  async restoreApplication(id: string): Promise<Application | undefined> {
+    const res = await apiFetch<{ application: Application }>(`/applications/${id}/restore`, {
+      method: "POST",
+      body: "{}",
+    });
+    if (res.ok) return res.data.application;
+    if (!isDemoFallbackAllowed()) throw new ApiError("Could not restore application", res.status);
+    const current = await mock.getApplication(id);
+    if (!current) return undefined;
+    return mock.updateApplication(id, { archived: false } as never);
+  },
   async updateApplication(
     id: string,
     patch: Partial<{

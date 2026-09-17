@@ -10,12 +10,16 @@ interface UiState {
   mobileNavOpen: boolean;
   commandOpen: boolean;
   themePreference: ThemePreference;
+  emailDigest: boolean;
+  onePageDefault: boolean;
   demoState: "default" | "empty" | "loading" | "error" | "offline";
   setSidebarCollapsed: (v: boolean) => void;
   toggleSidebar: () => void;
   setMobileNavOpen: (v: boolean) => void;
   setCommandOpen: (v: boolean) => void;
   setThemePreference: (v: ThemePreference) => void;
+  setEmailDigest: (v: boolean) => void;
+  setOnePageDefault: (v: boolean) => void;
   setDemoState: (v: UiState["demoState"]) => void;
 }
 
@@ -26,15 +30,27 @@ export const useUiStore = create<UiState>()(
       mobileNavOpen: false,
       commandOpen: false,
       themePreference: "system",
+      emailDigest: true,
+      onePageDefault: true,
       demoState: "default",
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setMobileNavOpen: (mobileNavOpen) => set({ mobileNavOpen }),
       setCommandOpen: (commandOpen) => set({ commandOpen }),
       setThemePreference: (themePreference) => set({ themePreference }),
+      setEmailDigest: (emailDigest) => set({ emailDigest }),
+      setOnePageDefault: (onePageDefault) => set({ onePageDefault }),
       setDemoState: (demoState) => set({ demoState }),
     }),
-    { name: "candidarc-ui", partialize: (s) => ({ sidebarCollapsed: s.sidebarCollapsed, themePreference: s.themePreference }) },
+    {
+      name: "candidarc-ui",
+      partialize: (s) => ({
+        sidebarCollapsed: s.sidebarCollapsed,
+        themePreference: s.themePreference,
+        emailDigest: s.emailDigest,
+        onePageDefault: s.onePageDefault,
+      }),
+    },
   ),
 );
 

@@ -249,6 +249,35 @@ export default function OpportunityOverviewPage() {
           <Button type="button" variant="secondary" size="sm" onClick={() => void generateCoverLetter()} disabled={generating}>
             {generating ? "Drafting…" : "Draft from career evidence"}
           </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!coverLetter.trim()}
+            onClick={async () => {
+              await navigator.clipboard.writeText(coverLetter);
+              toast.success("Cover letter copied");
+            }}
+          >
+            Copy cover letter
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!coverLetter.trim()}
+            onClick={() => {
+              const blob = new Blob([coverLetter], { type: "text/plain" });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = `${app.company}-cover-letter.txt`;
+              link.click();
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Download cover letter
+          </Button>
         </div>
         <div className="space-y-1">
           <Label htmlFor="connection-basis">Connection basis (optional)</Label>
@@ -270,6 +299,18 @@ export default function OpportunityOverviewPage() {
           />
           <Button type="button" variant="secondary" size="sm" onClick={() => void generateOutreach()} disabled={generating}>
             Draft outreach
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!outreachDraft.trim()}
+            onClick={async () => {
+              await navigator.clipboard.writeText(outreachDraft);
+              toast.success("Outreach copied — nothing was sent");
+            }}
+          >
+            Copy outreach
           </Button>
         </div>
         <Button type="button" onClick={() => void saveTracker()} disabled={saving}>

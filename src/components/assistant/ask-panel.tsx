@@ -29,6 +29,8 @@ export function AskPanel({
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastSent, setLastSent] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -41,9 +43,11 @@ export function AskPanel({
       .catch(() => setMessages([]));
   }, [open, contextType, contextId]);
 
-  async function send() {
-    if (!message.trim()) return;
+  async function send(text = message) {
+    if (!text.trim() || busy) return;
     setBusy(true);
+    setError(null);
+    setLastSent(text);
     try {
       const csrf = decodeURIComponent(
         document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "",
@@ -55,15 +59,18 @@ export function AskPanel({
         body: JSON.stringify({
           contextType,
           contextId,
-          message,
+          message: text,
           company,
           role,
           jobDescription,
         }),
       });
-      const body = await response.json();
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error?.message ?? "Could not send that question");
       setMessages(body.messages ?? []);
       setMessage("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send that question");
     } finally {
       setBusy(false);
     }
@@ -146,9 +153,21 @@ export function AskPanel({
         onChange={(e) => setMessage(e.target.value)}
         rows={3}
       />
-      <Button type="button" className="mt-2" onClick={() => void send()} disabled={busy}>
-        {busy ? "Sending…" : "Send"}
-      </Button>
+      {error ? (
+        <p role="alert" className="mt-2 text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button type="button" onClick={() => void send()} disabled={busy || !message.trim()}>
+          {busy ? "Sending…" : "Send"}
+        </Button>
+        {error && lastSent ? (
+          <Button type="button" variant="secondary" onClick={() => void send(lastSent)} disabled={busy}>
+            Retry
+          </Button>
+        ) : null}
+      </div>
     </aside>
   );
 }
