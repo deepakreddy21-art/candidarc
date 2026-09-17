@@ -3,6 +3,7 @@ import { requireTenantMembership, requireTenantRole, requireUser } from "../../a
 import type { CandidateProfileRecord, EvidenceRepository, Repositories } from "../../database/repositories";
 import { newId } from "../../database/repositories";
 import { AppError } from "../../domain/types";
+import { syncCareerEvidenceFromProfile } from "./career-evidence";
 import {
   assertCanComplete,
   assertStepPayload,
@@ -381,6 +382,13 @@ export class ProfileService {
 
     if (typeof patch.data?.evidenceNotes === "string" && patch.data.evidenceNotes.trim()) {
       await this.upsertCareerNotesEvidence(tenantId, user.id, updated.id, patch.data.evidenceNotes.trim());
+    }
+    if (patch.completed) {
+      await syncCareerEvidenceFromProfile(this.evidence, {
+        tenantId,
+        userId: user.id,
+        profile: updated,
+      });
     }
 
     return updated;

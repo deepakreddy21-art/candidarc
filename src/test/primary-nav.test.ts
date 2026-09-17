@@ -34,6 +34,11 @@ describe("primary navigation contract", () => {
     expect(breadcrumbLabel("settings")).toBe("Settings");
     expect(breadcrumbLabel("resumes")).toBe("Resumes");
     expect(breadcrumbLabel("notifications")).toBe("Notifications");
+    expect(breadcrumbLabel("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")).toBe("Application");
+    expect(breadcrumbLabel("app-resume-abc123")).toBe("Application");
+    expect(breadcrumbLabel("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "DoorDash · Platform Engineer")).toBe(
+      "DoorDash · Platform Engineer",
+    );
   });
 });
 

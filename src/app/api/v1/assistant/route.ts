@@ -19,7 +19,7 @@ export async function GET(request: Request) {
       return jsonOk({ messages: [] });
     }
     const runtime = await getRuntime();
-    const thread = runtime.services.assistant.getThread(ctx, contextType, contextId);
+    const thread = await runtime.services.assistant.getThread(ctx, contextType, contextId);
     return jsonOk({ messages: thread.messages });
   } catch (error) {
     return jsonError(error, requestId || undefined);
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
       const runtime = await getRuntime();
       const profile = await runtime.services.profile.get(ctx);
       const extraction = (profile.resumeImportExtraction ?? null) as ResumeImportExtraction | null;
-      const thread = runtime.services.assistant.ask(ctx, input, extraction);
+      const thread = await runtime.services.assistant.ask(ctx, input, extraction);
       return jsonOk({ messages: thread.messages });
     });
   } catch (error) {

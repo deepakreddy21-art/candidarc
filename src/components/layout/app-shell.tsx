@@ -90,6 +90,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [displayEmail, setDisplayEmail] = useState("");
   const [initials, setInitials] = useState("?");
 
+  const [opportunityCrumb, setOpportunityCrumb] = useState<string | null>(null);
+
   useEffect(() => {
     setShortcut(isMacPlatform() ? "⌘K" : "Ctrl K");
   }, []);
@@ -102,13 +104,44 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  useEffect(() => {
+    const parts = pathname.split("/").filter(Boolean);
+    const opportunityId = parts[0] === "app" && parts[1] === "opportunities" ? parts[2] : undefined;
+    if (!opportunityId || opportunityId === "new") {
+      setOpportunityCrumb(null);
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getApplication(opportunityId)
+      .then((application) => {
+        if (cancelled) return;
+        if (application?.company && application?.role) {
+          setOpportunityCrumb(`${application.company} · ${application.role}`);
+          return;
+        }
+        if (application?.company) {
+          setOpportunityCrumb(application.company);
+          return;
+        }
+        setOpportunityCrumb("Application");
+      })
+      .catch(() => {
+        if (!cancelled) setOpportunityCrumb("Application");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
   const crumbs = useMemo(() => {
     const parts = pathname.split("/").filter(Boolean);
+    const opportunityId = parts[0] === "app" && parts[1] === "opportunities" ? parts[2] : undefined;
     return parts.map((part, idx) => ({
-      label: breadcrumbLabel(part),
+      label: breadcrumbLabel(part, part === opportunityId ? opportunityCrumb ?? undefined : undefined),
       href: "/" + parts.slice(0, idx + 1).join("/"),
     }));
-  }, [pathname]);
+  }, [pathname, opportunityCrumb]);
 
   const sidebar = (
     <aside

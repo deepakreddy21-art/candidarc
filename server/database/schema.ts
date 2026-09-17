@@ -1315,6 +1315,30 @@ export const notifications = pgTable(
   ],
 );
 
+export const assistantThreads = pgTable(
+  "assistant_threads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    publicId: publicId(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    contextType: text("context_type").notNull(),
+    contextId: text("context_id").notNull(),
+    messages: jsonb("messages").$type<unknown[]>().notNull().default([]),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex("assistant_threads_public_id_uidx").on(t.publicId),
+    uniqueIndex("assistant_threads_owner_context_uidx").on(t.tenantId, t.userId, t.contextType, t.contextId),
+    index("assistant_threads_tenant_user_idx").on(t.tenantId, t.userId),
+  ],
+);
+
 export const auditLogs = pgTable(
   "audit_logs",
   {
@@ -1874,6 +1898,7 @@ export const schema = {
   workflowEvents,
   usageLedger,
   notifications,
+  assistantThreads,
   auditLogs,
   outboxMessages,
   idempotencyKeys,

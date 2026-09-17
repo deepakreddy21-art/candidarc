@@ -7,8 +7,14 @@ import { newId } from "../../database/repositories";
 import { AppError } from "../../domain/types";
 import { previewHtmlFromDocument } from "../../resumes/document-renderer";
 import { buildResumeDocument } from "../../resumes/resume-document";
+import { syncCareerEvidenceFromProfile } from "../profile/career-evidence";
 import { mapInternalStageToCustomer, needsInputForTechQuestions } from "../../resumes/customer-status";
-import { computeCandidArcQualityScore } from "../../resumes/quality-score";
+import {
+  attachQualityProvenance,
+  computeCandidArcQualityScore,
+  qualityContactFromSnapshot,
+  selectFreshQualityReport,
+} from "../../resumes/quality-score";
 import {
   applyTechAnswers,
   claimableTechnologies,
@@ -134,7 +140,15 @@ export class CustomerGenerateService {
   async generate(ctx: AuthContext, input: GenerateInput) {
     const { user, tenantId } = this.tenant(ctx);
     const profile = await this.repos.candidateProfiles.getByUser(tenantId, user.id);
-    const ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
+    let ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
+    if (!ownedEvidence.length && profile) {
+      await syncCareerEvidenceFromProfile(this.repos.evidence, {
+        tenantId,
+        userId: user.id,
+        profile,
+      });
+      ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
+    }
     if (!ownedEvidence.length) {
       throw new AppError(
         "PROFILE_EVIDENCE_REQUIRED",
@@ -307,14 +321,13 @@ export class CustomerGenerateService {
       if (current) {
         const customerNumber = Math.max(1, finalVersions.findIndex((version) => version.publicId === current.publicId) + 1);
         const breakdown = (current.scoreBreakdown ?? {}) as Record<string, number>;
+        const contact = qualityContactFromSnapshot({
+          metadata: currentApp.metadata,
+          location: currentApp.location,
+        });
         const quality = computeCandidArcQualityScore({
           sections: current.sections as Array<Record<string, unknown>>,
-          contact: {
-            email: typeof currentApp.metadata?.candidateEmail === "string" ? currentApp.metadata.candidateEmail : undefined,
-            phone: typeof currentApp.metadata?.candidatePhone === "string" ? currentApp.metadata.candidatePhone : undefined,
-            location: currentApp.location,
-            linkedIn: typeof currentApp.metadata?.candidateLinkedIn === "string" ? currentApp.metadata.candidateLinkedIn : undefined,
-          },
+          contact,
           jobRequirements: Array.isArray(currentApp.metadata?.jobRequirements)
             ? (currentApp.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
             : [],
@@ -325,6 +338,13 @@ export class CustomerGenerateService {
           aiRoleAlignment: breakdown.jobAlignment ?? current.score,
           aiAtsReadability: breakdown.atsCompatibility,
         });
+        const freshQuality = attachQualityProvenance(quality, { versionPublicId: current.publicId, contact });
+        const qualityReport = selectFreshQualityReport(persistedQuality, freshQuality);
+        if (qualityReport !== persistedQuality) {
+          await this.repos.applications.update(tenantId, currentApp.publicId, {
+            metadata: { ...(currentApp.metadata ?? {}), qualityReport },
+          });
+        }
         const canonicalDocument = buildResumeDocument({
           sections: current.sections,
           candidateName:
@@ -349,20 +369,21 @@ export class CustomerGenerateService {
           label: `Version ${index + 1}`,
           createdAt: version.createdAt,
         }));
-        response.qualityReport = persistedQuality ?? {
-          name: quality.name,
-          summary: quality.summary,
-          score: quality.score,
-          roleAlignment: quality.roleAlignment,
-          atsReadability: quality.atsReadability,
-          verifiedClaims: quality.verifiedClaims,
+        response.qualityReport = {
+          name: qualityReport.name,
+          summary: qualityReport.summary,
+          score: qualityReport.score,
+          roleAlignment: qualityReport.roleAlignment,
+          atsReadability: qualityReport.atsReadability,
+          verifiedClaims: qualityReport.verifiedClaims,
           researchSourcesUsed: typeof currentApp.metadata?.researchSourceCount === "number" ? currentApp.metadata.researchSourceCount : undefined,
-          remainingSkillGaps: quality.remainingSkillGaps ?? [],
-          passed: quality.passed,
-          missing: quality.missing,
-          verifiedConclusions: quality.verifiedConclusions,
-          aiEstimates: quality.aiEstimates,
-          nextSteps: quality.nextSteps,
+          remainingSkillGaps: qualityReport.remainingSkillGaps ?? [],
+          passed: qualityReport.passed,
+          missing: qualityReport.missing,
+          verifiedConclusions: qualityReport.verifiedConclusions,
+          aiEstimates: qualityReport.aiEstimates,
+          nextSteps: qualityReport.nextSteps,
+          checks: qualityReport.checks,
         };
       }
       if (currentApp.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;

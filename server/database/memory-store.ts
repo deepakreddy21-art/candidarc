@@ -648,6 +648,27 @@ export interface MemNotification {
   deletedAt: Date | null;
 }
 
+export interface MemAssistantThread {
+  id: string;
+  publicId: string;
+  tenantId: string;
+  userId: string;
+  contextType: string;
+  contextId: string;
+  messages: Array<Record<string, unknown>>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+type ThreadMessageLike = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: string[];
+  proposedWrite?: Record<string, unknown>;
+  createdAt: string;
+};
+
 export interface MemAuditLog {
   id: string;
   publicId: string;
@@ -727,6 +748,7 @@ export class MemoryStore {
   workflowEvents = new Map<string, MemWorkflowEvent>();
   usageLedger = new Map<string, MemUsageLedgerEntry>();
   notifications = new Map<string, MemNotification>();
+  assistantThreads = new Map<string, MemAssistantThread>();
   auditLogs = new Map<string, MemAuditLog>();
   outboxMessages = new Map<string, MemOutboxMessage>();
   idempotencyKeys = new Map<string, MemIdempotencyKey>();
@@ -767,6 +789,7 @@ export class MemoryStore {
       this.workflowEvents,
       this.usageLedger,
       this.notifications,
+      this.assistantThreads,
       this.auditLogs,
       this.outboxMessages,
       this.idempotencyKeys,
@@ -1762,6 +1785,51 @@ export class MemoryStore {
       }
     }
     return null;
+  }
+
+  assistantThreadKey(tenantId: string, userId: string, contextType: string, contextId: string) {
+    return `${tenantId}:${userId}:${contextType}:${contextId}`;
+  }
+
+  getAssistantThread(
+    tenantId: string,
+    userId: string,
+    contextType: string,
+    contextId: string,
+  ): { tenantId: string; userId: string; contextType: string; contextId: string; messages: ThreadMessageLike[] } | undefined {
+    const row = this.assistantThreads.get(this.assistantThreadKey(tenantId, userId, contextType, contextId));
+    if (!row) return undefined;
+    return {
+      tenantId: row.tenantId,
+      userId: row.userId,
+      contextType: row.contextType,
+      contextId: row.contextId,
+      messages: row.messages as ThreadMessageLike[],
+    };
+  }
+
+  upsertAssistantThread(thread: {
+    tenantId: string;
+    userId: string;
+    contextType: string;
+    contextId: string;
+    messages: unknown[];
+  }): MemAssistantThread {
+    const key = this.assistantThreadKey(thread.tenantId, thread.userId, thread.contextType, thread.contextId);
+    const existing = this.assistantThreads.get(key);
+    const row: MemAssistantThread = {
+      id: existing?.id ?? id(),
+      publicId: existing?.publicId ?? `ath_${id().slice(0, 8)}`,
+      tenantId: thread.tenantId,
+      userId: thread.userId,
+      contextType: thread.contextType,
+      contextId: thread.contextId,
+      messages: thread.messages as Array<Record<string, unknown>>,
+      createdAt: existing?.createdAt ?? now(),
+      updatedAt: now(),
+    };
+    this.assistantThreads.set(key, row);
+    return row;
   }
 
   appendAuditLog(input: Omit<MemAuditLog, "id" | "createdAt" | "publicId"> & { id?: string; publicId?: string }): MemAuditLog {

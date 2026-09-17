@@ -1,5 +1,6 @@
 /** @vitest-environment node */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { resetMemoryStore } from "../../server/database/memory-store";
 import {
   draftCoverLetter,
   draftOutreach,
@@ -30,6 +31,7 @@ describe("grounded cover letters and interview prep", () => {
     });
     expect(drafted.letter).toContain("Acme");
     expect(drafted.letter.toLowerCase()).not.toContain("my friend on the team");
+    expect(drafted.letter.toLowerCase()).not.toContain("i have not claimed");
     expect(drafted.caveats.some((c) => /no employment or project/i.test(c))).toBe(true);
   });
 
@@ -49,6 +51,7 @@ describe("grounded cover letters and interview prep", () => {
     });
     expect(drafted.letter).toContain("Globex");
     expect(drafted.letter).toContain("API gateway");
+    expect(drafted.letter.toLowerCase()).not.toContain("i have not claimed a personal referral");
   });
 
   it("keeps outreach drafts from claiming an invented alumni match", () => {
@@ -56,10 +59,13 @@ describe("grounded cover letters and interview prep", () => {
       contactName: "Jordan",
       company: "Acme",
       role: "Engineer",
+      notes: "Private: we were classmates and they can refer me.",
     });
     expect(drafted.draft).toContain("Jordan");
     expect(drafted.caveats.some((c) => /does not send/i.test(c))).toBe(true);
     expect(drafted.draft.toLowerCase()).not.toContain("we were classmates");
+    expect(drafted.draft.toLowerCase()).not.toContain("notes i keep");
+    expect(drafted.draft.toLowerCase()).not.toContain("private:");
   });
 
   it("labels interview questions as generated, not sourced company questions", () => {
@@ -81,7 +87,14 @@ describe("grounded cover letters and interview prep", () => {
 });
 
 describe("assistant copilot isolation", () => {
-  it("stores threads per tenant/user/context and requires approval for writes", () => {
+  beforeEach(() => {
+    resetMemoryStore();
+  });
+  afterEach(() => {
+    resetMemoryStore();
+  });
+
+  it("stores threads per tenant/user/context and requires approval for writes", async () => {
     const service = new AssistantService();
     const ctxA = {
       requestId: "a",
@@ -95,11 +108,19 @@ describe("assistant copilot isolation", () => {
       memberships: [{ tenantId: "t2", tenantPublicId: "t2", role: "owner" as const }],
       activeTenantId: "t2",
     };
-    service.ask(ctxA, { contextType: "job", contextId: "job-1", message: "Why does this fit?" });
-    service.ask(ctxA, { contextType: "job", contextId: "job-1", message: "Please edit my resume" });
-    expect(service.getThread(ctxB, "job", "job-1").messages).toHaveLength(0);
-    const thread = service.getThread(ctxA, "job", "job-1");
+    await service.ask(ctxA, { contextType: "job", contextId: "job-1", message: "Why does this fit?" });
+    await service.ask(ctxA, { contextType: "job", contextId: "job-1", message: "Please edit my resume" });
+    expect((await service.getThread(ctxB, "job", "job-1")).messages).toHaveLength(0);
+    const thread = await service.getThread(ctxA, "job", "job-1");
     expect(thread.messages.some((m) => m.proposedWrite)).toBe(true);
+    const proposalId = thread.messages.find((m) => m.proposedWrite)?.proposedWrite?.id;
+    expect(proposalId).toBeTruthy();
+    const approved = await service.apply(ctxA, {
+      contextType: "job",
+      contextId: "job-1",
+      proposalId: proposalId!,
+    });
+    expect(approved.messages.some((m) => m.proposedWrite?.approved)).toBe(true);
   });
 });
 

@@ -16,6 +16,7 @@ vi.mock("@/services/api", () => ({
       email: "test@example.com",
       avatarInitials: "TU",
     }),
+    getApplication: vi.fn().mockResolvedValue(undefined),
   },
 }));
 

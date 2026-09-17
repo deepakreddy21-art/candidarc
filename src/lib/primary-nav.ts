@@ -55,8 +55,16 @@ const BREADCRUMB_LABELS: Record<string, string> = {
   new: "New",
 };
 
-export function breadcrumbLabel(segment: string): string {
+export function looksLikeOpaqueId(segment: string): boolean {
+  if (segment.startsWith("app-")) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) return true;
+  if (/^[a-z]{2,12}_[a-z0-9]+$/i.test(segment)) return true;
+  return false;
+}
+
+export function breadcrumbLabel(segment: string, overlay?: string): string {
+  if (overlay) return overlay;
   if (BREADCRUMB_LABELS[segment]) return BREADCRUMB_LABELS[segment];
-  if (segment.startsWith("app-")) return "Application";
+  if (looksLikeOpaqueId(segment)) return "Application";
   return segment;
 }

@@ -230,6 +230,65 @@ export function computeCandidArcQualityScore(input: {
   };
 }
 
+export type QualityContact = {
+  email?: string | null;
+  phone?: string | null;
+  location?: string | null;
+  linkedIn?: string | null;
+};
+
+export type PersistedQualityReport = CandidArcQualityReport & {
+  versionPublicId: string;
+  computedAt: string;
+  contactFingerprint: string;
+};
+
+export function qualityContactFromSnapshot(input: {
+  metadata?: Record<string, unknown> | null;
+  location?: string | null;
+}): QualityContact {
+  const metadata = input.metadata ?? {};
+  const locationFromMeta =
+    typeof metadata.candidateLocation === "string" && metadata.candidateLocation.trim()
+      ? metadata.candidateLocation
+      : undefined;
+  const location = locationFromMeta ?? (typeof input.location === "string" && input.location.trim() ? input.location : undefined);
+  return {
+    email: typeof metadata.candidateEmail === "string" ? metadata.candidateEmail : undefined,
+    phone: typeof metadata.candidatePhone === "string" ? metadata.candidatePhone : undefined,
+    location,
+    linkedIn: typeof metadata.candidateLinkedIn === "string" ? metadata.candidateLinkedIn : undefined,
+  };
+}
+
+export function contactFingerprint(contact?: QualityContact): string {
+  const norm = (value?: string | null) => (value ?? "").trim().toLowerCase();
+  return [norm(contact?.email), norm(contact?.phone), norm(contact?.location), norm(contact?.linkedIn)].join("|");
+}
+
+export function attachQualityProvenance(
+  report: CandidArcQualityReport,
+  input: { versionPublicId: string; contact?: QualityContact; computedAt?: string },
+): PersistedQualityReport {
+  return {
+    ...report,
+    versionPublicId: input.versionPublicId,
+    computedAt: input.computedAt ?? new Date().toISOString(),
+    contactFingerprint: contactFingerprint(input.contact),
+  };
+}
+
+export function selectFreshQualityReport(
+  persisted: unknown,
+  fresh: PersistedQualityReport,
+): PersistedQualityReport {
+  if (!persisted || typeof persisted !== "object") return fresh;
+  const row = persisted as Record<string, unknown>;
+  if (row.versionPublicId !== fresh.versionPublicId) return fresh;
+  if (row.contactFingerprint !== fresh.contactFingerprint) return fresh;
+  return persisted as PersistedQualityReport;
+}
+
 const TECH_LIKE = /^(kubernetes|k8s|terraform|aws|gcp|azure|react|python|java|golang|typescript|kafka|spark|docker|helm|graphql)$/i;
 
 function check(

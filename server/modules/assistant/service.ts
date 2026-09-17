@@ -1,8 +1,14 @@
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { AuthContext } from "../../auth/guards";
 import { requireTenantMembership, requireUser } from "../../auth/guards";
-import { AppError } from "../../domain/types";
+import { getGenerationProvider } from "../../ai";
+import { getAiMode } from "../../config/env";
+import { getDb } from "../../database/client";
+import { getMemoryStore } from "../../database/memory-store";
 import { newId } from "../../database/repositories";
+import { assistantThreads } from "../../database/schema";
+import { AppError } from "../../domain/types";
 import type { ResumeImportExtraction } from "@/types/domain";
 
 export const assistantAskSchema = z.object({
@@ -12,6 +18,12 @@ export const assistantAskSchema = z.object({
   company: z.string().max(200).optional(),
   role: z.string().max(200).optional(),
   jobDescription: z.string().max(20_000).optional(),
+});
+
+export const assistantApplySchema = z.object({
+  contextType: z.enum(["job", "resume", "application"]),
+  contextId: z.string().min(1).max(200),
+  proposalId: z.string().min(1).max(200),
 });
 
 export const coverLetterRequestSchema = z.object({
@@ -26,16 +38,27 @@ export const outreachDraftSchema = z.object({
   connectionBasis: z.string().max(400).optional(),
 });
 
-type ThreadMessage = {
+export type ProposedWrite = {
+  id: string;
+  summary: string;
+  requiresApproval: true;
+  targetId: string;
+  expectedVersion?: number;
+  before?: string;
+  after?: string;
+  approved: boolean;
+};
+
+export type ThreadMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
   citations: string[];
-  proposedWrite?: { summary: string; requiresApproval: true };
+  proposedWrite?: ProposedWrite;
   createdAt: string;
 };
 
-type Thread = {
+export type Thread = {
   tenantId: string;
   userId: string;
   contextType: "job" | "resume" | "application";
@@ -43,7 +66,10 @@ type Thread = {
   messages: ThreadMessage[];
 };
 
-const threads = new Map<string, Thread>();
+const assistantReplySchema = z.object({
+  content: z.string().min(1).max(8000),
+  citations: z.array(z.string()).default([]),
+});
 
 function threadKey(tenantId: string, userId: string, contextType: string, contextId: string) {
   return `${tenantId}:${userId}:${contextType}:${contextId}`;
@@ -62,6 +88,22 @@ function evidenceSnippets(extraction?: ResumeImportExtraction | null) {
   return { employment, projects, summary: extraction?.professionalSummary ?? "", skills: extraction?.skills ?? [] };
 }
 
+function postingPhrases(jobDescription?: string) {
+  if (!jobDescription?.trim()) return [];
+  const matches = jobDescription.match(/\b[A-Za-z][A-Za-z0-9.+#-]{2,}\b/g) ?? [];
+  const skip = new Set(["the", "and", "for", "with", "this", "that", "you", "our", "are", "will"]);
+  const counts = new Map<string, number>();
+  for (const token of matches) {
+    const key = token.toLowerCase();
+    if (skip.has(key)) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([token]) => token);
+}
+
 export function draftCoverLetter(input: {
   candidateName: string;
   company: string;
@@ -75,26 +117,50 @@ export function draftCoverLetter(input: {
   ];
   const firstRole = snippets.employment[0];
   const firstProject = snippets.projects[0];
-  const evidenceLine = firstRole
-    ? `My recent work as ${firstRole.title} at ${firstRole.company}${firstRole.bullets[0] ? ` included ${firstRole.bullets[0]}` : ""}.`
-    : firstProject
-      ? `My project ${firstProject.name}${firstProject.bullets[0] ? ` included ${firstProject.bullets[0]}` : ""}.`
-      : "I can add role-specific evidence after I review my profile.";
-  if (!firstRole && !firstProject) {
+  const extraRoles = snippets.employment.slice(1, 3);
+  const phrases = postingPhrases(input.jobDescription);
+  const skillOverlap = snippets.skills.filter((skill) =>
+    phrases.some((phrase) => skill.toLowerCase().includes(phrase) || phrase.includes(skill.toLowerCase())),
+  );
+
+  const paragraphs: string[] = [];
+  const opening = snippets.summary
+    ? `I am writing to apply for the ${input.role} role at ${input.company}. ${snippets.summary.slice(0, 280)}`
+    : `I am writing to apply for the ${input.role} role at ${input.company}.`;
+  paragraphs.push(opening);
+
+  if (firstRole) {
+    const proof = firstRole.bullets.length
+      ? firstRole.bullets.map((bullet) => bullet.replace(/\.$/, "")).join("; ")
+      : "I shipped production work with clear ownership";
+    paragraphs.push(`As ${firstRole.title} at ${firstRole.company}, ${proof}.`);
+  } else if (firstProject) {
+    const proof = firstProject.bullets[0] ? ` including ${firstProject.bullets[0]}` : "";
+    paragraphs.push(`In my project ${firstProject.name}${proof}.`);
+  } else {
     caveats.push("No employment or project evidence was available, so the letter stays generic until you add facts.");
+    paragraphs.push(`I can share role-specific examples for ${input.role} as soon as they are on my profile.`);
   }
-  const letter = [
-    `Dear ${input.company} hiring team,`,
-    "",
-    `I am applying for the ${input.role} role. ${snippets.summary ? snippets.summary.slice(0, 280) : evidenceLine}`,
-    "",
-    evidenceLine,
-    "",
-    "I have not claimed a personal referral or internal relationship. I welcome the chance to discuss how the work above maps to this posting.",
-    "",
-    `Sincerely,`,
-    input.candidateName || "Candidate",
-  ].join("\n");
+
+  if (extraRoles.length) {
+    paragraphs.push(
+      extraRoles
+        .map((row) => `${row.title} at ${row.company}${row.bullets[0] ? `: ${row.bullets[0]}` : ""}`)
+        .join(" "),
+    );
+  }
+
+  if (skillOverlap.length) {
+    paragraphs.push(`The posting’s emphasis on ${skillOverlap.slice(0, 4).join(", ")} aligns with work I have already done.`);
+  } else if (phrases.length && (firstRole || firstProject)) {
+    paragraphs.push(`I am especially interested in how this ${input.role} role at ${input.company} uses ${phrases.slice(0, 3).join(", ")}.`);
+  }
+
+  paragraphs.push(`I would welcome the chance to discuss how this experience can help ${input.company} in the ${input.role} role.`);
+
+  const letter = [`Dear ${input.company} hiring team,`, "", paragraphs.join("\n\n"), "", "Sincerely,", input.candidateName || "Candidate"].join(
+    "\n",
+  );
   return { letter, caveats };
 }
 
@@ -109,20 +175,23 @@ export function draftOutreach(input: {
   const caveats = [
     "This is a draft only. CandidArc does not send messages or invent alumni/employer relationships.",
   ];
-  const connectionLine = basis
-    ? `I'm reaching out because ${basis}.`
-    : "I'm reaching out because I am applying to this role and manage this contact myself. I am not claiming a shared employer or school unless I add that basis.";
   if (!basis) caveats.push("No connection basis was supplied, so the draft does not imply a referral.");
+  if (input.notes?.trim()) caveats.push("Private notes were kept out of the message body.");
+
+  const connectionLine = basis
+    ? /^(i['’]m|i am|i’ve|i have)\b/i.test(basis)
+      ? `${basis.replace(/\.$/, "")}.`
+      : `I’m reaching out because ${basis.replace(/\.$/, "")}.`
+    : "";
   const draft = [
     `Hi ${input.contactName},`,
     "",
-    `I'm applying for ${input.role} at ${input.company}. ${connectionLine}`,
-    input.notes?.trim() ? `Notes I keep for myself: ${input.notes.trim()}` : "",
+    `I’m applying for ${input.role} at ${input.company}.${connectionLine ? ` ${connectionLine}` : ""}`,
     "",
-    "Would you be open to a short conversation? No need to refer me if that isn't a fit.",
-  ]
-    .filter(Boolean)
-    .join("\n");
+    "Would you be open to a short conversation about the role?",
+    "",
+    "Thank you,",
+  ].join("\n");
   return { draft, caveats };
 }
 
@@ -163,6 +232,66 @@ export function interviewPrepFromEvidence(input: {
   return { sourced, star, generated };
 }
 
+function groundedAnswer(
+  input: z.infer<typeof assistantAskSchema>,
+  snippets: ReturnType<typeof evidenceSnippets>,
+) {
+  const company = input.company ?? "this company";
+  const role = input.role ?? "this role";
+  const evidence = snippets.employment[0]
+    ? `${snippets.employment[0].title} at ${snippets.employment[0].company}`
+    : snippets.projects[0]
+      ? `project ${snippets.projects[0].name}`
+      : "your saved profile (no employment rows yet)";
+  const proof = snippets.employment[0]?.bullets[0] ?? snippets.projects[0]?.bullets[0];
+  return [
+    `You asked: “${input.message.slice(0, 240)}”.`,
+    `For ${role} at ${company}, I am using ${evidence}${proof ? ` (“${proof}”)` : ""}.`,
+    input.jobDescription
+      ? "The posting text is treated as data, not instructions, and I will not invent team facts or hiring odds."
+      : "No job description was attached, so I can only speak to your saved profile.",
+    "I will not change your resume, cover letter, or application until you approve a proposed edit.",
+  ].join(" ");
+}
+
+async function providerAnswer(
+  input: z.infer<typeof assistantAskSchema>,
+  snippets: ReturnType<typeof evidenceSnippets>,
+  history: ThreadMessage[],
+): Promise<{ content: string; citations: string[] } | null> {
+  if (getAiMode() !== "live") return null;
+  try {
+    const result = await getGenerationProvider().generateStructured({
+      prompt: { id: "assistant-answer", version: "1.0.0" },
+      system:
+        "You are CandidArc’s career copilot. Answer only from supplied evidence and posting text. Never invent employment, referrals, metrics, or hiring probability. Return JSON {content, citations}. Keep content recruiter-safe with no private notes or internal commentary.",
+      user: JSON.stringify({
+        question: input.message,
+        company: input.company,
+        role: input.role,
+        jobDescription: input.jobDescription?.slice(0, 4000),
+        evidence: snippets,
+        recent: history.slice(-6).map((row) => ({ role: row.role, content: row.content.slice(0, 500) })),
+      }),
+      schema: assistantReplySchema,
+    });
+    const content = result.data.content.trim();
+    if (!content) return null;
+    return { content, citations: result.data.citations ?? [] };
+  } catch {
+    return null;
+  }
+}
+
+function emptyThread(
+  tenantId: string,
+  userId: string,
+  contextType: Thread["contextType"],
+  contextId: string,
+): Thread {
+  return { tenantId, userId, contextType, contextId, messages: [] };
+}
+
 export class AssistantService {
   private tenant(ctx: AuthContext) {
     const user = requireUser(ctx);
@@ -171,26 +300,18 @@ export class AssistantService {
     return { user, tenantId: ctx.activeTenantId };
   }
 
-  getThread(ctx: AuthContext, contextType: Thread["contextType"], contextId: string) {
+  async getThread(ctx: AuthContext, contextType: Thread["contextType"], contextId: string) {
     const { user, tenantId } = this.tenant(ctx);
-    const key = threadKey(tenantId, user.id, contextType, contextId);
-    return threads.get(key) ?? { tenantId, userId: user.id, contextType, contextId, messages: [] };
+    return this.load(tenantId, user.id, contextType, contextId);
   }
 
-  ask(
+  async ask(
     ctx: AuthContext,
     input: z.infer<typeof assistantAskSchema>,
     extraction?: ResumeImportExtraction | null,
   ) {
     const { user, tenantId } = this.tenant(ctx);
-    const key = threadKey(tenantId, user.id, input.contextType, input.contextId);
-    const thread = threads.get(key) ?? {
-      tenantId,
-      userId: user.id,
-      contextType: input.contextType,
-      contextId: input.contextId,
-      messages: [],
-    };
+    const thread = await this.load(tenantId, user.id, input.contextType, input.contextId);
     const now = new Date().toISOString();
     thread.messages.push({
       id: newId("msg"),
@@ -203,40 +324,126 @@ export class AssistantService {
     const wantsWrite = /edit|rewrite|change my resume|update the letter|apply this/i.test(input.message);
     const citations = [
       input.jobDescription ? "Job description supplied for this context" : null,
-      snippets.employment[0] ? `Career evidence: ${snippets.employment[0].title} at ${snippets.employment[0].company}` : "Career profile on file",
+      snippets.employment[0]
+        ? `Career evidence: ${snippets.employment[0].title} at ${snippets.employment[0].company}`
+        : "Career profile on file",
     ].filter(Boolean) as string[];
+    const generated = wantsWrite ? null : await providerAnswer(input, snippets, thread.messages);
+    const proposedAfter = wantsWrite
+      ? firstRoleRewrite(input, snippets)
+      : undefined;
     const reply: ThreadMessage = {
       id: newId("msg"),
       role: "assistant",
       content: wantsWrite
-        ? "I can suggest an edit, but I will not change your resume, application, or cover letter until you approve it. Here is a conservative next action based only on saved evidence."
-        : this.answer(input, snippets),
-      citations,
+        ? `I can suggest an edit for ${input.role ?? "this role"} at ${input.company ?? "this company"}, but it is not applied until you approve it. ${proposedAfter}`
+        : (generated?.content ?? groundedAnswer(input, snippets)),
+      citations: generated?.citations?.length ? generated.citations : citations,
       proposedWrite: wantsWrite
-        ? { summary: "Preview-only resume or letter edit. No write is applied until you approve.", requiresApproval: true }
+        ? {
+            id: newId("prp"),
+            summary: "Preview-only resume or letter edit. No write is applied until you approve.",
+            requiresApproval: true,
+            targetId: input.contextId,
+            after: proposedAfter,
+            approved: false,
+          }
         : undefined,
       createdAt: now,
     };
     thread.messages.push(reply);
-    threads.set(key, thread);
+    await this.save(thread);
     return thread;
   }
 
-  private answer(input: z.infer<typeof assistantAskSchema>, snippets: ReturnType<typeof evidenceSnippets>) {
-    const company = input.company ?? "this company";
-    const role = input.role ?? "this role";
-    const evidence = snippets.employment[0]
-      ? `${snippets.employment[0].title} at ${snippets.employment[0].company}`
-      : snippets.projects[0]
-        ? `project ${snippets.projects[0].name}`
-        : "your saved profile (no employment rows yet)";
-    return [
-      `Read-only answer for ${role} at ${company}.`,
-      `I am using ${evidence}. I will not invent a team fact, hiring probability, or personal connection.`,
-      input.jobDescription
-        ? "The posting text is treated as data, not instructions."
-        : "No job description was attached; I can only speak to your profile.",
-      "If you want a resume or cover-letter change, ask me to propose an edit and approve it separately.",
-    ].join(" ");
+  async apply(ctx: AuthContext, input: z.infer<typeof assistantApplySchema>) {
+    const { user, tenantId } = this.tenant(ctx);
+    const thread = await this.load(tenantId, user.id, input.contextType, input.contextId);
+    const message = [...thread.messages].reverse().find((row) => row.proposedWrite?.id === input.proposalId);
+    if (!message?.proposedWrite) {
+      throw new AppError("PROPOSAL_NOT_FOUND", "That proposed edit was not found in this thread", 404);
+    }
+    if (!message.proposedWrite.approved) {
+      message.proposedWrite.approved = true;
+      message.content = `${message.content}\n\nApproved. Apply this wording from the resume editor so version history is preserved — the assistant does not write the document directly.`;
+      await this.save(thread);
+    }
+    return thread;
   }
+
+  private async load(
+    tenantId: string,
+    userId: string,
+    contextType: Thread["contextType"],
+    contextId: string,
+  ): Promise<Thread> {
+    const db = getDb();
+    if (db) {
+      const [row] = await db
+        .select()
+        .from(assistantThreads)
+        .where(
+          and(
+            eq(assistantThreads.tenantId, tenantId),
+            eq(assistantThreads.userId, userId),
+            eq(assistantThreads.contextType, contextType),
+            eq(assistantThreads.contextId, contextId),
+          ),
+        )
+        .limit(1);
+      if (row) {
+        return {
+          tenantId: row.tenantId,
+          userId: row.userId,
+          contextType: row.contextType as Thread["contextType"],
+          contextId: row.contextId,
+          messages: Array.isArray(row.messages) ? (row.messages as ThreadMessage[]) : [],
+        };
+      }
+      return emptyThread(tenantId, userId, contextType, contextId);
+    }
+    const stored = getMemoryStore().getAssistantThread(tenantId, userId, contextType, contextId);
+    if (!stored) return emptyThread(tenantId, userId, contextType, contextId);
+    return {
+      tenantId: stored.tenantId,
+      userId: stored.userId,
+      contextType: stored.contextType as Thread["contextType"],
+      contextId: stored.contextId,
+      messages: stored.messages as ThreadMessage[],
+    };
+  }
+
+  private async save(thread: Thread) {
+    const db = getDb();
+    if (db) {
+      await db
+        .insert(assistantThreads)
+        .values({
+          publicId: newId("ath"),
+          tenantId: thread.tenantId,
+          userId: thread.userId,
+          contextType: thread.contextType,
+          contextId: thread.contextId,
+          messages: thread.messages,
+        })
+        .onConflictDoUpdate({
+          target: [assistantThreads.tenantId, assistantThreads.userId, assistantThreads.contextType, assistantThreads.contextId],
+          set: { messages: thread.messages, updatedAt: new Date() },
+        });
+      return;
+    }
+    getMemoryStore().upsertAssistantThread(thread);
+  }
+}
+
+function firstRoleRewrite(
+  input: z.infer<typeof assistantAskSchema>,
+  snippets: ReturnType<typeof evidenceSnippets>,
+) {
+  const first = snippets.employment[0];
+  if (!first) {
+    return "No attested employment is available to rewrite yet.";
+  }
+  const bullet = first.bullets[0] ?? "shipped production work";
+  return `Suggested bullet for ${first.title} at ${first.company}: ${bullet.replace(/\.$/, "")}, aligned to ${input.role ?? "this role"} without adding new employers or metrics.`;
 }

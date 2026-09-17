@@ -84,8 +84,9 @@ Statuses: **working** · **incomplete** · **hidden** · **missing** · **unveri
 | Item | Status | Notes |
 | --- | --- | --- |
 | Contextual ask panel | working | job / resume / application |
-| Cover letters | working | evidence-templated BFF; no invented referrals |
+| Cover letters | working | Recruiter-ready body; caveats stay out of the letter; no invented referrals |
 | Interview prep workspace | working | `/prepare` STAR + generated-not-sourced; layout no longer says “moved” |
+| Assistant threads | working | Persisted tenant/owner-scoped threads; mock grounded answers; live provider when `AI_MODE=live`; writes require approval |
 
 ## Phase I — autofill / referrals
 
@@ -97,11 +98,18 @@ Statuses: **working** · **incomplete** · **hidden** · **missing** · **unveri
 
 ## Phase J — visual / a11y / journeys
 
-Live-tested: sign-in, Jobs, tailor, resume ready, PDF/DOCX, Applications workspace, Profile, Resumes library, Create alert, Notifications, interview prep, onboarding scroll. Onboarding sticky footer and closed skills `<details>` fixed. Resume library no longer 404s on demo `resume-cisco`.
+Browser-tested: sign-in, Jobs feed, Applications tracker, Profile, primary nav. Automated e2e: signup → 3-step onboarding (manual + PDF import) → tailor → PDF/Word downloads → applications reload. UUID application crumbs overlay `company · role`. Contact completeness uses the selected resume version snapshot; stale persisted quality reports are ignored.
 
 ## Phase K — safe cleanup
 
 No unsafe deletions. Leftover internal workspace routes (`research`, `evidence`, `audits`, `activity`, `application`, `resume`) remain as “moved” banners to overview. Interview Lab is not restored. Demo pipeline apps stay in Applications without fake customer workflow links. LinkedIn/Indeed stay disabled.
+
+## Correction pass (CI + quality)
+
+- Resume import unit tests inject Python `ready()` so CI does not require a live FastAPI process; production still probes FastAPI.
+- `db:migrate` uses `getMigrationEnv()` so postgres+inprocess is allowed for SQL migrations only.
+- Docker smoke MinIO image pinned to `quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z`.
+- Onboarding completion materializes career evidence so new users can tailor without a separate evidence library.
 
 ## Blocked for manual UAT
 

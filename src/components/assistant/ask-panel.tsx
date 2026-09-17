@@ -9,7 +9,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   citations?: string[];
-  proposedWrite?: { summary: string };
+  proposedWrite?: { id?: string; summary: string; approved?: boolean; after?: string };
 };
 
 export function AskPanel({
@@ -69,6 +69,25 @@ export function AskPanel({
     }
   }
 
+  async function approve(proposalId: string) {
+    setBusy(true);
+    try {
+      const csrf = decodeURIComponent(
+        document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "",
+      );
+      const response = await fetch("/api/v1/assistant/apply", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json", "x-csrf-token": csrf },
+        body: JSON.stringify({ contextType, contextId, proposalId }),
+      });
+      const body = await response.json();
+      setMessages(body.messages ?? []);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!open) {
     return (
       <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(true)}>
@@ -97,7 +116,26 @@ export function AskPanel({
               <p className="mt-1 text-xs text-foreground-muted">Sources: {item.citations.join(" · ")}</p>
             ) : null}
             {item.proposedWrite ? (
-              <p className="mt-1 text-xs">Proposed write (not applied): {item.proposedWrite.summary}</p>
+              <div className="mt-2 space-y-1">
+                <p className="text-xs">
+                  {item.proposedWrite.approved ? "Approved (apply from the resume editor):" : "Proposed write (not applied):"}{" "}
+                  {item.proposedWrite.summary}
+                </p>
+                {item.proposedWrite.after ? (
+                  <p className="text-xs text-foreground-muted">{item.proposedWrite.after}</p>
+                ) : null}
+                {item.proposedWrite.id && !item.proposedWrite.approved ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => void approve(item.proposedWrite!.id!)}
+                  >
+                    Approve suggestion
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ))}
