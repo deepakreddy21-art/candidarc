@@ -24,9 +24,12 @@ function preferredContactEmail(
       ? contact.emails.find((value) => typeof value === "string" && value.includes("@"))?.trim()
       : undefined);
   if (fromContact) return fromContact;
-  const raw = extraction?.rawText ?? "";
+  const raw = `${extraction?.rawText ?? ""} ${extraction?.professionalSummary ?? ""}`;
   const fromRaw = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
-  return fromRaw?.trim() || fallback;
+  if (fromRaw) return fromRaw.trim();
+  // Prefer leaving blank over an account signup address when career extraction is present
+  // but contact.email was omitted — callers can still pass fallback explicitly.
+  return fallback;
 }
 
 export function profileToForm(
@@ -61,7 +64,12 @@ export function profileToForm(
     requiresSponsorship: profile.requiresSponsorship ?? null,
     salaryPreference: profile.salaryPreference ?? "",
     fullName: contact.fullName?.trim() || profile.fullName || "",
-    email: preferredContactEmail(extraction, profile.email || ""),
+    email: preferredContactEmail(
+      extraction,
+      extraction && (extraction.employment?.length || extraction.contact?.fullName || extraction.rawText)
+        ? ""
+        : profile.email || "",
+    ),
     phone: contact.phone?.trim() || profile.phone || "",
     location: contact.location?.trim() || profile.location || "",
     linkedIn: contact.linkedIn?.trim() || profile.linkedIn || "",

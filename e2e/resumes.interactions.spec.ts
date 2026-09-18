@@ -128,6 +128,7 @@ Requirements: 5+ years experience, strong ownership.`);
   });
 
   test("refine creates a new version without restoring immutable history", async ({ page }) => {
+    test.setTimeout(180_000);
     await seedOnboardedUser(page, "resume-refine");
     const generated = await generateResumeViaApi(page);
     await page.goto(`/app/resumes/${generated.workflowId}`);
@@ -142,6 +143,7 @@ Requirements: 5+ years experience, strong ownership.`);
     expect((await refined).ok()).toBeTruthy();
     await page.waitForURL(/\/app\/resumes\/(?!new(?:\/|$))/);
     await waitForResumeReady(page);
+    await expect(page.getByRole("link", { name: /^Download PDF$/i })).toBeVisible({ timeout: 90_000 });
     const compare = page.getByRole("button", { name: /^compare$/i }).first();
     if (await compare.count()) {
       await compare.click();

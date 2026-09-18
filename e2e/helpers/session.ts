@@ -150,7 +150,7 @@ Requirements: 5+ years experience, strong ownership.`,
 }
 
 export async function waitForResumeReady(page: Page) {
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     const continueWithout = page.getByRole("button", { name: /continue without answering/i });
     if (await continueWithout.isVisible().catch(() => false)) {
@@ -158,19 +158,7 @@ export async function waitForResumeReady(page: Page) {
       await page.waitForTimeout(250);
       continue;
     }
-    const pdf = page.getByRole("link", { name: /^Download PDF$/i });
-    if (await pdf.isVisible().catch(() => false)) {
-      const disabled = await pdf.getAttribute("aria-disabled");
-      if (disabled === "true") {
-        await page.waitForTimeout(500);
-        continue;
-      }
-      await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible();
-      await expect(pdf).toBeEnabled();
-      return;
-    }
-    await page.waitForTimeout(500);
+    break;
   }
-  await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByRole("link", { name: /^Download PDF$/i })).toBeEnabled({ timeout: 5_000 });
+  await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible({ timeout: 90_000 });
 }

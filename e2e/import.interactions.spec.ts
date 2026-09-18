@@ -31,7 +31,9 @@ test.describe("resume import interactions", () => {
     });
     await expect(page.getByText(/ready — review|resume ready/i)).toBeVisible({ timeout: 90_000 });
     await expect(page.getByTestId("imported-full-name")).toHaveValue(/Jordan Blake/i);
-    await expect(page.getByTestId("imported-email")).toHaveValue(/jordan\.blake@example.com/i);
+    await expect
+      .poll(async () => page.getByTestId("imported-email").inputValue(), { timeout: 30_000 })
+      .toMatch(/jordan\.blake@example\.com/i);
     await expect(page.locator("#linkedin")).toHaveValue(/linkedin\.com\/in\/jordanblake/i);
     await expect(page.locator("#github")).toHaveValue(/github\.com\/jordanblake/i);
     const phone = await page.locator("#phone").inputValue();

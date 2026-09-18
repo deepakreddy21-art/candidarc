@@ -6,8 +6,12 @@ export { textToSimplePdf, imageOnlyPdf };
 
 /** Helvetica-safe PDF fixture. Optional second job is omitted on purpose. */
 export const IMPORT_RESUME_TEXT = `Jordan Blake
-jordan.blake@example.com | (555) 010-2244 | Seattle, WA
-linkedin.com/in/jordanblake | github.com/jordanblake | https://jordanblake.dev
+Email: jordan.blake@example.com
+Phone: (555) 010-2244
+Location: Seattle, WA
+LinkedIn: linkedin.com/in/jordanblake
+GitHub: github.com/jordanblake
+Portfolio: https://jordanblake.dev
 
 PROFESSIONAL EXPERIENCE
 Platform Engineer | Harbor Systems | Seattle, WA
