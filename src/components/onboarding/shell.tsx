@@ -34,8 +34,17 @@ export function OnboardingShell({
   return (
     <div className="min-h-dvh bg-canvas text-foreground">
       <div className="mx-auto grid min-h-dvh max-w-6xl lg:grid-cols-[minmax(0,0.38fr)_minmax(0,0.62fr)]">
-        <aside className="relative hidden border-r border-border bg-surface-2 px-8 py-10 lg:flex lg:flex-col">
+        <aside className="relative hidden border-r border-border bg-mint px-8 py-10 lg:flex lg:flex-col">
           <Logo />
+          <div className="mt-10 max-w-sm">
+            <p className="text-xs font-medium uppercase tracking-wide text-accent">Your path</p>
+            <svg className="mt-4 h-20 w-full" viewBox="0 0 240 80" fill="none" aria-hidden>
+              <path d="M16 60 C 70 12, 170 12, 224 60" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" />
+              <circle cx="16" cy="60" r="4" fill="var(--lime)" />
+              <circle cx="120" cy="20" r="4" fill="var(--accent)" />
+              <circle cx="224" cy="60" r="4" fill="var(--lime)" />
+            </svg>
+          </div>
           <div className="mt-auto max-w-sm space-y-3 pb-4">
             <h1 className="font-serif text-3xl leading-tight text-foreground">{current.title}</h1>
             <p className="text-sm leading-relaxed text-foreground-secondary">{current.panel}</p>
@@ -68,9 +77,6 @@ export function OnboardingShell({
 
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
             <div className="mx-auto w-full max-w-xl space-y-6">
-              <div className="hidden lg:block">
-                <h2 className="font-serif text-2xl leading-tight">{current.title}</h2>
-              </div>
               {children}
             </div>
           </div>

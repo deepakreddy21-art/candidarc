@@ -10,7 +10,7 @@ test.describe("primary customer journey", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expect(page.locator("body")).not.toContainText(/V0|HR1|EM1|interview readiness/i);
-    await expect(page.locator("body")).toContainText(/Paste a job description|job description/i);
+    await expect(page.locator("body")).toContainText(/Get noticed for|Build my resume|team uses Python/i);
 
     await page.goto("/sign-in");
     await page.getByLabel(/email/i).fill("deepak@candidarc.dev");
@@ -44,7 +44,7 @@ Requirements: 5+ years experience, strong ownership, measurable impact.`;
     await expect(
       page
         .getByText(
-          /Researching the role|Tailoring your resume|Quality checking|Working on your resume|We need a few details/i,
+          /Researching the role|Tailoring your résumé|Checking your résumé|Working on your resume|We need a few details/i,
         )
         .first(),
     ).toBeVisible({

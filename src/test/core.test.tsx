@@ -29,12 +29,12 @@ describe("product config", () => {
 });
 
 describe("CreatingState", () => {
-  it("shows only three customer-facing resume phases", () => {
-    render(<CreatingState pipelineStage="tailoring" pipelineLabel="Tailoring your resume" />);
+  it("shows only three customer-facing résumé phases", () => {
+    render(<CreatingState pipelineStage="tailoring" pipelineLabel="Tailoring your résumé" />);
     expect(screen.getByLabelText("Resume progress")).toBeInTheDocument();
     expect(screen.getByText("Researching the role")).toBeInTheDocument();
-    expect(screen.getAllByText("Tailoring your resume").length).toBeGreaterThan(0);
-    expect(screen.getByText("Quality checking")).toBeInTheDocument();
+    expect(screen.getAllByText("Tailoring your résumé").length).toBeGreaterThan(0);
+    expect(screen.getByText("Checking your résumé")).toBeInTheDocument();
     expect(screen.queryByText(/Final QA|HR Audit|EM Audit|V0/i)).not.toBeInTheDocument();
   });
 });
@@ -66,12 +66,12 @@ describe("ApplicationFilters", () => {
 });
 
 describe("ThemeToggle", () => {
-  it("exposes an accessible theme control", () => {
-    render(
+  it("is removed in light-only mode", () => {
+    const { container } = render(
       <TooltipProvider>
         <ThemeToggle />
       </TooltipProvider>,
     );
-    expect(screen.getByRole("button", { name: /switch to dark theme/i })).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 });

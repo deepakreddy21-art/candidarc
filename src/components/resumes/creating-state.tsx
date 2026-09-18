@@ -6,8 +6,8 @@ import { cn } from "@/lib/utils";
 
 const STAGES = [
   { id: "understanding", label: "Researching the role" },
-  { id: "tailoring", label: "Tailoring your resume" },
-  { id: "preparing", label: "Quality checking" },
+  { id: "tailoring", label: "Tailoring your résumé" },
+  { id: "preparing", label: "Checking your résumé" },
 ] as const;
 
 
@@ -54,12 +54,11 @@ export function CreatingState({
 
         <CardContent className="flex min-h-56 flex-col items-center justify-center gap-5 px-6 py-8 text-center">
 
-          <div className="relative h-12 w-12" aria-hidden>
-
-            <span className="absolute inset-0 animate-ping rounded-full bg-accent/20" />
-
-            <span className="absolute inset-2 rounded-full border-2 border-accent border-r-transparent motion-safe:animate-spin" />
-
+          <div className="relative flex h-14 w-14 items-center justify-center" aria-hidden>
+            <svg viewBox="0 0 48 48" className="h-12 w-12" fill="none">
+              <path d="M8 34C8 20 20 8 34 8" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" />
+              <circle cx="34" cy="10" r="3.5" fill="var(--lime)" className="motion-safe:animate-pulse" />
+            </svg>
           </div>
 
           <div className="space-y-2">

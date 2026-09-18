@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:where(.dark, .dark *));
+/* Light-only product. Dark custom-variant kept inert so leftover .dark classes never activate. */
+@custom-variant dark (&:where(.never-dark));
 
 @theme inline {
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
@@ -18,6 +19,12 @@
   --color-border-strong: var(--border-strong);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
+  --color-forest: var(--forest);
+  --color-mint: var(--mint);
+  --color-lime: var(--fresh);
+  --color-headline: var(--headline);
+  --color-fresh: var(--fresh);
+  --color-on-forest: var(--on-forest);
   --color-cyan: var(--cyan);
   --color-success: var(--success);
   --color-warning: var(--warning);
@@ -29,48 +36,64 @@
   --radius-lg: 10px;
   --radius-xl: 12px;
   --radius-2xl: 14px;
+
+  --duration-press: 150ms;
+  --duration-panel: 260ms;
 }
 
 :root {
-  --background: #f4f4f0;
-  --canvas: #fafaf7;
+  /* Screenshot-derived brand roles (approved ChatGPT concept) */
   --surface: #ffffff;
-  --surface-2: #f1f1ec;
-  --foreground: #111318;
-  --foreground-secondary: #626873;
-  --foreground-muted: #8a9099;
-  --border: rgba(17, 19, 24, 0.09);
-  --border-strong: rgba(17, 19, 24, 0.16);
-  --accent: #1f6f5b;
-  --accent-hover: #185a4a;
+  --canvas: #f7faf7;
+  --background: #ffffff;
+  --surface-2: #eff8ef;
+  --accent: #15251e;
+  --accent-hover: #213b2d;
+  --forest: #15251e;
+  --headline: #326647;
+  --mint: #eff8ef;
+  --fresh: #caf4c1;
+  --foreground: #15251e;
+  --foreground-secondary: #596a60;
+  --foreground-muted: #596a60;
+  --border: #dce6df;
+  --border-strong: color-mix(in oklab, #15251e 18%, transparent);
+  --on-forest: #ffffff;
   --cyan: #2a7a8c;
   --success: #1fad76;
   --warning: #c47f1a;
   --destructive: #c44b54;
-  --ring: #1f6f5b;
-  --shadow-sm: 0 1px 2px rgba(17, 19, 24, 0.03);
-  --shadow-md: 0 4px 12px rgba(17, 19, 24, 0.05);
+  --ring: #326647;
+  --shadow-sm: 0 1px 2px rgba(21, 37, 30, 0.05);
+  --shadow-md: 0 8px 28px rgba(21, 37, 30, 0.08);
 }
 
+/* Force light tokens even if a stale .dark class is present from saved prefs. */
+html.dark,
+html.dark body,
 .dark {
-  --background: #0d0f13;
-  --canvas: #12151b;
-  --surface: #171a21;
-  --surface-2: #1d212a;
-  --foreground: #f5f6f8;
-  --foreground-secondary: #a9afba;
-  --foreground-muted: #737b89;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.15);
-  --accent: #3d9b82;
-  --accent-hover: #4fad94;
-  --cyan: #4aa3b5;
-  --success: #2ec48a;
-  --warning: #d9a04a;
-  --destructive: #e07078;
-  --ring: #3d9b82;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.28);
+  --surface: #ffffff;
+  --canvas: #f7faf7;
+  --background: #ffffff;
+  --surface-2: #eff8ef;
+  --accent: #15251e;
+  --accent-hover: #213b2d;
+  --forest: #15251e;
+  --headline: #326647;
+  --mint: #eff8ef;
+  --fresh: #caf4c1;
+  --foreground: #15251e;
+  --foreground-secondary: #596a60;
+  --foreground-muted: #596a60;
+  --border: #dce6df;
+  --border-strong: color-mix(in oklab, #15251e 18%, transparent);
+  --on-forest: #ffffff;
+  --cyan: #2a7a8c;
+  --success: #1fad76;
+  --warning: #c47f1a;
+  --destructive: #c44b54;
+  --ring: #326647;
+  color-scheme: light;
 }
 
 @layer base {
@@ -80,16 +103,17 @@
 
   html {
     @apply scroll-smooth antialiased;
+    color-scheme: light;
   }
 
   body {
     @apply bg-background text-foreground font-sans;
-    font-size: 15px;
+    font-size: 16px;
     line-height: 1.5;
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--accent) 28%, transparent);
+    background: color-mix(in oklab, var(--headline) 22%, transparent);
   }
 
   :focus-visible {
@@ -99,19 +123,28 @@
 
 @layer utilities {
   .arc-bg {
-    background-image:
-      radial-gradient(ellipse 80% 50% at 10% -10%, color-mix(in oklab, var(--accent) 12%, transparent), transparent),
-      radial-gradient(ellipse 60% 40% at 100% 0%, color-mix(in oklab, var(--cyan) 10%, transparent), transparent);
+    background-image: radial-gradient(
+      ellipse 42% 48% at 78% 42%,
+      color-mix(in oklab, var(--mint) 90%, transparent),
+      transparent 70%
+    );
   }
 
-  .arc-line {
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in oklab, var(--accent) 45%, transparent),
-      color-mix(in oklab, var(--cyan) 45%, transparent),
-      transparent
-    );
+  .panel-forest {
+    background: var(--forest);
+    color: var(--on-forest);
+  }
+
+  .panel-mint {
+    background: var(--mint);
+  }
+
+  .text-headline {
+    color: var(--headline);
+  }
+
+  .pill {
+    border-radius: 9999px;
   }
 
   .text-balance {
@@ -151,15 +184,5 @@
   }
   100% {
     background-position: -200% 0;
-  }
-}
-
-@keyframes waveform {
-  0%,
-  100% {
-    transform: scaleY(0.35);
-  }
-  50% {
-    transform: scaleY(1);
   }
 }

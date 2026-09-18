@@ -29,7 +29,7 @@ export const useUiStore = create<UiState>()(
       sidebarCollapsed: false,
       mobileNavOpen: false,
       commandOpen: false,
-      themePreference: "system",
+      themePreference: "light",
       emailDigest: true,
       onePageDefault: true,
       demoState: "default",

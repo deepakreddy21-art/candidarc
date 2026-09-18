@@ -61,7 +61,7 @@ test.describe("candidate experience journey", () => {
 
     await expect(
       page
-        .getByText(/Researching the role|Tailoring your resume|Quality checking|Your tailored resume is ready|We need a few details/i)
+        .getByText(/Researching the role|Tailoring your résumé|Checking your résumé|Your tailored resume is ready|We need a few details/i)
         .first(),
     ).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("body")).not.toContainText(/HR_AUDIT|EM_AUDIT|V0_GENERATING|Final QA/);

@@ -7,14 +7,11 @@ import {
   Briefcase,
   FileText,
   Home,
-  Moon,
   Radar,
   Search,
   Settings,
-  Sun,
   User,
 } from "lucide-react";
-import { useTheme } from "next-themes";
 import { isRadarFeatureEnabled } from "@/lib/app-mode";
 import { useUiStore } from "@/stores/ui";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -38,7 +35,6 @@ export function CommandPalette() {
   const open = useUiStore((s) => s.commandOpen);
   const setOpen = useUiStore((s) => s.setCommandOpen);
   const router = useRouter();
-  const { setTheme, resolvedTheme } = useTheme();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -77,19 +73,6 @@ export function CommandPalette() {
                   {cmd.label}
                 </Command.Item>
               ))}
-            </Command.Group>
-            <Command.Group heading="Preferences" className="mt-2 px-1 text-xs text-foreground-muted">
-              <Command.Item
-                value="Switch theme"
-                onSelect={() => {
-                  setTheme(resolvedTheme === "dark" ? "light" : "dark");
-                  setOpen(false);
-                }}
-                className="flex cursor-pointer items-center gap-3 rounded-[10px] px-3 py-2.5 text-sm aria-selected:bg-surface-2"
-              >
-                {resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                Switch theme
-              </Command.Item>
             </Command.Group>
           </Command.List>
         </Command>

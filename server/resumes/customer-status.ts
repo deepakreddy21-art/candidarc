@@ -8,8 +8,8 @@ export type CustomerPipelineStage = "understanding" | "tailoring" | "preparing";
 
 const STAGE_COPY: Record<CustomerPipelineStage, string> = {
   understanding: "Researching the role",
-  tailoring: "Tailoring your resume",
-  preparing: "Quality checking",
+  tailoring: "Tailoring your résumé",
+  preparing: "Checking your résumé",
 };
 
 

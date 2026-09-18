@@ -51,7 +51,9 @@ test.describe("mobile interactions @mobile", () => {
   test("landing mobile menu reaches sign-in", async ({ page }) => {
     await page.goto("/");
     await page.getByRole("button", { name: /open menu/i }).click();
-    await page.getByRole("link", { name: /sign in/i }).click();
+    const menu = page.getByRole("navigation", { name: "Mobile menu", exact: true });
+    await expect(menu).toBeVisible();
+    await menu.getByRole("link", { name: "Sign in", exact: true }).click();
     await expect(page).toHaveURL(/\/sign-in/);
   });
 

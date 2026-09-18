@@ -7,7 +7,6 @@ import { Bell, Briefcase, ClipboardList, FileText, Menu, Search, Settings, User,
 import { useEffect, useMemo, useState } from "react";
 import { Logo } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { CommandPalette } from "@/components/command-palette";
 import { Tooltip } from "@/components/ui/tabs";
 import { useUiStore } from "@/stores/ui";
@@ -67,7 +66,7 @@ function NavItem({
       data-pending={pending ? "true" : undefined}
       className={cn(
         "relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-        active ? "bg-surface-2 text-foreground" : "text-foreground-secondary hover:bg-surface-2 hover:text-foreground",
+        active ? "bg-mint text-foreground" : "text-foreground-secondary hover:bg-surface-2 hover:text-foreground",
         pending && "opacity-80",
         collapsed && "justify-center px-2",
       )}
@@ -305,7 +304,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </Link>
               </Button>
             </Tooltip>
-            <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" aria-label="User menu" className="rounded-full">

@@ -5,9 +5,9 @@
 export const product = {
   name: "CandidArc",
   shortName: "CandidArc",
-  tagline: "Fresh opportunities. Verified evidence. Human-approved applications.",
+  tagline: "Get noticed for what you can do.",
   description:
-    "Discover genuinely fresh roles, build every application from verified career evidence, and complete applications accurately with the candidate in control.",
+    "Find the right roles. Understand the team. Build a resume that brings your strongest experience forward.",
   url: "https://candidarc.app",
   supportEmail: "support@candidarc.app",
 } as const;

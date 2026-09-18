@@ -90,7 +90,7 @@ describe("customer resume generation", () => {
     for (const stage of ["V0_GENERATING", "HR_AUDIT_1_REVIEW", "EM_AUDIT_2_RUNNING", "RESEARCH_QUEUED", "REVISING"]) {
       const mapped = mapInternalStageToCustomer(stage);
       expect(JSON.stringify(mapped)).not.toMatch(/V0|HR_AUDIT|EM_AUDIT|RESEARCH_QUEUED|REVISING/);
-      expect(["Researching the role", "Tailoring your resume", "Quality checking"]).toContain(mapped.pipelineLabel);
+      expect(["Researching the role", "Tailoring your résumé", "Checking your résumé"]).toContain(mapped.pipelineLabel);
     }
   });
 
