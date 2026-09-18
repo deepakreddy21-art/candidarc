@@ -198,14 +198,15 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
         header = _normalize_header(line)
         if header:
             break
-        if EMAIL_RE.search(line) or PHONE_RE.search(line):
+        if "|" in line and TITLE_HINT_RE.search(line) and not EMAIL_RE.search(line):
             continue
-        if "|" in line or ":" in line or TITLE_HINT_RE.search(line):
-            continue
+        # Contact lines often mix email/phone/location — still accept a state-coded city.
         loc = LOCATION_HINT_RE.search(line)
         if loc:
             location = loc.group(1).strip()
             break
+        if ":" in line:
+            continue
     name_parts = _split_name(full_name)
     provenance = _provenance(
         name_line or (emails[0] if emails else None),

@@ -59,7 +59,8 @@ test.describe("resume import interactions", () => {
     await expect(page.getByText(/Jan 2021/i)).toBeVisible();
     await expect(page.getByTestId("imported-project-0")).toHaveValue(/Observability Fabric/i);
     await expect(page.getByTestId("imported-education-0")).toHaveValue(/Cascadia University/i);
-    await expect(page.getByLabel(/degree 1/i)).toHaveValue(/Computer Science/i);
+    await expect(page.getByTestId("imported-education-degree-0")).toHaveValue(/B\.?S\.?/i);
+    await expect(page.getByTestId("imported-education-field-0")).toHaveValue(/Computer Science/i);
     await expect(page.getByTestId("imported-cert-0")).toHaveValue(/AWS Solutions Architect Associate/i);
     await expect(page.getByTestId("imported-publication-0")).toHaveValue(/Reliable Rollouts/i);
     await expect(page.getByLabel(/job title 2/i)).toHaveCount(0);
