@@ -23,7 +23,7 @@ from app.domain.schemas import (
     ResumeParseSkillGroup,
 )
 from app.modules.guardrails.service import INJECTION_MARKERS, KNOWN_TECH_HINTS
-from app.modules.parsing.structure import structure_resume_text
+from app.modules.parsing.structure import _normalize_header, structure_resume_text
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 30
@@ -187,12 +187,15 @@ def _reconstruct_column_text(page: Any) -> str | None:
     """
     fragments: list[tuple[float, float, str]] = []
 
-    def visitor(text: str, _cm: Any, tm: Any, _font_dict: Any, _font_size: Any) -> None:
+    def visitor(text: str, cm: Any, tm: Any, _font_dict: Any, _font_size: Any) -> None:
         if not text or not str(text).strip():
             return
         try:
-            x = float(tm[4])
-            y = float(tm[5])
+            from pypdf import mult
+
+            position = mult(tm, cm)
+            x = float(position[4])
+            y = float(position[5])
         except (TypeError, ValueError, IndexError):
             return
         fragments.append((x, y, str(text)))
@@ -222,6 +225,11 @@ def _reconstruct_column_text(page: Any) -> str | None:
     if not left or not right:
         return None
 
+    # A right-aligned date/location column is part of each row, not a separate
+    # reading column. Require independent section headings in the right lane.
+    if not any(_normalize_header(line) for _x, _y, text in right for line in text.splitlines()):
+        return None
+
     # Overlapping vertical ranges required for a genuine two-column layout.
     left_ys = [y for _x, y, _t in left]
     right_ys = [y for _x, y, _t in right]
@@ -242,11 +250,11 @@ def _reconstruct_column_text(page: Any) -> str | None:
                 band.append(cleaned)
                 band_y = y if band_y is None else band_y
             else:
-                lines.append("".join(band).strip())
+                lines.append("  ".join(band).strip())
                 band = [cleaned]
                 band_y = y
         if band:
-            lines.append("".join(band).strip())
+            lines.append("  ".join(band).strip())
         return [ln for ln in lines if ln]
 
     left_text = "\n".join(column_lines(left))
@@ -260,7 +268,12 @@ def _extract_pdf_page_text(page: Any) -> str:
     reconstructed = _reconstruct_column_text(page)
     if reconstructed:
         return reconstructed
-    return page.extract_text() or ""
+    # Layout mode preserves spacing between employer/title/location/date cells.
+    # Default stream order can concatenate these or place dates after all bullets.
+    try:
+        return page.extract_text(extraction_mode="layout", layout_mode_space_vertically=False) or ""
+    except (TypeError, ValueError):
+        return page.extract_text() or ""
 
 
 def _parse_pdf(raw: bytes) -> ResumeParseResponse:
@@ -320,9 +333,43 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
                 raise ValueError("DOCX_ZIP_BOMB_SUSPECTED")
 
     from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     document = Document(io.BytesIO(raw))
-    text = "\n".join(p.text for p in document.paragraphs if p.text.strip()).strip()
+
+    def blocks(container: Any) -> list[str]:
+        lines: list[str] = []
+        for block in container.iter_inner_content():
+            if isinstance(block, Paragraph):
+                lines.extend(line for line in block.text.splitlines() if line.strip())
+            elif isinstance(block, Table):
+                seen_cells: set[Any] = set()
+                for row in block.rows:
+                    cells: list[list[str]] = []
+                    for cell in row.cells:
+                        # A merged Word cell appears once per covered grid column.
+                        if cell._tc in seen_cells:
+                            continue
+                        seen_cells.add(cell._tc)
+                        cells.append(blocks(cell))
+                    independent_sections = any(_normalize_header(line) for cell in cells[1:] for line in cell)
+                    if independent_sections:
+                        lines.extend(line for cell in cells for line in cell)
+                    else:
+                        for i in range(max((len(cell) for cell in cells), default=0)):
+                            lines.append(" | ".join(cell[i] for cell in cells if i < len(cell)))
+        return lines
+
+    header_lines: list[str] = []
+    seen_headers: set[str] = set()
+    for section in document.sections:
+        for header in (section.header, section.first_page_header):
+            for paragraph in header.paragraphs:
+                if paragraph.text.strip() and paragraph.text not in seen_headers:
+                    seen_headers.add(paragraph.text)
+                    header_lines.append(paragraph.text)
+    text = "\n".join(header_lines + blocks(document)).strip()
     if not text:
         raise ValueError("EMPTY_DOCUMENT")
     return _with_structure(text, None, [])

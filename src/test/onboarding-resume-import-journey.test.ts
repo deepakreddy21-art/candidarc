@@ -28,6 +28,7 @@ import { resetPythonIntelligenceClient } from "../../server/intelligence/python-
 import { resetEnvCache } from "../../server/config/env";
 import { createMinimalDocx } from "../../server/resumes/document-renderer";
 import {
+  LAYOUT_IMPORT_RESUME,
   NO_EMPLOYMENT_RESUME,
   PROFESSIONAL_EXPERIENCE_RESUME,
   WORK_HISTORY_RESUME,
@@ -360,6 +361,40 @@ describe("onboarding resume import journey (real FastAPI)", () => {
     const body = await waitImportReady(cookie);
     expect(body.status).toBe("ready_for_review");
     expect(body.extraction.employment.length).toBeGreaterThanOrEqual(2);
+  }, 60_000);
+
+  it.each(["pdf", "docx"])("keeps layout-derived %s fields through upload, confirm and reload", async (format) => {
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const file = format === "pdf" ? textToSimplePdf(LAYOUT_IMPORT_RESUME) : await createMinimalDocx(LAYOUT_IMPORT_RESUME.split("\n"));
+    const type = format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const form = new FormData();
+    form.append("file", new File([Uint8Array.from(file)], `layout.${format}`, { type }));
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    expect((await upload(new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf }, body: form,
+    }))).status).toBe(201);
+    const body = await waitImportReady(cookie);
+    expect(body.status).toBe("ready_for_review");
+    expect(body.extraction.employment).toHaveLength(1);
+    expect(body.extraction.employment[0]).toMatchObject({
+      company: "Harbor Mutual", title: "Software Engineer", location: "San Antonio, TX", startDate: "Jan 2024", endDate: "Present",
+    });
+    expect(body.extraction.education).toHaveLength(1);
+    expect(body.extraction.education[0]).toMatchObject({
+      institution: "Lakeside Institute of Technology", degree: "Master of Science", field: "Information Technology",
+      location: "Chicago, IL", startDate: "Jan 2023", endDate: "May 2024",
+    });
+    expect(body.extraction.projects).toHaveLength(1);
+    expect(body.extraction.projects[0]).toMatchObject({ name: "Atlas Scheduler", role: "Lead Developer", organization: "Campus Lab" });
+    const { POST: confirm } = await import("../../src/app/api/v1/profile/resume/confirm/route");
+    expect((await confirm(new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" }, body: "{}",
+    }))).status).toBe(200);
+    const { GET } = await import("../../src/app/api/v1/profile/resume/import/route");
+    const saved = await (await GET(new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }))).json();
+    expect(saved.status).toBe("confirmed");
+    for (const field of ["employment", "education", "projects"] as const) expect(saved.extraction[field]).toEqual(body.extraction[field]);
   }, 60_000);
 
   it("returns IMAGE_ONLY_PDF_OCR_REQUIRED for scanned PDFs", async () => {

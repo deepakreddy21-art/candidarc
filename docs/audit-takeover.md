@@ -56,3 +56,24 @@ This implements the audit's data/trust foundation and bounded workflow improveme
 - Record a real product walkthrough once the candidate journey is stable; complete the public support/privacy/terms/pricing/SEO pages with approved business details. Keep the approved brand and avoid another broad visual rewrite.
 
 Revert the feature commits to roll back code; no destructive migration is required. Profile edits and immutable evidence created while this code runs remain candidate data and must not be deleted as part of rollback.
+
+## Import layout correction (merge paused)
+
+The additional UAT screenshots exposed deterministic parsing defects: combined employer/title/location text became a job title; each education line became a separate school; unrecognized project headings continued the education section. PDF reconstruction also treated right-aligned dates as independent columns, and DOCX parsing omitted tables.
+
+The parser now groups employment, education and project lines into records before assigning fields. It recognizes additional standalone/inline section aliases, supports employer-first/title-first headers, preserves wrapped responsibilities, separates degree/major/institution/location/dates, and retains distinct promotions under an explicitly shared employer. Location recognition uses record context and Unicode place syntax, not a fixed list of US cities. Institution recognition combines record context with structural cues; acronym institutions are not expanded into guessed names.
+
+PDF reading preserves horizontal layout for row-based headers, requires independent right-hand section headings before using column-major reading, and applies text transformation matrices. DOCX reading includes ordered paragraphs/tables, merged cells, and header contact text. Source excerpts and uncertainty warnings survive in record provenance; unresolved records lower extraction quality and contribute to the existing review indicators. These repairs do not call an AI provider and require no AI key or new dependency.
+
+Verification for this correction:
+
+- 68 new layout regression cases, including positioned PDF objects, DOCX tables, international locations, alternate headings, combined headers and multiline degrees.
+- 269 Python tests pass, with the same 5 environment-dependent skips.
+- 12 real-FastAPI upload/scan/extract/confirm/reload journey tests pass, including new PDF and DOCX field-level checks.
+- 4 built-app browser import tests pass with retries disabled, including visible field assertions before and after confirmation/reload. The hosted runner uses its installed Chromium binary and explicit loopback binding; video capture is unavailable locally, while traces remain enabled. CI uses the repository's normal browser configuration.
+- TypeScript checking, changed-file ESLint, Ruff, mypy and diff whitespace checks pass.
+- The earlier user-supplied PDF was inspected locally and still returns 3 roles/companies, 2 education entries and 12/12/10 responsibility bullets. The private document and its contact details were not added to Git; committed fixtures are synthetic.
+
+The newer screenshot template's original PDF/DOCX has not been supplied in this session. Its observed failure is reproduced using synthetic text/layout twins, not claimed as verification of the exact source document. Existing confirmed profiles are not rewritten: replace/re-import, review and confirm to adopt new parsing. Arbitrary ambiguous layouts, unknown headings and image-only PDFs remain limitations; no rule-based or model-based extractor can promise perfect results on every document. A future optional model fallback should use schema-constrained extraction, per-field source verification, bounded time/cost, and explicit uncertainty—not fill missing candidate facts from general knowledge.
+
+References: [pypdf text extraction and layout limitations](https://pypdf.readthedocs.io/en/stable/user/extract-text.html), [python-docx document content ordering](https://python-docx.readthedocs.io/en/latest/api/document.html).

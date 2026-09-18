@@ -303,4 +303,26 @@ startxref
 export function legacyDocBytes(): Buffer {
   return Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, ...Array(64).fill(0)]);
 }
+/** Layout regression: no delimiter around employer/title/city; multiline degree. */
+export const LAYOUT_IMPORT_RESUME = `Alex Rivera
+alex.rivera@example.com | (555) 010-3344 | Seattle, WA
+
+WORK EXPERIENCE
+Harbor Mutual Software Engineer San Antonio, TX
+Jan 2024 - Present
+- Built Python APIs for reporting.
+
+ACADEMIC QUALIFICATIONS
+Lakeside Institute of Technology | Chicago, IL
+Jan 2023 - May 2024
+Master of Science in Information Technology
+
+PROJECT EXPERIENCE
+Atlas Scheduler | Lead Developer | Campus Lab | Jan 2023 - May 2023
+- Built a scheduling system with Python
+and PostgreSQL for the campus lab.
+
+SKILLS
+Python, PostgreSQL
+`;
 

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { DEFAULT_PASSWORD, seedOnboardedUser, uniqueEmail } from "./helpers/session";
 import { imageOnlyPdf, importResumeDocx, importResumePdf } from "./helpers/documents";
+import { LAYOUT_IMPORT_RESUME, textToSimplePdf } from "../src/test/fixtures/resume-samples";
 
 async function completePreferences(page: import("@playwright/test").Page) {
   await page.locator("#target-roles").click();
@@ -112,6 +113,37 @@ test.describe("resume import interactions", () => {
     await expect(page.getByLabel(/job title 1/i)).toHaveValue(/Platform Engineer/i);
     await expect(page.getByLabel(/job title 2/i)).toHaveCount(0);
     await expect(page.locator("#identity-portfolio")).toHaveValue(/jordanblake\.dev/i);
+  });
+
+  test("mixed layout import separates job and education fields and keeps them after confirmation", async ({ page }) => {
+    await seedOnboardedUser(page, "import-layout");
+    await page.goto("/app/profile");
+    await page.getByRole("button", { name: /upload a resume/i }).click();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "layout.pdf", mimeType: "application/pdf", buffer: textToSimplePdf(LAYOUT_IMPORT_RESUME),
+    });
+    await expect(page.getByText(/ready — review|resume ready/i)).toBeVisible({ timeout: 90_000 });
+    async function expectCareerFields() {
+      await expect(page.getByLabel("Job title 1", { exact: true })).toHaveValue("Software Engineer");
+      await expect(page.getByLabel("Employer 1", { exact: true })).toHaveValue("Harbor Mutual");
+      await expect(page.getByLabel("Employment location 1", { exact: true })).toHaveValue("San Antonio, TX");
+      await expect(page.getByLabel("Employment start date 1", { exact: true })).toHaveValue("Jan 2024");
+      await expect(page.getByLabel("Job title 2", { exact: true })).toHaveCount(0);
+      await expect(page.getByTestId("imported-education-0")).toHaveValue("Lakeside Institute of Technology");
+      await expect(page.getByTestId("imported-education-degree-0")).toHaveValue("Master of Science");
+      await expect(page.getByTestId("imported-education-field-0")).toHaveValue("Information Technology");
+      await expect(page.getByTestId("imported-education-location-0")).toHaveValue("Chicago, IL");
+      await expect(page.getByLabel("Education start date 1", { exact: true })).toHaveValue("Jan 2023");
+      await expect(page.getByLabel("Graduation date 1", { exact: true })).toHaveValue("May 2024");
+      await expect(page.getByTestId("imported-education-1")).toHaveCount(0);
+      await expect(page.getByTestId("imported-project-0")).toHaveValue("Atlas Scheduler");
+      await expect(page.getByLabel("Project role 1", { exact: true })).toHaveValue("Lead Developer");
+    }
+    await expectCareerFields();
+    await page.getByRole("button", { name: /confirm import/i }).click();
+    await expect(page.getByText(/imported career details confirmed/i)).toBeVisible();
+    await page.reload();
+    await expectCareerFields();
   });
 
   test("image-only PDF stays failed with an OCR-unsupported message", async ({ page }) => {
