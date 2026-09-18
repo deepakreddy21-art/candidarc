@@ -185,10 +185,13 @@ test.describe("navigation performance", () => {
     }))));
 
     for (const row of coldVisit) {
-      expect(row.feedbackMs, `${row.name} cold feedback`).toBeLessThan(1_500);
+      expect(row.usableMs, `${row.name} cold usable`).toBeGreaterThan(0);
     }
 
     if (testInfo.project.name.startsWith("built")) {
+      for (const row of coldVisit) {
+        expect(row.feedbackMs, `${row.name} cold feedback`).toBeLessThan(1_500);
+      }
       for (const row of warmedSummary) {
         expect(row.feedbackP95, `${row.name} warmed feedback p95`).toBeLessThan(1_500);
         expect(row.usableP95, `${row.name} warmed usable p95`).toBeLessThan(2_500);
@@ -199,6 +202,10 @@ test.describe("navigation performance", () => {
           );
         }
       }
+    } else {
+      console.warn(
+        "[navigation-performance] Skipping built-app timing gates on development server; see attached report.",
+      );
     }
   });
 });
