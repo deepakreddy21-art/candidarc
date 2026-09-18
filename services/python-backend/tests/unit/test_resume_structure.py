@@ -237,3 +237,110 @@ def test_two_column_pdf_extracts_employment(
     assert body["education"]
     assert any("Cascadia" in (row.get("institution") or "") or "Cascadia" in (row.get("degree") or "") for row in body["education"])
     assert body["text"].strip()
+
+
+def test_wrapped_bullet_fragments_do_not_become_roles(
+    client: TestClient, auth_headers: dict[str, str], ctx: RequestContext
+):
+    from tests.fixtures.resume_samples import WRAPPED_BULLET_EMPLOYMENT_RESUME
+
+    # DOCX preserves full line count; simple PDF fixture truncates long samples.
+    response = _parse(
+        client,
+        auth_headers,
+        ctx,
+        "wrapped.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        text_to_docx(WRAPPED_BULLET_EMPLOYMENT_RESUME),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["contact"]["full_name"] == "Alex Rivera"
+    assert "Mechanic" not in (body["contact"]["full_name"] or "")
+    assert body["contact"]["location"] is None
+    assert len(body["employment"]) == 3
+    employers = [row.get("employer") for row in body["employment"]]
+    assert employers == ["Northbridge Mutual", "Lakeside Capital", "Contoso Labs"]
+    assert [len(row.get("bullets") or []) for row in body["employment"]] == [12, 12, 10]
+    first = body["employment"][0]
+    assert first["location"] == "Austin, TX, USA"
+    assert first["start_date"] and "2025" in first["start_date"]
+    assert first["is_current"] is True
+    assert any("member-service applications" in (b or "") for b in (first.get("bullets") or []))
+    for row in body["employment"]:
+        assert (row.get("title") or "").lower() not in {
+            "issuance",
+            "pagination",
+            "accessible form controls",
+            "automate exception routing",
+            "transactional outbox patterns",
+        }
+    assert len(body["education"]) == 2
+    assert body["education"][0]["institution"] == "Cascadia Institute of Technology"
+    assert body["education"][0]["field"] == "Information Systems Management"
+    assert body["education"][0]["location"] == "Chicago, IL"
+    assert body["education"][0]["end_date"] is None
+    assert body["education"][1]["institution"] == "Lakeside University"
+    assert body["education"][1]["field"] == "Computer Science"
+    assert body["projects"] == []
+    assert body["publications"] == []
+    cert_names = " ".join(body.get("certifications") or [])
+    assert "Oracle Certified Professional" in cert_names
+    assert "AWS Certified Solutions Architect" in cert_names
+
+
+def test_structure_resume_text_wrapped_layout_unit():
+    from app.modules.parsing.structure import structure_resume_text
+    from tests.fixtures.resume_samples import WRAPPED_BULLET_EMPLOYMENT_RESUME
+
+    structured = structure_resume_text(WRAPPED_BULLET_EMPLOYMENT_RESUME)
+    assert structured["contact"]["full_name"] == "Alex Rivera"
+    assert len(structured["employment"]) == 3
+    assert [len(job["bullets"]) for job in structured["employment"]] == [12, 12, 10]
+    assert structured["education"][0]["institution"] == "Cascadia Institute of Technology"
+    assert structured["education"][0]["field"] == "Information Systems Management"
+
+
+def test_same_employer_keeps_distinct_roles(
+    client: TestClient, auth_headers: dict[str, str], ctx: RequestContext
+):
+    from tests.fixtures.resume_samples import SAME_EMPLOYER_TWO_ROLES_RESUME
+
+    response = _parse(
+        client,
+        auth_headers,
+        ctx,
+        "same-employer.pdf",
+        "application/pdf",
+        text_to_simple_pdf(SAME_EMPLOYER_TWO_ROLES_RESUME),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["employment"]) == 2
+    assert {row.get("employer") for row in body["employment"]} == {"Contoso"}
+    titles = [row.get("title") for row in body["employment"]]
+    assert "Senior Engineer" in titles
+    assert "Engineer" in titles
+
+
+def test_unicode_name_and_international_phone(
+    client: TestClient, auth_headers: dict[str, str], ctx: RequestContext
+):
+    from tests.fixtures.resume_samples import NAME_UNICODE_RESUME
+
+    response = _parse(
+        client,
+        auth_headers,
+        ctx,
+        "unicode.pdf",
+        "application/pdf",
+        text_to_simple_pdf(NAME_UNICODE_RESUME),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["contact"]["full_name"]
+    assert "Neill" in (body["contact"]["full_name"] or "") or "García" in (body["contact"]["full_name"] or "") or "Garcia" in (body["contact"]["full_name"] or "")
+    assert body["contact"]["phone"]
+    assert len(body["employment"]) == 1
+    assert body["employment"][0]["employer"] == "Iberia Systems"
+    assert body["employment"][0]["location"] == "Madrid, Spain"
