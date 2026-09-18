@@ -1857,7 +1857,7 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
               COALESCE(${s.workflowRuns.payload}, '{}'::jsonb),
               ARRAY[${claimKey}]::text[],
               jsonb_build_object(
-                'token', ${newId("claim")},
+                'token', ${newId("claim")}::text,
                 'at', now(),
                 'expiresAt', now() + (${STAGE_CLAIM_LEASE_MS} * interval '1 millisecond'),
                 'attempt', ${s.workflowRuns.attempt}
