@@ -254,12 +254,15 @@ export function validateStepClient(
     if (["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "")) {
       return "Wait for résumé import to finish, or choose Enter manually";
     }
+    // Already confirmed — contact was validated earlier; do not block navigation.
+    if (importStatus === "confirmed") return null;
     if (!form.fullName.trim()) return "Add your name";
     if (!form.email.trim()) return "Add your résumé contact email";
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) return "Enter a valid email";
     if (!form.phone.trim()) return "Add your phone number";
     if (!form.location.trim()) return "Add your current location";
-    if (importStatus === "confirmed" || importStatus === "ready_for_review") return null;
+    // Import ready for review: contact is complete; employment may already be extracted.
+    if (importStatus === "ready_for_review") return null;
     const hasEmployment = form.employment.some((row) => row.title?.trim() || row.company?.trim());
     const hasSkills = normalizeList(form.skills).length > 0;
     const hasEducation = form.education.some((row) => row.school?.trim() || row.degree?.trim());

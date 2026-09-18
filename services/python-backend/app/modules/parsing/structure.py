@@ -207,7 +207,14 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
             location = loc.group(1).strip()
             break
     name_parts = _split_name(full_name)
-    contact = {
+    provenance = _provenance(
+        name_line or (emails[0] if emails else None),
+        confidence="high" if full_name and emails else "medium",
+        warnings=["headline_separated"] if headline else None,
+    )
+    if headline:
+        provenance["location_hint"] = f"headline:{headline}"
+    return {
         "full_name": full_name,
         "first_name": name_parts["first_name"],
         "middle_name": name_parts["middle_name"],
@@ -221,18 +228,8 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
         "github": github.group(0) if github else None,
         "portfolio": portfolio,
         "other_urls": other_urls,
-        "provenance": _provenance(
-            name_line or (emails[0] if emails else None),
-            confidence="high" if full_name and emails else "medium",
-            warnings=["headline_separated"] if headline else None,
-        ),
+        "provenance": provenance,
     }
-    # Headline is preserved in provenance warnings context for mappers that support it;
-    # keep contact schema stable and stash on provenance.location_hint when present.
-    if headline:
-        contact["provenance"]["location_hint"] = f"headline:{headline}"
-    return contact
-
 
 def _is_bullet_line(line: str) -> bool:
     return bool(re.match(r"^[-•*●▪◦?]", line) or re.match(r"^\d+[.)]\s+", line))
