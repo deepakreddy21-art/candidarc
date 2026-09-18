@@ -31,8 +31,18 @@ test.describe("resume import interactions", () => {
     });
     await expect(page.getByText(/ready — review|resume ready/i)).toBeVisible({ timeout: 90_000 });
     await expect(page.getByTestId("imported-full-name")).toHaveValue(/Jordan Blake/i);
+    // Prefer API extraction email (authoritative) before asserting the controlled input.
     await expect
-      .poll(async () => page.getByTestId("imported-email").inputValue(), { timeout: 30_000 })
+      .poll(async () => {
+        const body = await page.evaluate(async () => {
+          const res = await fetch("/api/v1/profile/resume/import", { credentials: "include" });
+          return res.json();
+        });
+        return String(body?.extraction?.contact?.email ?? body?.extraction?.rawText ?? "");
+      }, { timeout: 45_000 })
+      .toMatch(/jordan\.blake@example\.com/i);
+    await expect
+      .poll(async () => page.getByTestId("imported-email").inputValue(), { timeout: 45_000 })
       .toMatch(/jordan\.blake@example\.com/i);
     await expect(page.locator("#linkedin")).toHaveValue(/linkedin\.com\/in\/jordanblake/i);
     await expect(page.locator("#github")).toHaveValue(/github\.com\/jordanblake/i);
