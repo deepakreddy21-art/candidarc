@@ -23,6 +23,7 @@ from app.domain.schemas import (
     ResumeParseSkillGroup,
 )
 from app.modules.guardrails.service import INJECTION_MARKERS, KNOWN_TECH_HINTS
+from app.modules.parsing.fields import BULLET_RE
 from app.modules.parsing.structure import _normalize_header, structure_resume_text
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024
@@ -338,11 +339,28 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
 
     document = Document(io.BytesIO(raw))
 
+    def is_list_paragraph(paragraph: Any) -> bool:
+        properties = paragraph._p.pPr
+        if properties is not None and properties.numPr is not None:
+            return True
+        style = paragraph.style
+        for _ in range(6):
+            if style is None:
+                break
+            properties = style.element.pPr
+            if (properties is not None and properties.numPr is not None) or re.match(r"List (Bullet|Number)", style.name or ""):
+                return True
+            style = style.base_style
+        return False
+
     def blocks(container: Any) -> list[str]:
         lines: list[str] = []
         for block in container.iter_inner_content():
             if isinstance(block, Paragraph):
-                lines.extend(line for line in block.text.splitlines() if line.strip())
+                paragraph_lines = [line for line in block.text.splitlines() if line.strip()]
+                if paragraph_lines and is_list_paragraph(block) and not BULLET_RE.match(paragraph_lines[0]):
+                    paragraph_lines[0] = "- " + paragraph_lines[0]
+                lines.extend(paragraph_lines)
             elif isinstance(block, Table):
                 seen_cells: set[Any] = set()
                 for row in block.rows:

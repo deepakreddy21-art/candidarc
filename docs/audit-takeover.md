@@ -63,12 +63,12 @@ The additional UAT screenshots exposed deterministic parsing defects: combined e
 
 The parser now groups employment, education and project lines into records before assigning fields. It recognizes additional standalone/inline section aliases, supports employer-first/title-first headers, preserves wrapped responsibilities, separates degree/major/institution/location/dates, and retains distinct promotions under an explicitly shared employer. Location recognition uses record context and Unicode place syntax, not a fixed list of US cities. Institution recognition combines record context with structural cues; acronym institutions are not expanded into guessed names.
 
-PDF reading preserves horizontal layout for row-based headers, requires independent right-hand section headings before using column-major reading, and applies text transformation matrices. DOCX reading includes ordered paragraphs/tables, merged cells, and header contact text. Source excerpts and uncertainty warnings survive in record provenance; unresolved records lower extraction quality and contribute to the existing review indicators. These repairs do not call an AI provider and require no AI key or new dependency.
+PDF reading preserves horizontal layout for row-based headers, requires independent right-hand section headings before using column-major reading, and applies text transformation matrices. DOCX reading includes ordered paragraphs/tables, merged cells, native bullet/numbered lists, and header contact text. Source excerpts and uncertainty warnings survive in record provenance; unresolved records lower extraction quality and contribute to the existing review indicators. These repairs do not call an AI provider and require no AI key or new dependency.
 
 Verification for this correction:
 
-- 68 new layout regression cases, including positioned PDF objects, DOCX tables, international locations, alternate headings, combined headers and multiline degrees.
-- 269 Python tests pass, with the same 5 environment-dependent skips.
+- 70 new layout regression cases, including positioned PDF objects, DOCX tables/native lists, international locations, alternate headings, combined headers and multiline degrees.
+- 271 Python tests pass, with the same 5 environment-dependent skips.
 - 12 real-FastAPI upload/scan/extract/confirm/reload journey tests pass, including new PDF and DOCX field-level checks.
 - 4 built-app browser import tests pass with retries disabled, including visible field assertions before and after confirmation/reload. The hosted runner uses its installed Chromium binary and explicit loopback binding; video capture is unavailable locally, while traces remain enabled. CI uses the repository's normal browser configuration.
 - TypeScript checking, changed-file ESLint, Ruff, mypy and diff whitespace checks pass.

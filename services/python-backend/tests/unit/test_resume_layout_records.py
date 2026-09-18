@@ -223,6 +223,23 @@ def test_inline_section_headers_do_not_swallow_other_sections():
     assert result["education"][0]["institution"] == "Example University"
 
 
+@pytest.mark.parametrize("style", ["List Bullet", "List Number"])
+def test_docx_native_lists_keep_distinct_responsibilities(style: str):
+    from docx import Document
+
+    doc = Document()
+    for text in ("Alex Rivera", "WORK EXPERIENCE", "Software Engineer | Example Labs | Remote", "2020 - 2024"):
+        doc.add_paragraph(text)
+    doc.add_paragraph("Built Python APIs.\nThese support reporting.", style=style)
+    doc.add_paragraph("Maintained SQL reports.", style=style)
+    data = io.BytesIO()
+    doc.save(data)
+    parsed = parse_resume_bytes_sync("native-lists.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    base64.b64encode(data.getvalue()).decode())
+    assert len(parsed.employment) == 1
+    assert parsed.employment[0].bullets == ["Built Python APIs. These support reporting.", "Maintained SQL reports."]
+
+
 def test_docx_table_text_is_not_discarded():
     from docx import Document
 
