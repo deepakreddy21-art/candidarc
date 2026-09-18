@@ -133,7 +133,7 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
   if (status === 422) {
     const documentCodes: Record<string, string> = {
       IMAGE_ONLY_PDF_OCR_REQUIRED:
-        "This PDF appears to contain scanned images. Upload a text-based PDF or DOCX, or enter your details manually.",
+        "This PDF appears to contain scanned images. OCR is not available in this release. Upload a text-based PDF or DOCX, or enter your details manually.",
       PDF_ENCRYPTED: "This PDF is password-protected. Upload an unlocked PDF or DOCX.",
       CORRUPT_PDF: "This PDF could not be read. Try exporting again or upload a DOCX.",
       DOCUMENT_TOO_LARGE: "File is too large. Maximum size is 10 MB.",

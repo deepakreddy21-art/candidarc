@@ -170,7 +170,7 @@ export function StepCareerProfile({
           {importStatus === "failed" ? (
             <p className="text-sm text-destructive" role="alert">
               {imageOnly
-                ? "This PDF appears to contain scanned images. Upload a text-based PDF or DOCX, or enter your details manually."
+                ? "This PDF appears to contain scanned images. OCR is not available in this release. Upload a text-based PDF or DOCX, or enter your details manually."
                 : statusMessage || "Try another PDF/DOCX or enter details manually."}
             </p>
           ) : null}

@@ -44,6 +44,7 @@ export const ALLOWED_RESUME_MIMES = new Set([
 export const ALLOWED_RESUME_EXTENSIONS = new Set([".pdf", ".docx"]);
 
 const CONFIRMED_BASELINE_KEY = "__confirmedBaseline";
+const CONFIRMED_SOURCE_FILE_KEY = "__confirmedSourceFilePublicId";
 const DRAFT_BASELINE_KEY = "__draftBaseline";
 
 function asExtractionRecord(
@@ -62,13 +63,43 @@ function readConfirmedBaseline(
   return baseline as Record<string, unknown>;
 }
 
+function readConfirmedSourceFilePublicId(
+  extraction: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!extraction || typeof extraction !== "object") return null;
+  const value = extraction[CONFIRMED_SOURCE_FILE_KEY];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 function wrapWithConfirmedBaseline(
   confirmed: Record<string, unknown> | null,
+  sourceFilePublicId?: string | null,
 ): Record<string, unknown> | null {
   if (!confirmed) return null;
-  const { [CONFIRMED_BASELINE_KEY]: _ignoredBaseline, ...clean } = confirmed;
+  const {
+    [CONFIRMED_BASELINE_KEY]: _ignoredBaseline,
+    [CONFIRMED_SOURCE_FILE_KEY]: priorSource,
+    error: _error,
+    errorCode: _errorCode,
+    replacementAttemptStatus: _attempt,
+    confirmedProfileIntact: _intact,
+    ...clean
+  } = confirmed;
   void _ignoredBaseline;
-  return { [CONFIRMED_BASELINE_KEY]: clean };
+  void _error;
+  void _errorCode;
+  void _attempt;
+  void _intact;
+  const source =
+    (typeof sourceFilePublicId === "string" && sourceFilePublicId.trim()
+      ? sourceFilePublicId
+      : typeof priorSource === "string"
+        ? priorSource
+        : null) ?? null;
+  return {
+    [CONFIRMED_BASELINE_KEY]: clean,
+    ...(source ? { [CONFIRMED_SOURCE_FILE_KEY]: source } : {}),
+  };
 }
 
 function wrapWithDraftBaseline(
@@ -109,12 +140,19 @@ async function restoreConfirmedOrFail(
 ) {
   const baseline = readConfirmedBaseline(extraction);
   if (baseline) {
+    const confirmedSource = readConfirmedSourceFilePublicId(extraction);
+    // Keep confirmed career fields usable while recording the failed replacement attempt.
     await repos.candidateProfiles.update(tenantId, userId, {
       resumeImportStatus: "failed",
+      ...(confirmedSource ? { sourceResumeFilePublicId: confirmedSource } : {}),
       resumeImportExtraction: {
+        ...baseline,
         [CONFIRMED_BASELINE_KEY]: baseline,
+        ...(confirmedSource ? { [CONFIRMED_SOURCE_FILE_KEY]: confirmedSource } : {}),
         error: message,
         errorCode,
+        replacementAttemptStatus: "failed",
+        confirmedProfileIntact: true,
       },
     });
     return;
@@ -127,6 +165,7 @@ async function restoreConfirmedOrFail(
         ...draft,
         error: message,
         errorCode,
+        replacementAttemptStatus: "failed",
       },
     });
     return;
@@ -136,6 +175,8 @@ async function restoreConfirmedOrFail(
     resumeImportExtraction: {
       error: message,
       errorCode,
+      replacementAttemptStatus: "failed",
+      confirmedProfileIntact: false,
     },
   });
 }
@@ -323,9 +364,16 @@ export class ResumeImportService {
     const priorExtraction = asExtractionRecord(existing.resumeImportExtraction as Record<string, unknown> | null);
     const confirmedBaseline =
       existing.resumeImportStatus === "confirmed" && priorExtraction
-        ? wrapWithConfirmedBaseline(priorExtraction)
+        ? wrapWithConfirmedBaseline(priorExtraction, existing.sourceResumeFilePublicId)
         : readConfirmedBaseline(priorExtraction)
-          ? wrapWithConfirmedBaseline(readConfirmedBaseline(priorExtraction))
+          ? wrapWithConfirmedBaseline(
+              {
+                ...readConfirmedBaseline(priorExtraction)!,
+                [CONFIRMED_SOURCE_FILE_KEY]:
+                  readConfirmedSourceFilePublicId(priorExtraction) ?? existing.sourceResumeFilePublicId,
+              },
+              readConfirmedSourceFilePublicId(priorExtraction) ?? existing.sourceResumeFilePublicId,
+            )
           : null;
     const draftBaseline =
       !confirmedBaseline && hasCareerContent(priorExtraction) ? wrapWithDraftBaseline(priorExtraction) : null;
@@ -458,11 +506,12 @@ export class ResumeImportService {
       extraction: adaptResumeExtractionV1ToV2(
         (() => {
           const raw = profile.resumeImportExtraction as Record<string, unknown> | null;
-          if (raw && CONFIRMED_BASELINE_KEY in raw && !raw.employment && !raw.error) {
-            // Replacement in progress — do not surface baseline as a staged ready extraction.
+          if (!raw) return null;
+          // In-progress replacement: baseline only, no error yet — do not stage as ready review.
+          if (CONFIRMED_BASELINE_KEY in raw && !raw.employment && !raw.error) {
             return null;
           }
-          if (raw && DRAFT_BASELINE_KEY in raw && !raw.employment && !raw.error) {
+          if (DRAFT_BASELINE_KEY in raw && !raw.employment && !raw.error) {
             return null;
           }
           return raw as ResumeExtractionSection | null;
@@ -470,6 +519,15 @@ export class ResumeImportService {
       ),
 
       file,
+
+      // Explicit attempt vs usable-profile signals for clients and regression tests.
+      replacementAttemptStatus:
+        ((profile.resumeImportExtraction as Record<string, unknown> | null)?.replacementAttemptStatus as
+          | string
+          | undefined) ?? null,
+      confirmedProfileIntact: Boolean(
+        (profile.resumeImportExtraction as Record<string, unknown> | null)?.confirmedProfileIntact,
+      ),
 
     };
 
@@ -884,9 +942,30 @@ export class ResumeImportService {
 
     const contact = extraction.contact ?? {};
 
+    const raw = profile.resumeImportExtraction as Record<string, unknown> | null;
+    const {
+      [CONFIRMED_BASELINE_KEY]: _baseline,
+      [CONFIRMED_SOURCE_FILE_KEY]: _source,
+      [DRAFT_BASELINE_KEY]: _draft,
+      error: _error,
+      errorCode: _errorCode,
+      replacementAttemptStatus: _attempt,
+      confirmedProfileIntact: _intact,
+      ...confirmedExtraction
+    } = (raw ?? {}) as Record<string, unknown>;
+    void _baseline;
+    void _source;
+    void _draft;
+    void _error;
+    void _errorCode;
+    void _attempt;
+    void _intact;
+
     const patch: Record<string, unknown> = {
 
       resumeImportStatus: "confirmed",
+
+      resumeImportExtraction: confirmedExtraction,
 
     };
 
@@ -912,11 +991,20 @@ export class ResumeImportService {
 
     }
 
+    const confirmedExtractionSection =
+      adaptResumeExtractionV1ToV2(confirmedExtraction as ResumeExtractionSection) ?? extraction;
+
     const updated = await this.repos.candidateProfiles.update(tenantId, user.id, patch);
 
-    await this.createImportEvidence(tenantId, user.id, updated.id, filePublicId, extraction);
+    await this.createImportEvidence(
+      tenantId,
+      user.id,
+      updated.id,
+      filePublicId,
+      confirmedExtractionSection,
+    );
 
-    return { profile: updated, extraction };
+    return { profile: updated, extraction: confirmedExtractionSection };
 
   }
 
@@ -975,8 +1063,13 @@ export class ResumeImportService {
     const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
     if (!profile?.userId) return;
 
+    // Superseded by a newer upload — never write late results onto the current import.
+    if (profile.sourceResumeFilePublicId && profile.sourceResumeFilePublicId !== filePublicId) {
+      logger.info({ tenantId, filePublicId }, "skipping extraction for superseded import");
+      return;
+    }
+
     // Replacements always run; confirmed data is preserved via baseline wrapping on upload.
-    // Skipping here left pending_scan stuck and hid IMAGE_ONLY / parse failures.
     if (profile.resumeImportStatus === "confirmed" && profile.sourceResumeFilePublicId !== filePublicId) {
       logger.info({ tenantId, filePublicId }, "skipping extraction for already-confirmed import");
       return;
@@ -1015,11 +1108,34 @@ export class ResumeImportService {
         throw new AppError("PARSE_FAILED", "Could not extract text from resume", 422);
       }
 
+      const latest = await this.repos.candidateProfiles.getByUser(tenantId, profile.userId);
+      if (!latest || latest.sourceResumeFilePublicId !== filePublicId) {
+        logger.info({ tenantId, filePublicId }, "skipping stale extraction write after newer upload");
+        return;
+      }
+
+      const priorBaseline = readConfirmedBaseline(
+        latest.resumeImportExtraction as Record<string, unknown> | null,
+      );
+      const priorSource = readConfirmedSourceFilePublicId(
+        latest.resumeImportExtraction as Record<string, unknown> | null,
+      );
+      const nextExtraction = {
+        ...(extraction as unknown as Record<string, unknown>),
+        ...(priorBaseline ? { [CONFIRMED_BASELINE_KEY]: priorBaseline } : {}),
+        ...(priorSource ? { [CONFIRMED_SOURCE_FILE_KEY]: priorSource } : {}),
+      };
+
       await this.repos.candidateProfiles.update(tenantId, profile.userId, {
         resumeImportStatus: "ready_for_review",
-        resumeImportExtraction: extraction as unknown as Record<string, unknown>,
+        resumeImportExtraction: nextExtraction,
       });
     } catch (err) {
+      const latest = await this.repos.candidateProfiles.getByUser(tenantId, profile.userId);
+      if (!latest || latest.sourceResumeFilePublicId !== filePublicId) {
+        logger.info({ tenantId, filePublicId }, "skipping stale extraction failure after newer upload");
+        throw err;
+      }
       const code = err instanceof AppError ? err.code : "PARSE_FAILED";
       const message =
         err instanceof AppError
@@ -1029,7 +1145,7 @@ export class ResumeImportService {
         this.repos,
         tenantId,
         profile.userId,
-        profile.resumeImportExtraction as Record<string, unknown> | null,
+        latest.resumeImportExtraction as Record<string, unknown> | null,
         code,
         message,
       );

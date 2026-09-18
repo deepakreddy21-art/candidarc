@@ -118,6 +118,13 @@ export function mapPythonResumeParseToExtraction(parsed: {
   errorCode?: string;
 } {
   const contact = parsed.contact;
+  const rawText = parsed.text ?? "";
+  const emailFromRaw = rawText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+  const email =
+    contact?.email?.trim() ||
+    contact?.emails?.find((value) => typeof value === "string" && value.includes("@"))?.trim() ||
+    emailFromRaw ||
+    undefined;
   const certificationEntries = (parsed.certification_entries ?? []).map((row) => ({
     name: row.name,
     issuer: row.issuer ?? undefined,
@@ -137,8 +144,8 @@ export function mapPythonResumeParseToExtraction(parsed: {
       firstName: contact?.first_name ?? undefined,
       middleName: contact?.middle_name ?? undefined,
       lastName: contact?.last_name ?? undefined,
-      email: contact?.email ?? undefined,
-      emails: contact?.emails?.length ? contact.emails : contact?.email ? [contact.email] : [],
+      email,
+      emails: contact?.emails?.length ? contact.emails : email ? [email] : [],
       phone: contact?.phone ?? undefined,
       phones: contact?.phones?.length ? contact.phones : contact?.phone ? [contact.phone] : [],
       location: contact?.location ?? undefined,

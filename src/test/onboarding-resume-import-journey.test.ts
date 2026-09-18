@@ -695,21 +695,37 @@ describe("onboarding resume import journey (real FastAPI)", () => {
       ).status,
     ).toBe(201);
 
-    // Poll until terminal: either restored confirmed or failed without baseline.
-    let finalBody: { status: string; extraction?: { employment?: unknown[]; contact?: { email?: string } } } | null =
-      null;
+    // Poll until terminal attempt status. Failed replacement must keep confirmed career data.
+    let finalBody: {
+      status: string;
+      extraction?: {
+        employment?: unknown[];
+        contact?: { email?: string };
+        error?: string;
+        errorCode?: string;
+        confirmedProfileIntact?: boolean;
+        replacementAttemptStatus?: string;
+      };
+      confirmedProfileIntact?: boolean;
+      replacementAttemptStatus?: string;
+    } | null = null;
     for (let i = 0; i < 80; i++) {
       const res = await getImport(
         new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }),
       );
       const body = await res.json();
-      if (body.status === "confirmed" || body.status === "failed") {
-        finalBody = body;
-        break;
+      if (body.status === "confirmed" || body.status === "failed" || body.status === "ready_for_review") {
+        if (body.status === "failed" || body.status === "confirmed") {
+          finalBody = body;
+          break;
+        }
       }
       await new Promise((r) => setTimeout(r, 200));
     }
-    expect(finalBody?.status).toBe("confirmed");
+    expect(finalBody?.status).toBe("failed");
+    expect(finalBody?.replacementAttemptStatus ?? finalBody?.extraction?.replacementAttemptStatus).toBe("failed");
+    expect(finalBody?.confirmedProfileIntact ?? finalBody?.extraction?.confirmedProfileIntact).toBe(true);
+    expect(finalBody?.extraction?.error ?? finalBody?.extraction?.errorCode).toBeTruthy();
     expect(finalBody?.extraction?.employment?.length ?? 0).toBeGreaterThanOrEqual(2);
     expect(finalBody?.extraction?.contact?.email).toMatch(/jordan\.blake@example\.com/i);
 
