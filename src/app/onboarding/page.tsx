@@ -8,6 +8,7 @@ import { StepCareerDirection } from "@/components/onboarding/step-career-directi
 import { StepCareerProfile } from "@/components/onboarding/step-career-profile";
 import { StepReview } from "@/components/onboarding/step-review";
 import { StepWorkPreferences } from "@/components/onboarding/step-work-preferences";
+import { ErrorState } from "@/components/ui/feedback";
 import {
   emptyOnboardingForm,
   formToPatch,
@@ -23,6 +24,8 @@ export default function OnboardingPage() {
   const router = useRouter();
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [step, setStep] = useState(0);
@@ -140,6 +143,8 @@ export default function OnboardingPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
     void (async () => {
       try {
         const saved = await api.getOnboardingProgress();
@@ -155,7 +160,7 @@ export default function OnboardingPage() {
         baselineRef.current = nextForm;
         formRef.current = nextForm;
         setForm(nextForm);
-        setStep(mapLoadedOnboardingStep(saved.step, saved.data.onboardingFlowVersion));
+        setStep(mapLoadedOnboardingStep(importState.profile.onboardingStep, importState.profile.onboardingFlowVersion));
         versionRef.current = importState.version;
       } catch (err) {
         if (cancelled) return;
@@ -163,7 +168,7 @@ export default function OnboardingPage() {
           router.replace("/sign-in?next=/onboarding");
           return;
         }
-        toast.error("Could not load onboarding");
+        setLoadError(err instanceof ApiError ? err.message : "Your saved profile could not be loaded. Please retry.");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -172,7 +177,7 @@ export default function OnboardingPage() {
       cancelled = true;
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [router]);
+  }, [router, loadAttempt]);
 
   useEffect(() => {
     if (!importStatus || ["ready_for_review", "confirmed", "failed"].includes(importStatus)) {
@@ -339,7 +344,7 @@ export default function OnboardingPage() {
 
   async function handleLogout() {
     try {
-      await flushQueue({ form: formRef.current, step: stepRef.current }).catch(() => undefined);
+      if (!loadError) await flushQueue({ form: formRef.current, step: stepRef.current }).catch(() => undefined);
       const csrf = document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
       await fetch("/api/v1/auth/logout", {
         method: "POST",
@@ -356,6 +361,15 @@ export default function OnboardingPage() {
       <div className="flex min-h-dvh items-center justify-center bg-canvas text-sm text-foreground-muted">
         Loading your onboarding…
       </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <main className="flex min-h-dvh flex-col items-center justify-center bg-canvas p-6">
+        <ErrorState title="Could not load onboarding" description={loadError} onRetry={() => setLoadAttempt((attempt) => attempt + 1)} />
+        <button type="button" className="mt-4 text-sm underline" onClick={() => void handleLogout()}>Log out</button>
+      </main>
     );
   }
 

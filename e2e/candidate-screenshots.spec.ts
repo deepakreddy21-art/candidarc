@@ -227,12 +227,15 @@ test.describe("candidate screenshots", () => {
       });
     });
     await page.route("**/api/v1/profile/resume/import", async (route) => {
+      const response = await route.fetch();
+      const snapshot = await response.json();
       await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
+        response,
+        json: {
+          ...snapshot,
           status: "failed",
           extraction: {
+            ...snapshot.extraction,
             errorCode: "PARSE_FAILED",
             error: "Could not structure résumé content — fictional Northwind Labs demo error.",
             usable: false,
@@ -240,7 +243,7 @@ test.describe("candidate screenshots", () => {
             skills: [],
             education: [],
           },
-        }),
+        },
       });
     });
     await page.reload();
