@@ -8,7 +8,8 @@ import { Input, Label, Textarea } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ErrorState, Skeleton } from "@/components/ui/feedback";
 import { StepCareerProfile } from "@/components/onboarding/step-career-profile";
-import { emptyOnboardingForm, formToPayload, type OnboardingFormState } from "@/components/onboarding/types";
+import { emptyOnboardingForm, formToPatch, type OnboardingFormState } from "@/components/onboarding/types";
+import { createOnboardingSaveQueue } from "@/lib/onboarding-save-queue";
 import { profileToForm } from "@/lib/onboarding-form-map";
 import { api, ApiError, isCancelledError } from "@/services/api";
 import type { CandidateProfile } from "@/types/domain";
@@ -26,20 +27,65 @@ export default function ProfilePage() {
   const versionRef = useRef<number | undefined>(undefined);
   const profileRef = useRef<CandidateProfile | null>(null);
   const pollStartedAt = useRef<number | null>(null);
+  const baselineRef = useRef(form);
+  const formRef = useRef(form);
+  const conflictRef = useRef(false);
+  const [careerSaveStatus, setCareerSaveStatus] = useState("");
+  const [savingCareer, setSavingCareer] = useState(false);
+  const queueRef = useRef<ReturnType<typeof createOnboardingSaveQueue<OnboardingFormState, { version: number }>> | null>(null);
+  if (!queueRef.current) queueRef.current = createOnboardingSaveQueue({
+    getExpectedVersion: () => versionRef.current,
+    setVersion: (version) => { versionRef.current = version; },
+    onSavingChange: setSavingCareer,
+    onSaved: () => setCareerSaveStatus("Saved"),
+    onSaveFailed: () => setCareerSaveStatus("Save failed — your edits remain here"),
+    isStaleError: (error) => error instanceof ApiError && error.status === 409,
+    onStale: async () => { conflictRef.current = true; setCareerSaveStatus("Profile changed elsewhere. Your unsaved edits remain here. Copy anything you want to keep, then reload the saved profile."); },
+    save: async (job) => {
+      if (conflictRef.current) throw new ApiError("Reload the saved profile before saving", 409);
+      const result = await api.updateOnboardingProgress({ expectedVersion: job.expectedVersion, data: formToPatch(job.form, baselineRef.current) });
+      const version = result.version ?? result.profile.version;
+      if (typeof version !== "number") throw new ApiError("Server did not return a profile version", 500);
+      baselineRef.current = job.form;
+      profileRef.current = result.profile;
+      return { version };
+    },
+  });
+  const saveQueue = queueRef.current;
 
   const loadProfile = useCallback(async (signal?: AbortSignal) => {
     setProfileError(null);
     try {
-      const saved = await api.getOnboardingProgress();
+      const state = await api.getResumeImportStatus();
       if (signal?.aborted) return;
-      versionRef.current = saved.version ?? saved.data.version;
-      profileRef.current = saved.data;
-      setProfile(saved.data);
-      setIdentitySnapshot(saved.data);
-      setForm(profileToForm(saved.data, null));
+      versionRef.current = state.version;
+      profileRef.current = state.profile;
+      setProfile(state.profile);
+      setIdentitySnapshot(state.profile);
+      const next = profileToForm(state.profile, state.extraction);
+      baselineRef.current = next;
+      formRef.current = next;
+      setForm(next);
+      setImportStatus(state.status);
+      setImportErrorCode(state.extraction?.errorCode ?? null);
+      setStatusMessage(state.status === "failed" ? state.extraction?.error ?? "We couldn’t read that file." : null);
+      setCareerSaveStatus("");
+      conflictRef.current = false;
     } catch (err) {
       if (isCancelledError(err) || signal?.aborted) return;
-      setProfileError(err instanceof ApiError ? err.message : "Could not load profile");
+      try {
+        // Identity remains usable when only the import service is unavailable.
+        const saved = await api.getProfile();
+        if (signal?.aborted) return;
+        profileRef.current = saved;
+        versionRef.current = saved.version;
+        setProfile(saved);
+        setIdentitySnapshot(saved);
+        setImportSectionError(err instanceof ApiError ? err.message : "Import status unavailable");
+      } catch (fallbackError) {
+        if (signal?.aborted || isCancelledError(fallbackError)) return;
+        setProfileError(fallbackError instanceof ApiError ? fallbackError.message : "Could not load profile");
+      }
     }
   }, []);
 
@@ -53,7 +99,10 @@ export default function ProfilePage() {
       setImportStatus(importState.status);
       setImportErrorCode(importState.extraction?.errorCode ?? null);
       setForm((prev) => {
-        const next = profileToForm(current, importState.extraction);
+        const next = profileToForm(importState.profile, importState.extraction);
+        versionRef.current = importState.version;
+        baselineRef.current = next;
+        formRef.current = next;
         // Prefer the user's in-page mode choice (e.g. switching Manual → Upload to re-import).
         // Extraction may still carry careerProfileMode: "manual" from an earlier draft.
         const mode =
@@ -73,11 +122,9 @@ export default function ProfilePage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadProfile(controller.signal).then(() => {
-      if (!controller.signal.aborted) void loadImport(controller.signal);
-    });
+    void loadProfile(controller.signal);
     return () => controller.abort();
-  }, [loadImport, loadProfile]);
+  }, [loadProfile]);
 
   useEffect(() => {
     if (!importStatus || ["ready_for_review", "confirmed", "failed"].includes(importStatus)) {
@@ -85,7 +132,11 @@ export default function ProfilePage() {
       return;
     }
     if (!pollStartedAt.current) pollStartedAt.current = Date.now();
+    let inFlight = false;
+    let cancelled = false;
     const timer = window.setInterval(() => {
+      if (inFlight || cancelled) return;
+      inFlight = true;
       void (async () => {
         try {
           if (pollStartedAt.current && Date.now() - pollStartedAt.current > 90_000) {
@@ -95,11 +146,15 @@ export default function ProfilePage() {
             return;
           }
           const state = await api.getResumeImportStatus();
+          if (cancelled) return;
           setImportStatus(state.status);
           setImportErrorCode(state.extraction?.errorCode ?? null);
-          if (state.extraction && profileRef.current) {
+          if (state.extraction && ["ready_for_review", "confirmed"].includes(state.status ?? "")) {
             setForm((prev) => {
-              const next = profileToForm(profileRef.current!, state.extraction);
+              const next = profileToForm(state.profile, state.extraction);
+              versionRef.current = state.version;
+              baselineRef.current = next;
+              formRef.current = next;
               const mode =
                 prev.careerProfileMode === "upload" || prev.careerProfileMode === "manual"
                   ? prev.careerProfileMode
@@ -118,36 +173,19 @@ export default function ProfilePage() {
             setForm((prev) => ({ ...prev, careerProfileMode: prev.careerProfileMode || "upload" }));
           }
         } catch (err) {
-          if (isCancelledError(err)) return;
+          if (isCancelledError(err) || cancelled) return;
           setStatusMessage(err instanceof ApiError ? err.message : "Could not check import status — retrying…");
-        }
+        } finally { inFlight = false; }
       })();
     }, 1500);
-    return () => window.clearInterval(timer);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [importStatus]);
 
-  async function saveCareer(next: OnboardingFormState) {
-    if (typeof versionRef.current !== "number") return;
-    try {
-      const result = await api.updateOnboardingProgress({
-        expectedVersion: versionRef.current,
-        data: formToPayload(next),
-      });
-      versionRef.current = result.version ?? result.profile.version;
-      profileRef.current = result.profile;
-      setProfile(result.profile);
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not save career profile");
-    }
-  }
-
   function patchCareer(patch: Partial<OnboardingFormState>) {
-    setForm((prev) => {
-      const next = { ...prev, ...patch };
-      // Mode toggles must update local UI immediately; persist in the background.
-      void saveCareer(next);
-      return next;
-    });
+    const next = { ...formRef.current, ...patch };
+    formRef.current = next;
+    setForm(next);
+    if (!conflictRef.current) void saveQueue.enqueue({ form: next }).catch(() => undefined);
   }
 
   if (profileError && !profile) {
@@ -168,7 +206,7 @@ export default function ProfilePage() {
     <div className="space-y-6">
       <PageHeader
         title="Profile"
-        description="Your canonical career record. Tailored documents live under Resumes."
+        description="Keep your experience up to date. Find your tailored documents in Resumes."
       />
       <Card>
         <CardContent className="grid gap-4 p-5 sm:grid-cols-2">
@@ -207,10 +245,14 @@ export default function ProfilePage() {
               type="button"
               onClick={async () => {
                 try {
-                  const saved = await api.updateProfile(profile);
+                  await saveQueue.flush({ form: formRef.current });
+                  const fields = ["fullName", "preferredName", "email", "phone", "location", "linkedIn", "github", "portfolio", "headline", "summary"] as const;
+                  const changes = Object.fromEntries(fields.filter((key) => profile[key] !== identitySnapshot?.[key]).map((key) => [key, profile[key]]));
+                  const saved = await api.updateProfile({ ...changes, version: versionRef.current });
                   profileRef.current = saved;
                   setProfile(saved);
                   setIdentitySnapshot(saved);
+                  await loadImport();
                   toast.success("Identity saved");
                 } catch (err) {
                   toast.error(err instanceof ApiError ? err.message : "Could not save profile");
@@ -234,7 +276,7 @@ export default function ProfilePage() {
       </Card>
 
       <div className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="font-serif text-xl">Career evidence</h2>
+        <h2 className="font-serif text-xl">Experience and qualifications</h2>
         <p className="mt-1 text-sm text-foreground-secondary">
           Re-import a résumé or edit employment, projects, education, and skills. A failed replacement keeps the last valid profile.
         </p>
@@ -248,8 +290,11 @@ export default function ProfilePage() {
           </div>
         ) : null}
         <div className="mt-4">
+          <p role="status" className="mb-3 text-sm text-foreground-secondary">{savingCareer ? "Saving…" : careerSaveStatus}</p>
+          {conflictRef.current ? <Button type="button" variant="secondary" onClick={() => void loadProfile()}>Load saved profile</Button> : null}
           <StepCareerProfile
             form={form}
+            disabled={Boolean(importSectionError)}
             onChange={patchCareer}
             errors={{}}
             importStatus={importStatus}
@@ -261,6 +306,7 @@ export default function ProfilePage() {
               setStatusMessage("Uploading…");
               setForm((prev) => ({ ...prev, careerProfileMode: "upload" }));
               try {
+                await saveQueue.flush({ form: formRef.current });
                 const result = await api.uploadResume(file);
                 setImportStatus(result.importStatus);
                 setStatusMessage("Upload received — scanning…");
@@ -291,10 +337,15 @@ export default function ProfilePage() {
                 type="button"
                 onClick={async () => {
                   try {
-                    const confirmed = await api.confirmResumeImport();
+                    await saveQueue.flush({ form: formRef.current });
+                    const confirmed = await api.confirmResumeImport(versionRef.current);
+                    versionRef.current = confirmed.profile.version;
                     profileRef.current = confirmed.profile;
                     setProfile(confirmed.profile);
-                    setForm(profileToForm(confirmed.profile, confirmed.extraction));
+                    const next = profileToForm(confirmed.profile, confirmed.extraction);
+                    baselineRef.current = next;
+                    formRef.current = next;
+                    setForm(next);
                     setImportStatus("confirmed");
                     toast.success("Imported career details confirmed");
                   } catch (err) {

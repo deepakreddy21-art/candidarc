@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { logger } from "../observability/logger";
 import { getEnv } from "../config/env";
 import { htmlToPlainText, ssrfFetch } from "../security/ssrf-fetch";
 
@@ -69,7 +70,7 @@ export class DemoResearchSourceAdapter implements ResearchSourceAdapter {
         accessedAt,
         type: "job-posting",
         excerpt: excerpt || "Demo fixture job description supplied by the application.",
-        confidence: excerpt ? "high" : "medium",
+        confidence: "high",
       });
     }
     if (excerpt) {
@@ -91,24 +92,32 @@ export class ConfiguredSearchAdapter implements ResearchSourceAdapter {
   readonly name = "configured-search";
 
   async collect(context: ResearchCollectContext): Promise<ResearchSourceRecord[]> {
-    const env = getEnv();
-    const apiKey = env.OPENAI_API_KEY ?? env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error("Configured search unavailable: no live search credentials configured");
-    }
     const limits = depthLimits(context.researchDepth);
-    if (!limits.includeSearch) return [];
-
-    return [
-      {
-        url: `search://roles/${encodeURIComponent(context.company)}/${encodeURIComponent(context.role)}`,
-        title: `${context.company} ${context.role} public references`,
-        accessedAt: new Date().toISOString(),
-        type: "search-summary",
-        excerpt: `Configured search would query public references for ${context.role} at ${context.company}. Live search is not enabled in this environment.`,
-        confidence: "low" as const,
-      },
-    ].slice(0, limits.maxSources);
+    const apiKey = getEnv().BRAVE_SEARCH_API_KEY;
+    if (!limits.includeSearch || !apiKey) return [];
+    const query = `"${context.company.replaceAll('"', '')}" ${context.role} engineering team technology`;
+    const url = new URL("https://api.search.brave.com/res/v1/web/search");
+    url.searchParams.set("q", query.slice(0, 400));
+    url.searchParams.set("count", String(limits.maxSources));
+    const response = await ssrfFetch(url.toString(), {
+      maxRedirects: 0,
+      headers: { "X-Subscription-Token": apiKey, Accept: "application/json" },
+      timeoutMs: 8_000,
+      maxBytes: 300_000,
+    });
+    const body = JSON.parse(response.body.toString("utf8")) as { web?: { results?: Array<{ url?: string; title?: string }> } };
+    const candidates = (body.web?.results ?? []).filter((row) => typeof row.url === "string").slice(0, limits.maxSources);
+    const results = await Promise.all(candidates.map(async (row): Promise<ResearchSourceRecord | null> => {
+      try {
+        // The search token is never forwarded to result pages. SSRF checks apply to every URL/redirect.
+        const page = await ssrfFetch(row.url!);
+        const excerpt = htmlToPlainText(page.body.toString("utf8")).slice(0, MAX_EXCERPT).trim();
+        if (!excerpt) return null;
+        return { url: page.url, title: row.title?.slice(0, 300) || context.company,
+          accessedAt: new Date().toISOString(), type: "public-reference", excerpt, confidence: "medium" };
+      } catch { return null; }
+    }));
+    return results.filter((row): row is ResearchSourceRecord => row !== null);
   }
 }
 
@@ -123,32 +132,28 @@ export class UrlFetchResearchAdapter implements ResearchSourceAdapter {
     ];
     const unique = [...new Set(candidates)].slice(0, limits.maxSources);
 
-    return Promise.all(
-      unique.map(async (raw, index): Promise<ResearchSourceRecord> => {
+    const results = await Promise.all(
+      unique.map(async (raw, index): Promise<ResearchSourceRecord | null> => {
         const accessedAt = new Date().toISOString();
         try {
           const fetched = await ssrfFetch(raw);
           const excerpt = htmlToPlainText(fetched.body.toString("utf8")).slice(0, MAX_EXCERPT);
+          if (!excerpt.trim()) return null;
           return {
             url: fetched.url,
             title: index === 0 ? `${context.company} — ${context.role} job posting` : `${context.company} public job board`,
             accessedAt,
             type: "job-posting",
-            excerpt: excerpt || "The public source returned no readable text.",
-            confidence: excerpt ? "high" : "medium",
+            excerpt,
+            confidence: "high",
           };
-        } catch (error) {
-          return {
-            url: raw,
-            title: index === 0 ? `${context.company} — ${context.role} job posting` : `${context.company} public job board`,
-            accessedAt,
-            type: "job-posting",
-            excerpt: `Source URL supplied by the application; fetch failed: ${error instanceof Error ? error.message : "unknown error"}.`,
-            confidence: "low",
-          };
+        } catch {
+          // Fetch diagnostics are not source content or employer facts.
+          return null;
         }
       }),
     );
+    return results.filter((row): row is ResearchSourceRecord => row !== null);
   }
 }
 
@@ -164,7 +169,10 @@ export async function collectFromResearchAdapters(
     try {
       const batch = await adapter.collect(context);
       for (const source of batch) {
-        const key = source.url.toLowerCase();
+        let url: URL;
+        try { url = new URL(source.url); } catch { continue; }
+        if (!["https:", "http:"].includes(url.protocol) || !source.excerpt.trim()) continue;
+        const key = source.url;
         if (seen.has(key)) continue;
         seen.add(key);
         merged.push(source);
@@ -172,6 +180,7 @@ export async function collectFromResearchAdapters(
       }
     } catch (error) {
       if (adapter instanceof ConfiguredSearchAdapter) {
+        logger.warn({ adapter: adapter.name }, "Public research search unavailable; continuing with retrieved sources only");
         continue;
       }
       throw error;

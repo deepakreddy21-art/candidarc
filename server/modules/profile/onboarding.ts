@@ -208,7 +208,18 @@ export function assertStepPayload(step: number | undefined, data: OnboardingStep
   }
 }
 
+export function assertReviewContact(profile: CandidateProfileRecord) {
+  if (profile.resumeImportExtraction?.onboardingFlowVersion !== 3) return;
+  const contact = profile.resumeImportExtraction?.contact as Record<string, unknown> | undefined;
+  for (const [key, label] of [["fullName", "Name"], ["email", "Email"], ["phone", "Phone number"], ["location", "Current location"]] as const) {
+    const value = contact && Object.hasOwn(contact, key) ? contact[key] : profile[key];
+    if (typeof value !== "string" || !value.trim()) throw new AppError("ONBOARDING_VALIDATION", `${label} is required`, 400);
+    if (key === "email" && !z.string().email().safeParse(value).success) throw new AppError("ONBOARDING_VALIDATION", "Enter a valid email", 400);
+  }
+}
+
 export function assertCanComplete(profile: CandidateProfileRecord) {
+  assertReviewContact(profile);
   const roles = normalizeTitleList(profile.targetRoleFamilies);
   if (!roles.length) {
     throw new AppError("ONBOARDING_VALIDATION", "Target roles are required before completing onboarding", 400);
@@ -231,75 +242,33 @@ export function assertCanComplete(profile: CandidateProfileRecord) {
   }
 }
 
-function careerArrayHasContent(value: unknown): boolean {
-  if (!Array.isArray(value) || value.length === 0) return false;
-  return value.some((row) => {
-    if (typeof row === "string") return Boolean(row.trim());
-    if (!row || typeof row !== "object") return false;
-    return Object.values(row as Record<string, unknown>).some((cell) => {
-      if (typeof cell === "string") return Boolean(cell.trim());
-      if (Array.isArray(cell)) return cell.some((item) => typeof item === "string" && item.trim());
-      return cell != null && cell !== "";
-    });
-  });
-}
-
-/**
- * Keep extracted career sections when an onboarding autosave would replace them with [].
- * Empty arrays are truthy in JS, so a naive `if (data.employment)` clobber was wiping
- * Python parse results while leaving certificationEntries (untouched by autosave) visible.
- */
-function assignCareerArray(
-  next: Record<string, unknown>,
-  key: "employment" | "projects" | "education" | "certifications" | "publications" | "skills",
-  incoming: unknown,
-  normalize?: (value: unknown) => unknown,
-): void {
-  if (incoming === undefined) return;
-  const prior = next[key];
-  if (careerArrayHasContent(prior) && !careerArrayHasContent(incoming)) {
-    return;
-  }
-  next[key] = normalize ? normalize(incoming) : incoming;
-}
-
+/** Apply a version-checked review patch. Omitted fields stay unchanged; empty values delete. */
 export function mergeExtraction(
   existing: Record<string, unknown> | null | undefined,
   data: OnboardingStepData,
 ): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...(existing ?? {}) };
-  if (data.skills !== undefined) {
-    assignCareerArray(next, "skills", data.skills, (value) =>
-      normalizeTitleList(Array.isArray(value) ? value.map(String) : [], 60),
-    );
+  const next: Record<string, unknown> = { ...(existing ?? {}), schemaVersion: 2 };
+  if (data.skills !== undefined) next.skills = normalizeTitleList(data.skills, 200);
+  for (const key of ["employment", "projects", "publications"] as const) {
+    if (data[key] !== undefined) next[key] = data[key];
   }
-  if (data.employment !== undefined) assignCareerArray(next, "employment", data.employment);
-  if (data.projects !== undefined) assignCareerArray(next, "projects", data.projects);
-  if (data.education !== undefined) assignCareerArray(next, "education", data.education);
-  if (data.certifications !== undefined) assignCareerArray(next, "certifications", data.certifications);
-  if (data.publications !== undefined) assignCareerArray(next, "publications", data.publications);
-  if (data.careerProfileMode) next.careerProfileMode = data.careerProfileMode;
-  if (data.onboardingFlowVersion) next.onboardingFlowVersion = data.onboardingFlowVersion;
-  if (data.fullName || data.email || data.phone || data.location || data.linkedIn || data.github || data.portfolio) {
-    const contact = {
-      ...((next.contact as Record<string, unknown> | undefined) ?? {}),
-    };
-    const assignContactField = (key: string, value: unknown) => {
-      const prior = typeof contact[key] === "string" ? String(contact[key]).trim() : "";
-      const incoming = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
-      // Keep extracted contact values when an autosave would blank them or replace with a different account value.
-      if (!prior || prior === incoming) {
-        contact[key] = value;
-      }
-    };
-    if (data.fullName !== undefined) assignContactField("fullName", data.fullName);
-    if (data.email !== undefined) assignContactField("email", data.email);
-    if (data.phone !== undefined) assignContactField("phone", data.phone);
-    if (data.location !== undefined) assignContactField("location", data.location);
-    if (data.linkedIn !== undefined) assignContactField("linkedIn", data.linkedIn);
-    if (data.github !== undefined) assignContactField("github", data.github);
-    if (data.portfolio !== undefined) assignContactField("portfolio", data.portfolio);
-    next.contact = contact;
+  if (data.education !== undefined) {
+    next.education = data.education.map(({ school, ...row }) => ({ ...row, institution: school ?? "" }));
   }
+  if (data.certifications !== undefined) {
+    next.certificationEntries = data.certifications.map(({ date, ...row }) => ({ ...row, issueDate: date ?? "" }));
+    next.certifications = data.certifications.map((row) => row.name).filter(Boolean);
+  }
+  if (data.summary !== undefined) next.professionalSummary = data.summary ?? "";
+  if (data.careerProfileMode !== undefined) next.careerProfileMode = data.careerProfileMode;
+  if (data.onboardingFlowVersion !== undefined) next.onboardingFlowVersion = data.onboardingFlowVersion;
+  const contact = { ...((next.contact as Record<string, unknown> | undefined) ?? {}) };
+  for (const key of ["fullName", "email", "phone", "location", "linkedIn", "github", "portfolio", "headline"] as const) {
+    if (data[key] !== undefined) contact[key] = data[key]?.trim() ?? "";
+  }
+  // Alternate extracted values must not resurrect a value deliberately cleared during review.
+  if (data.email !== undefined) contact.emails = data.email ? [data.email.trim()] : [];
+  if (data.phone !== undefined) contact.phones = data.phone ? [data.phone.trim()] : [];
+  next.contact = contact;
   return next;
 }

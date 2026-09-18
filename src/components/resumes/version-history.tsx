@@ -3,11 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 export function VersionHistory({
   versions,
   currentId,
-  onRestore,
+  onCompare,
 }: {
   versions: Array<{ id: string; label: string; createdAt: string }>;
   currentId?: string;
-  onRestore?: (id: string) => void;
+  onCompare?: (id: string) => void;
 }) {
   return (
     <Card>
@@ -22,8 +22,8 @@ export function VersionHistory({
               </span>
               <span className="flex items-center gap-2">
                 <time className="text-foreground-muted">{new Date(version.createdAt).toLocaleDateString()}</time>
-                {onRestore && currentId !== version.id ? (
-                  <button type="button" className="text-accent hover:underline" onClick={() => onRestore(version.id)}>
+                {onCompare && currentId !== version.id ? (
+                  <button type="button" className="text-accent hover:underline" onClick={() => onCompare(version.id)}>
                     Compare
                   </button>
                 ) : null}

@@ -122,6 +122,6 @@ describe("quality contact completeness", () => {
     expect(
       analysis.missing.filter((item) => /ada@example|555 0100|Austin, TX|linkedin.com\/in\/ada/i.test(item)),
     ).toEqual([]);
-    expect(pdf.byteLength).toBeGreaterThan(1000);
+    expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
   }, 60_000);
 });

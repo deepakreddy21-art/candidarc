@@ -239,6 +239,15 @@ export function formToPayload(form: OnboardingFormState): Record<string, unknown
   };
 }
 
+/** Send only changed fields, so untouched/empty controls cannot erase a newer import. */
+export function formToPatch(form: OnboardingFormState, baseline: OnboardingFormState): Record<string, unknown> {
+  const next = formToPayload(form);
+  const previous = formToPayload(baseline);
+  return Object.fromEntries(Object.entries(next).filter(([key, value]) =>
+    key === "onboardingFlowVersion" || JSON.stringify(value) !== JSON.stringify(previous[key]),
+  ));
+}
+
 export function validateStepClient(
   step: number,
   form: OnboardingFormState,
@@ -254,15 +263,13 @@ export function validateStepClient(
     if (["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "")) {
       return "Wait for résumé import to finish, or choose Enter manually";
     }
-    // Already confirmed — contact was validated earlier; do not block navigation.
-    if (importStatus === "confirmed") return null;
     if (!form.fullName.trim()) return "Add your name";
     if (!form.email.trim()) return "Add your résumé contact email";
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) return "Enter a valid email";
     if (!form.phone.trim()) return "Add your phone number";
     if (!form.location.trim()) return "Add your current location";
     // Import ready for review: contact is complete; employment may already be extracted.
-    if (importStatus === "ready_for_review") return null;
+    if (importStatus === "ready_for_review" || importStatus === "confirmed") return null;
     const hasEmployment = form.employment.some((row) => row.title?.trim() || row.company?.trim());
     const hasSkills = normalizeList(form.skills).length > 0;
     const hasEducation = form.education.some((row) => row.school?.trim() || row.degree?.trim());

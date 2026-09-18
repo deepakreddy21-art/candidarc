@@ -148,3 +148,24 @@ describe("provider compliance", () => {
     expect(listProviders().some((p) => p.id === "greenhouse" && p.enabled)).toBe(true);
   });
 });
+
+describe("preference constraints and unknown matching inputs", () => {
+  beforeEach(() => { resetSharedCatalogForTests(); seedDemoCatalog(); });
+  it("does not average away an explicit remote/job-type/pay mismatch", () => {
+    const catalog = getSharedCatalog();
+    const job = { ...[...catalog.canonicalJobs.values()][0]!, remotePolicy: "hybrid" as const, employmentType: "Contract", compensation: { min: 100000, max: 120000, currency: "USD", period: "year" as const } };
+    const match = catalog.matchJob(job, { skills: job.techStack, remoteOk: true, yearsExperience: 10,
+      workplaceModes: ["remote"], jobTypes: ["full-time"], targetCompensationMin: 150000, compensationCurrency: "USD" });
+    expect(match.overall).toBeLessThan(50);
+    expect(match.constraintWarnings).toEqual(expect.arrayContaining([
+      "Workplace mode differs from your preferences", "Employment type differs from your preferences", "Published salary is below your stated minimum",
+    ]));
+  });
+  it("keeps different-currency compensation unknown rather than treating it as compatible", () => {
+    const catalog = getSharedCatalog();
+    const job = { ...[...catalog.canonicalJobs.values()][0]!, compensation: { min: 100000, max: 120000, currency: "EUR", period: "year" as const } };
+    const match = catalog.matchJob(job, { skills: job.techStack, remoteOk: true, targetCompensationMin: 150000, compensationCurrency: "USD" });
+    expect(match.unknownFactors).toContain("Compensation compatibility is unconfirmed");
+    expect(match.constraintWarnings).not.toContain("Published salary is below your stated minimum");
+  });
+});

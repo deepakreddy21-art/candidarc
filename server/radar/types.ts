@@ -283,6 +283,8 @@ export interface MatchBreakdown {
   location: number;
   compensation: number;
   eligibility: number;
+  unknownFactors?: string[];
+  constraintWarnings?: string[];
   career: number;
   explanation: string[];
   matchedSkills: string[];
@@ -428,6 +430,12 @@ export interface CandidateProfileForMatch {
   careerGoals?: string[];
   visaNeeded?: boolean;
   targetCompensationMin?: number;
+  compensationCurrency?: string;
+  jobTypes?: string[];
+  workplaceModes?: string[];
+  targetCompanies?: string[];
+  targetIndustries?: string[];
+  willingToRelocate?: boolean;
 }
 
 export interface CreateApplicationFromJobPayload {

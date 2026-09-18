@@ -25,11 +25,10 @@ const PROPRIETARY_HINTS = [
   /\bin-house\b/i,
   /\bcustom\b/i,
   /\bprivate\b/i,
-  /^[A-Z][a-z]+[A-Z]/, // CamelCase product names often proprietary when unmatched
 ];
 
 export function looksProprietary(technology: string, explicit?: boolean): boolean {
-  if (explicit) return true;
+  if (explicit !== undefined) return explicit;
   return PROPRIETARY_HINTS.some((re) => re.test(technology));
 }
 

@@ -56,7 +56,7 @@ test.describe("resume import interactions", () => {
     await expect(page.getByRole("textbox", { name: "Bullets 1", exact: true })).toHaveValue(
       /Kubernetes-based deployment pipelines/i,
     );
-    await expect(page.getByText(/Jan 2021/i)).toBeVisible();
+    await expect(page.getByLabel("Employment start date 1", { exact: true })).toHaveValue(/Jan 2021|2021-01/i);
     await expect(page.getByTestId("imported-project-0")).toHaveValue(/Observability Fabric/i);
     await expect(page.getByTestId("imported-education-0")).toHaveValue(/Cascadia University/i);
     await expect(page.getByTestId("imported-education-degree-0")).toHaveValue(/B\.?S\.?/i);
@@ -64,6 +64,22 @@ test.describe("resume import interactions", () => {
     await expect(page.getByTestId("imported-cert-0")).toHaveValue(/AWS Solutions Architect Associate/i);
     await expect(page.getByTestId("imported-publication-0")).toHaveValue(/Reliable Rollouts/i);
     await expect(page.getByLabel(/job title 2/i)).toHaveCount(0);
+    await page.getByTestId("imported-full-name").fill("Jordan B. Blake");
+    await page.getByTestId("imported-email").fill("reviewed@example.com");
+    await page.getByTestId("imported-portfolio").fill("");
+    await page.getByTestId("imported-education-0").fill("Reviewed University");
+    await page.getByRole("button", { name: "Remove certification 1", exact: true }).click();
+    await expect.poll(async () => page.evaluate(async () => {
+      const state = await (await fetch("/api/v1/profile/resume/import", { credentials: "include" })).json();
+      return [state.extraction?.contact?.fullName, state.extraction?.contact?.email,
+        state.extraction?.education?.[0]?.institution, state.extraction?.certificationEntries?.length];
+    })).toEqual(["Jordan B. Blake", "reviewed@example.com", "Reviewed University", 0]);
+    await page.reload();
+    await expect(page.getByTestId("imported-full-name")).toHaveValue("Jordan B. Blake");
+    await expect(page.getByTestId("imported-email")).toHaveValue("reviewed@example.com");
+    await expect(page.getByTestId("imported-portfolio")).toHaveValue("");
+    await expect(page.getByTestId("imported-education-0")).toHaveValue("Reviewed University");
+    await expect(page.getByTestId("imported-cert-0")).toHaveCount(0);
   });
 
   test("DOCX upload on Profile confirms imported employment after reload", async ({ page }) => {

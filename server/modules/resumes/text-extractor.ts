@@ -138,12 +138,15 @@ export function adaptResumeExtractionV1ToV2(
   const certEntries =
     raw.certificationEntries ??
     (raw.certifications ?? []).map((name) =>
-      typeof name === "string" ? { name } : { name: String((name as { name?: string })?.name ?? "") },
+      typeof name === "string" ? { name } : {
+        ...(name as ResumeCertificationEntry),
+        issueDate: (name as ResumeCertificationEntry & { date?: string }).issueDate ?? (name as { date?: string }).date,
+      },
     );
 
   const normalized: ResumeExtractionSection = {
     ...raw,
-    schemaVersion: raw.schemaVersion === 2 ? 2 : 2,
+    schemaVersion: 2,
     contact: {
       ...(raw.contact ?? {}),
       emails: raw.contact?.emails ?? (raw.contact?.email ? [raw.contact.email] : []),
@@ -157,7 +160,10 @@ export function adaptResumeExtractionV1ToV2(
       technologies: job.technologies ?? [],
       sourceOrder: job.sourceOrder ?? index,
     })),
-    education: raw.education ?? [],
+    education: (raw.education ?? []).map((row) => ({
+      ...row,
+      institution: row.institution ?? (row as { school?: string }).school,
+    })),
     projects: (raw.projects ?? []).map((project) => ({
       ...project,
       bullets: project.bullets ?? (project.description ? [project.description] : []),
@@ -165,10 +171,7 @@ export function adaptResumeExtractionV1ToV2(
     })),
     skills: raw.skills ?? [],
     skillGroups: raw.skillGroups ?? [],
-    certifications:
-      raw.certifications?.length > 0
-        ? raw.certifications
-        : certEntries.map((c) => c.name).filter(Boolean),
+    certifications: certEntries.map((c) => c.name).filter(Boolean),
     certificationEntries: certEntries.filter((c) => c.name?.trim()),
     publications: raw.publications ?? [],
     evidence: raw.evidence ?? [],
@@ -176,7 +179,7 @@ export function adaptResumeExtractionV1ToV2(
     parseWarnings: raw.parseWarnings ?? [],
   };
 
-  if (!normalized.contact?.email) {
+  if (!Object.hasOwn(raw.contact ?? {}, "email")) {
     const emails = normalized.contact?.emails ?? [];
     const fromEmails = emails.find((value) => typeof value === "string" && value.includes("@"));
     const fromRaw = normalized.rawText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];

@@ -18,6 +18,7 @@ function preferredContactEmail(
   fallback = "",
 ): string {
   const contact = extraction?.contact ?? {};
+  if (Object.hasOwn(contact, "email")) return contact.email?.trim() ?? "";
   const fromContact =
     contact.email?.trim() ||
     (Array.isArray(contact.emails)
@@ -46,7 +47,7 @@ export function profileToForm(
     credentialId?: string;
     credentialUrl?: string;
   }> =
-    extraction?.certificationEntries?.length
+    extraction?.certificationEntries != null
       ? extraction.certificationEntries
       : (extraction?.certifications ?? []).map((name) => ({ name: typeof name === "string" ? name : "" }));
 
@@ -63,20 +64,20 @@ export function profileToForm(
     workAuthorization: profile.workAuthorization ?? "",
     requiresSponsorship: profile.requiresSponsorship ?? null,
     salaryPreference: profile.salaryPreference ?? "",
-    fullName: contact.fullName?.trim() || profile.fullName || "",
+    fullName: Object.hasOwn(contact, "fullName") ? contact.fullName?.trim() ?? "" : profile.fullName || "",
     email: preferredContactEmail(
       extraction,
       extraction && (extraction.employment?.length || extraction.contact?.fullName || extraction.rawText)
         ? ""
         : profile.email || "",
     ),
-    phone: contact.phone?.trim() || profile.phone || "",
-    location: contact.location?.trim() || profile.location || "",
-    linkedIn: contact.linkedIn?.trim() || profile.linkedIn || "",
-    github: contact.github?.trim() || profile.github || "",
-    portfolio: contact.portfolio?.trim() || profile.portfolio || "",
-    headline: contact.headline?.trim() || profile.headline || "",
-    summary: extraction?.professionalSummary?.trim() || profile.summary || "",
+    phone: Object.hasOwn(contact, "phone") ? contact.phone?.trim() ?? "" : profile.phone || "",
+    location: Object.hasOwn(contact, "location") ? contact.location?.trim() ?? "" : profile.location || "",
+    linkedIn: Object.hasOwn(contact, "linkedIn") ? contact.linkedIn?.trim() ?? "" : profile.linkedIn || "",
+    github: Object.hasOwn(contact, "github") ? contact.github?.trim() ?? "" : profile.github || "",
+    portfolio: Object.hasOwn(contact, "portfolio") ? contact.portfolio?.trim() ?? "" : profile.portfolio || "",
+    headline: Object.hasOwn(contact, "headline") ? contact.headline?.trim() ?? "" : profile.headline || "",
+    summary: extraction?.professionalSummary != null ? extraction.professionalSummary.trim() : profile.summary || "",
     skills: Array.isArray(extraction?.skills) ? extraction!.skills.filter(Boolean) : [],
     employment: (extraction?.employment ?? []).map((row) => ({
       title: row.title,

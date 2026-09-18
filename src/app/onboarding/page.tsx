@@ -10,13 +10,13 @@ import { StepReview } from "@/components/onboarding/step-review";
 import { StepWorkPreferences } from "@/components/onboarding/step-work-preferences";
 import {
   emptyOnboardingForm,
-  formToPayload,
+  formToPatch,
   validateStepClient,
   type OnboardingFormState,
 } from "@/components/onboarding/types";
 import { mapLoadedOnboardingStep, ONBOARDING_LAST_STEP } from "@/lib/onboarding-flow";
 import { createOnboardingSaveQueue } from "@/lib/onboarding-save-queue";
-import { mergeExtractionPreservingPreferences, profileToForm } from "@/lib/onboarding-form-map";
+import { profileToForm } from "@/lib/onboarding-form-map";
 import { api, ApiError } from "@/services/api";
 
 export default function OnboardingPage() {
@@ -34,28 +34,39 @@ export default function OnboardingPage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [importErrorCode, setImportErrorCode] = useState<string | null>(null);
   const pollStartedAt = useRef<number | null>(null);
+  const baselineRef = useRef(form);
+  const conflictRef = useRef(false);
+  const [hasConflict, setHasConflict] = useState(false);
   const formRef = useRef(form);
   formRef.current = form;
   const stepRef = useRef(step);
   stepRef.current = step;
 
   const handleStale = useCallback(async () => {
-    toast.error("Your profile changed in another tab. Review the latest information before continuing.");
-    try {
-      const saved = await api.getOnboardingProgress();
-      versionRef.current = saved.version ?? saved.data.version;
-      const importState = await api.getResumeImportStatus();
-      setImportStatus(importState.status);
-      setImportErrorCode(importState.extraction?.errorCode ?? null);
-      const nextForm = profileToForm(saved.data, importState.extraction);
-      formRef.current = nextForm;
-      setForm(nextForm);
-      setStep(mapLoadedOnboardingStep(saved.step, saved.data.onboardingFlowVersion));
-      setSaveStatus("Needs review");
-    } catch {
-      setSaveStatus("Save failed");
-    }
+    conflictRef.current = true;
+    setHasConflict(true);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSaveStatus("Needs review");
+    toast.error("Your profile changed elsewhere. Your unsaved changes are still here; reload the saved profile to continue.");
   }, []);
+
+  async function reloadSavedProfile() {
+    try {
+      const state = await api.getResumeImportStatus();
+      const next = profileToForm(state.profile, state.extraction);
+      baselineRef.current = next;
+      formRef.current = next;
+      setForm(next);
+      versionRef.current = state.version;
+      setImportStatus(state.status);
+      setStep(mapLoadedOnboardingStep(state.profile.onboardingStep, state.profile.onboardingFlowVersion));
+      conflictRef.current = false;
+      setHasConflict(false);
+      setSaveStatus("Loaded saved profile");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not reload profile");
+    }
+  }
 
   const saveQueueRef = useRef<ReturnType<typeof createOnboardingSaveQueue<OnboardingFormState, { version: number }>> | null>(
     null,
@@ -72,16 +83,18 @@ export default function OnboardingPage() {
       onSaved: () => setSaveStatus("Saved"),
       onSaveFailed: () => setSaveStatus("Save failed"),
       save: async (job) => {
+        if (conflictRef.current) throw new ApiError("Reload the saved profile before saving", 409);
         const result = await api.updateOnboardingProgress({
           step: job.step ?? stepRef.current,
           completed: job.completed,
           expectedVersion: job.expectedVersion,
-          data: formToPayload(job.form),
+          data: formToPatch(job.form, baselineRef.current),
         });
         const nextVersion = result.version ?? result.profile.version;
         if (typeof nextVersion !== "number") {
           throw new ApiError("Server did not return an onboarding version", 500);
         }
+        baselineRef.current = job.form;
         if (typeof job.step === "number") setStep(job.step);
         return { version: nextVersion, profile: result.profile };
       },
@@ -112,7 +125,7 @@ export default function OnboardingPage() {
       formRef.current = next;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        void enqueueSave({ form: formRef.current });
+        if (!conflictRef.current) void enqueueSave({ form: formRef.current });
       }, 700);
       return next;
     });
@@ -138,11 +151,12 @@ export default function OnboardingPage() {
         const importState = await api.getResumeImportStatus();
         if (cancelled) return;
         setImportStatus(importState.status);
-        const nextForm = profileToForm(saved.data, importState.extraction);
+        const nextForm = profileToForm(importState.profile, importState.extraction);
+        baselineRef.current = nextForm;
         formRef.current = nextForm;
         setForm(nextForm);
         setStep(mapLoadedOnboardingStep(saved.step, saved.data.onboardingFlowVersion));
-        versionRef.current = saved.version ?? saved.data.version;
+        versionRef.current = importState.version;
       } catch (err) {
         if (cancelled) return;
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
@@ -166,7 +180,11 @@ export default function OnboardingPage() {
       return;
     }
     if (!pollStartedAt.current) pollStartedAt.current = Date.now();
+    let cancelled = false;
+    let inFlight = false;
     const timer = setInterval(() => {
+      if (inFlight || cancelled) return;
+      inFlight = true;
       void (async () => {
         try {
           if (pollStartedAt.current && Date.now() - pollStartedAt.current > 90_000) {
@@ -176,35 +194,30 @@ export default function OnboardingPage() {
             return;
           }
           const state = await api.getResumeImportStatus();
+          if (cancelled) return;
           setImportStatus(state.status);
           setImportErrorCode(state.extraction?.errorCode ?? null);
-          try {
-            await syncVersionFromServer();
-          } catch {
-            /* keep local version until next successful save */
-          }
-          if (state.extraction) {
-            setForm((prev) => {
-              const next = mergeExtractionPreservingPreferences(prev, state.extraction!);
-              formRef.current = next;
-              return next;
-            });
-          }
-          if (state.status === "ready_for_review") {
+          if (state.status === "ready_for_review" || state.status === "confirmed") {
+            const next = profileToForm(state.profile, state.extraction);
+            baselineRef.current = next;
+            formRef.current = next;
+            setForm(next);
+            versionRef.current = state.version;
             setStatusMessage("Resume ready — review the details below, then Continue");
             setSaveStatus(null);
           }
           if (state.status === "failed") {
+            versionRef.current = state.version;
             setStatusMessage(state.extraction?.error ?? "Resume parsing failed");
-            setImportErrorCode(state.extraction?.errorCode ?? "PARSE_FAILED");
           }
         } catch (err) {
-          // Transient status polling failures must not mark the import as terminal.
-          setStatusMessage(err instanceof ApiError ? err.message : "Could not check import status — retrying…");
+          if (!cancelled) setStatusMessage(err instanceof ApiError ? err.message : "Could not check import status — retrying…");
+        } finally {
+          inFlight = false;
         }
       })();
     }, 1500);
-    return () => clearInterval(timer);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [importStatus]);
 
   async function handleUpload(file: File) {
@@ -254,9 +267,10 @@ export default function OnboardingPage() {
   async function handleConfirmImport() {
     try {
       await flushQueue({ form: formRef.current, step: stepRef.current });
-      const result = await api.confirmResumeImport();
+      const result = await api.confirmResumeImport(versionRef.current);
       setImportStatus("confirmed");
       const nextForm = profileToForm(result.profile, result.extraction);
+      baselineRef.current = nextForm;
       formRef.current = nextForm;
       setForm(nextForm);
       versionRef.current = result.profile.version;
@@ -354,7 +368,14 @@ export default function OnboardingPage() {
       onContinue={() => void handleContinue()}
       onLogout={() => void handleLogout()}
       continueLabel={step === ONBOARDING_LAST_STEP ? "Finish setup" : "Continue"}
+      continueDisabled={hasConflict || uploading || ["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "")}
     >
+      {hasConflict ? (
+        <div role="alert" className="mb-4 rounded-lg border border-warning p-4">
+          <p>Your profile changed elsewhere. Your unsaved changes remain below. Copy anything you want to keep before loading the saved profile.</p>
+          <button type="button" className="mt-2 underline" onClick={() => void reloadSavedProfile()}>Load saved profile</button>
+        </div>
+      ) : null}
       {step === 0 ? (
         <div className="space-y-8">
           <StepCareerDirection form={form} onChange={patchForm} errors={errors} />

@@ -28,6 +28,7 @@
     "verify:python-cutover": "node scripts/verify-python-cutover.mjs",
     "test:e2e": "playwright test",
     "test:e2e:built": "playwright test -c playwright.built.config.ts",
+    "radar:ingest": "node --import tsx server/radar/ingest-cli.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx server/database/migrate.ts",
     "db:seed": "tsx server/database/seed-cli.ts",

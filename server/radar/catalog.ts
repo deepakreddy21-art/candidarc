@@ -1126,13 +1126,32 @@ export class CanonicalJobCatalog {
     if (job.remotePolicy === "remote" && candidateProfile.remoteOk) location = 95;
     else if (job.locations.some((l) => locs.some((p) => l.toLowerCase().includes(p)))) {
       location = 88;
-    } else if (candidateProfile.remoteOk && job.remotePolicy === "hybrid") {
-      location = 75;
+    } else if (candidateProfile.willingToRelocate) {
+      location = 65;
     }
 
-    const compensation = 70; // seed: no structured pay for most fixtures
-    const eligibility =
-      candidateProfile.visaNeeded && job.visaSponsorship === false ? 20 : 85;
+    const unknownFactors: string[] = [];
+    const constraintWarnings: string[] = [];
+    const normalize = (value: string) => value.toLowerCase().replace(/[^a-z]/g, "");
+    const modes = candidateProfile.workplaceModes?.map(normalize) ?? [];
+    if (modes.length && job.remotePolicy !== "unknown" && !modes.includes(normalize(job.remotePolicy))) {
+      constraintWarnings.push("Workplace mode differs from your preferences");
+    }
+    const types = candidateProfile.jobTypes?.map(normalize) ?? [];
+    if (types.length && job.employmentType && !types.includes(normalize(job.employmentType))) {
+      constraintWarnings.push("Employment type differs from your preferences");
+    }
+    if (candidateProfile.visaNeeded && job.visaSponsorship === false) constraintWarnings.push("This listing says sponsorship is unavailable");
+    const pay = job.compensation;
+    const comparablePay = candidateProfile.targetCompensationMin != null && pay?.max != null &&
+      pay.period === "year" && Boolean(candidateProfile.compensationCurrency) &&
+      pay.currency?.toUpperCase() === candidateProfile.compensationCurrency;
+    const compensation = comparablePay ? (pay!.max! >= candidateProfile.targetCompensationMin! ? 90 : 20) : 0;
+    if (!comparablePay) unknownFactors.push("Compensation compatibility is unconfirmed");
+    else if (compensation === 20) constraintWarnings.push("Published salary is below your stated minimum");
+    const eligibilityKnown = candidateProfile.visaNeeded === true && typeof job.visaSponsorship === "boolean";
+    const eligibility = eligibilityKnown ? (job.visaSponsorship ? 90 : 20) : 0;
+    if (!eligibilityKnown) unknownFactors.push("Work authorization and sponsorship eligibility are unconfirmed");
 
     const goals = candidateProfile.careerGoals ?? [];
     const careerHits = goals.filter(
@@ -1141,9 +1160,12 @@ export class CanonicalJobCatalog {
         job.description.toLowerCase().includes(g.toLowerCase()) ||
         (job.team ?? "").toLowerCase().includes(g.toLowerCase()),
     ).length;
-    const career = Math.min(100, 45 + careerHits * 15);
+    const preferredCompany = candidateProfile.targetCompanies?.some((company) => company.toLowerCase() === job.companyName.toLowerCase());
+    const industryInterest = candidateProfile.targetIndustries?.some((industry) => desc.includes(industry.toLowerCase()));
+    const career = Math.min(100, 45 + careerHits * 15 + (preferredCompany ? 10 : 0) + (industryInterest ? 5 : 0));
 
-    const overall = Math.round(
+    const knownWeight = 0.85 + (comparablePay ? 0.05 : 0) + (eligibilityKnown ? 0.1 : 0);
+    const weightedScore = Math.round((
       skills * 0.25 +
         evidence * 0.15 +
         experience * 0.1 +
@@ -1151,8 +1173,9 @@ export class CanonicalJobCatalog {
         location * 0.15 +
         compensation * 0.05 +
         eligibility * 0.1 +
-        career * 0.1,
+        career * 0.1) / knownWeight,
     );
+    const overall = constraintWarnings.length ? Math.min(weightedScore, 49) : weightedScore;
 
     const explanation: string[] = [];
     if (matchedSkills.length) {
@@ -1164,7 +1187,10 @@ export class CanonicalJobCatalog {
     if (job.classification === "REPOSTED") {
       explanation.push("This listing is a repost of an earlier opening");
     }
-    if (job.remotePolicy === "remote") explanation.push("Remote-friendly role");
+    if (job.remotePolicy === "remote") explanation.push("Remote role — check the listing's country and location restrictions");
+    if (preferredCompany) explanation.push("One of your target companies");
+    if (industryInterest) explanation.push("Role text mentions an industry you selected");
+    explanation.push(...constraintWarnings, ...unknownFactors);
 
     return {
       overall,
@@ -1175,6 +1201,8 @@ export class CanonicalJobCatalog {
       location,
       compensation,
       eligibility,
+      unknownFactors,
+      constraintWarnings,
       career,
       explanation,
       matchedSkills,

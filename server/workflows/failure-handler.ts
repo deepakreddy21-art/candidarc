@@ -175,6 +175,18 @@ export async function handleWorkflowJobExhausted(
     payload.applicationPublicId ||
     payload.applicationId ||
     (typeof run.payload.applicationPublicId === "string" ? run.payload.applicationPublicId : "");
+  if (applicationPublicId && errorClass === "REFINEMENT_NOT_APPLICABLE" && run.payload.previousCustomerFiles) {
+    const app = await repos.applications.getByPublicId(run.tenantId, applicationPublicId);
+    if (app?.metadata?.customerWorkflowPublicId === run.publicId) {
+      await repos.applications.update(run.tenantId, applicationPublicId, {
+        stage: "FINAL_READY", workflowStage: "FINAL_READY", status: "ready", nextAction: "Review resume",
+        metadata: { ...app.metadata, customerFiles: run.payload.previousCustomerFiles,
+          refinementNotice: "No safe change was needed for that request. Your previous resume is unchanged.",
+          refinementInstruction: undefined, customerError: undefined, documentRenderFailed: undefined },
+      });
+      return;
+    }
+  }
   if (applicationPublicId) {
     await markApplicationFailed(repos, run.tenantId, applicationPublicId, {
       customerMessage: CUSTOMER_QUEUE_FAILURE_MESSAGE,

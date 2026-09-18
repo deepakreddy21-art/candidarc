@@ -36,6 +36,7 @@ export const envSchema = z.object({
   /** @deprecated Compatibility input; use AI_MODE and role providers. */
   AI_PROVIDER: z.enum(["mock", "openai"]).optional(),
   OPENAI_API_KEY: z.string().optional(),
+  BRAVE_SEARCH_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_GENERATION_MODEL: z.string().default("gpt-4o-mini"),
   ANTHROPIC_AUDIT_MODEL: z.string().default("claude-sonnet-4-20250514"),

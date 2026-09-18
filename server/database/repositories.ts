@@ -1016,6 +1016,9 @@ export class MemoryRepositories implements Repositories {
         return null;
       },
       async create(item) {
+        if ([...store.evidence.values()].some((entry) => entry.publicId === item.publicId)) {
+          throw new AppError("EVIDENCE_CONFLICT", "Evidence already exists", 409);
+        }
         const record: EvidenceRecord = {
           ...item,
           excludedFromApplicationIds: item.excludedFromApplicationIds ?? [],

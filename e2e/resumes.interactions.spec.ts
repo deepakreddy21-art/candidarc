@@ -127,11 +127,7 @@ Requirements: 5+ years experience, strong ownership.`);
     await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
-  test("refine creates a new version without restoring immutable history", async ({ page }, testInfo) => {
-    test.skip(
-      testInfo.project.name.startsWith("built"),
-      "Refine document/history settling is covered in the full e2e suite; built-app load makes post-refine Ready/history flaky.",
-    );
+  test("refine creates a new version without restoring immutable history", async ({ page }) => {
     test.setTimeout(180_000);
     await seedOnboardedUser(page, "resume-refine");
     const generated = await generateResumeViaApi(page);
@@ -139,20 +135,44 @@ Requirements: 5+ years experience, strong ownership.`);
     await waitForResumeReady(page);
     const history = page.getByRole("heading", { name: /version history/i });
     await expect(history).toBeVisible();
-    await page.getByRole("button", { name: /make it more concise/i }).click();
+    await page.getByRole("textbox", { name: /what would you like to improve/i }).fill("Emphasize TypeScript");
     const refined = page.waitForResponse(
       (res) => res.url().includes("/refine") && res.request().method() === "POST",
     );
     await page.getByRole("button", { name: /create new version/i }).click();
-    expect((await refined).ok()).toBeTruthy();
-    await page.waitForURL(/\/app\/resumes\/(?!new(?:\/|$))/);
+    const refinedResponse = await refined;
+    expect(refinedResponse.ok()).toBeTruthy();
+    const nextVersion = await refinedResponse.json();
+    await page.waitForURL(`**/app/resumes/${nextVersion.workflowId}`);
     await waitForResumeReady(page);
     await expect(page.getByRole("heading", { name: /version history/i })).toBeVisible();
     const compare = page.getByRole("button", { name: /^compare$/i }).first();
-    if (await compare.count()) {
-      await compare.click();
-      await expect(page.getByText(/comparing against/i)).toBeVisible();
-    }
+    await expect(compare).toBeVisible();
+    await compare.click();
+    const comparison = page.getByRole("region", { name: "Resume version comparison" });
+    await expect(comparison).toBeVisible();
+    await expect(comparison.getByRole("heading", { name: /Version 1 compared with current/i })).toBeVisible();
+    await expect(comparison.getByRole("status")).toHaveText(/[1-9]\d* section.*changed/i);
+    await expect(comparison).toContainText("TypeScript");
+  });
+
+  test("a refinement with no safe change keeps the checked resume downloadable", async ({ page }) => {
+    await seedOnboardedUser(page, "resume-no-change");
+    const generated = await generateResumeViaApi(page);
+    await page.goto(`/app/resumes/${generated.workflowId}`);
+    await waitForResumeReady(page);
+    await page.getByRole("button", { name: /make it more concise/i }).click();
+    const refined = page.waitForResponse((res) => res.url().includes("/refine") && res.request().method() === "POST");
+    await page.getByRole("button", { name: /create new version/i }).click();
+    const response = await refined;
+    expect(response.ok()).toBeTruthy();
+    const next = await response.json();
+    await page.waitForURL(`**/app/resumes/${next.workflowId}`);
+    await expect(page.getByRole("status").filter({ hasText: "Your previous resume is unchanged" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^compare$/i })).toHaveCount(0);
+    const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("link", { name: /download pdf/i }).click()]);
+    await pdfContains(await readFile((await download.path())!), ["Harbor Systems", "Audit Tester"]);
   });
 
   test("library search opens the matching tailored resume", async ({ page }) => {

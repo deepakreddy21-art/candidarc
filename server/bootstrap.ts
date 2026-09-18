@@ -370,7 +370,15 @@ async function buildRuntime(): Promise<Runtime> {
         return;
       }
       const claimedStage = payload.stage ?? run.stage;
-      await pipeline.handleStage(run, claimedStage);
+      try {
+        await pipeline.handleStage(run, claimedStage);
+      } catch (error) {
+        if (error instanceof AppError && error.status >= 400 && error.status < 500 && !error.retryable) {
+          await handleWorkflowJobExhausted(repos, engine, job, error);
+          return;
+        }
+        throw error;
+      }
     });
   }
 
@@ -661,7 +669,7 @@ async function buildRuntime(): Promise<Runtime> {
         logger.warn({ err }, "radar postgres sync skipped");
       }
     }
-    registerRadarQueueHandlers(queue, radar.catalog, radar.index);
+    registerRadarQueueHandlers(queue, radar.catalog, radar.index, radar.ingestListing.bind(radar));
     void queue.enqueue("job-indexing", "radar-reindex", { reason: "bootstrap" });
     void queue.enqueue("job-alerting", "radar-alerts-sweep", { reason: "bootstrap" });
   }
