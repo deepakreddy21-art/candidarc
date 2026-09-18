@@ -38,9 +38,12 @@ test.describe("resume import interactions", () => {
           const res = await fetch("/api/v1/profile/resume/import", { credentials: "include" });
           return res.json();
         });
-        return String(body?.extraction?.contact?.email ?? body?.extraction?.rawText ?? "");
+        const email = String(body?.extraction?.contact?.email ?? body?.extraction?.rawText ?? "");
+        const roles = Array.isArray(body?.extraction?.employment) ? body.extraction.employment : [];
+        const title = String(roles[0]?.title ?? roles[0]?.company ?? "");
+        return `${email}::${title}::${roles.length}`;
       }, { timeout: 45_000 })
-      .toMatch(/jordan\.blake@example\.com/i);
+      .toMatch(/jordan\.blake@example\.com::.*Platform Engineer::[1-9]/i);
     await expect
       .poll(async () => page.getByTestId("imported-email").inputValue(), { timeout: 45_000 })
       .toMatch(/jordan\.blake@example\.com/i);

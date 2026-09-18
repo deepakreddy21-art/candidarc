@@ -231,17 +231,53 @@ export function assertCanComplete(profile: CandidateProfileRecord) {
   }
 }
 
+function careerArrayHasContent(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.some((row) => {
+    if (typeof row === "string") return Boolean(row.trim());
+    if (!row || typeof row !== "object") return false;
+    return Object.values(row as Record<string, unknown>).some((cell) => {
+      if (typeof cell === "string") return Boolean(cell.trim());
+      if (Array.isArray(cell)) return cell.some((item) => typeof item === "string" && item.trim());
+      return cell != null && cell !== "";
+    });
+  });
+}
+
+/**
+ * Keep extracted career sections when an onboarding autosave would replace them with [].
+ * Empty arrays are truthy in JS, so a naive `if (data.employment)` clobber was wiping
+ * Python parse results while leaving certificationEntries (untouched by autosave) visible.
+ */
+function assignCareerArray(
+  next: Record<string, unknown>,
+  key: "employment" | "projects" | "education" | "certifications" | "publications" | "skills",
+  incoming: unknown,
+  normalize?: (value: unknown) => unknown,
+): void {
+  if (incoming === undefined) return;
+  const prior = next[key];
+  if (careerArrayHasContent(prior) && !careerArrayHasContent(incoming)) {
+    return;
+  }
+  next[key] = normalize ? normalize(incoming) : incoming;
+}
+
 export function mergeExtraction(
   existing: Record<string, unknown> | null | undefined,
   data: OnboardingStepData,
 ): Record<string, unknown> {
   const next: Record<string, unknown> = { ...(existing ?? {}) };
-  if (data.skills) next.skills = normalizeTitleList(data.skills, 60);
-  if (data.employment) next.employment = data.employment;
-  if (data.projects) next.projects = data.projects;
-  if (data.education) next.education = data.education;
-  if (data.certifications) next.certifications = data.certifications;
-  if (data.publications) next.publications = data.publications;
+  if (data.skills !== undefined) {
+    assignCareerArray(next, "skills", data.skills, (value) =>
+      normalizeTitleList(Array.isArray(value) ? value.map(String) : [], 60),
+    );
+  }
+  if (data.employment !== undefined) assignCareerArray(next, "employment", data.employment);
+  if (data.projects !== undefined) assignCareerArray(next, "projects", data.projects);
+  if (data.education !== undefined) assignCareerArray(next, "education", data.education);
+  if (data.certifications !== undefined) assignCareerArray(next, "certifications", data.certifications);
+  if (data.publications !== undefined) assignCareerArray(next, "publications", data.publications);
   if (data.careerProfileMode) next.careerProfileMode = data.careerProfileMode;
   if (data.onboardingFlowVersion) next.onboardingFlowVersion = data.onboardingFlowVersion;
   if (data.fullName || data.email || data.phone || data.location || data.linkedIn || data.github || data.portfolio) {
