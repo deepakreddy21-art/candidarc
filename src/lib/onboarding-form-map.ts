@@ -13,6 +13,22 @@ function lowConfidenceCount(extraction: ResumeImportExtraction | null): number {
   return count;
 }
 
+function preferredContactEmail(
+  extraction: ResumeImportExtraction | null,
+  fallback = "",
+): string {
+  const contact = extraction?.contact ?? {};
+  const fromContact =
+    contact.email?.trim() ||
+    (Array.isArray(contact.emails)
+      ? contact.emails.find((value) => typeof value === "string" && value.includes("@"))?.trim()
+      : undefined);
+  if (fromContact) return fromContact;
+  const raw = extraction?.rawText ?? "";
+  const fromRaw = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+  return fromRaw?.trim() || fallback;
+}
+
 export function profileToForm(
   profile: CandidateProfile,
   extraction: ResumeImportExtraction | null,
@@ -45,7 +61,7 @@ export function profileToForm(
     requiresSponsorship: profile.requiresSponsorship ?? null,
     salaryPreference: profile.salaryPreference ?? "",
     fullName: contact.fullName?.trim() || profile.fullName || "",
-    email: contact.email?.trim() || profile.email || "",
+    email: preferredContactEmail(extraction, profile.email || ""),
     phone: contact.phone?.trim() || profile.phone || "",
     location: contact.location?.trim() || profile.location || "",
     linkedIn: contact.linkedIn?.trim() || profile.linkedIn || "",

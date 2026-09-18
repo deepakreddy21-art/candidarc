@@ -150,9 +150,18 @@ Requirements: 5+ years experience, strong ownership.`,
 }
 
 export async function waitForResumeReady(page: Page) {
-  const continueWithout = page.getByRole("button", { name: /continue without answering/i });
-  if (await continueWithout.isVisible().catch(() => false)) {
-    await continueWithout.click();
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const continueWithout = page.getByRole("button", { name: /continue without answering/i });
+    if (await continueWithout.isVisible().catch(() => false)) {
+      await continueWithout.click();
+    }
+    const ready = page.getByRole("heading", { name: /your tailored resume/i });
+    if (await ready.isVisible().catch(() => false)) {
+      await expect(ready).toBeVisible();
+      return;
+    }
+    await page.waitForTimeout(500);
   }
-  await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible({ timeout: 1_000 });
 }

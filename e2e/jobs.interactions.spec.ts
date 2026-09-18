@@ -173,7 +173,6 @@ test.describe("jobs interactions", () => {
     expect(firstPage.length).toBe(20);
     await expect(page.getByRole("button", { name: /load more/i })).toBeVisible();
     await page.getByRole("button", { name: /load more/i }).click();
-    await expect(page.getByTestId("job-row")).toHaveCount(await page.getByTestId("job-row").count());
     await expect.poll(async () => page.getByTestId("job-row").count()).toBeGreaterThan(20);
     const titles = await page.getByTestId("job-row").locator("h3").allInnerTexts();
     expect(new Set(titles).size).toBe(titles.length);
