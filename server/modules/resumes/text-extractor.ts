@@ -175,13 +175,17 @@ export function adaptResumeExtractionV1ToV2(
     parseWarnings: raw.parseWarnings ?? [],
   };
 
-  if (!normalized.contact.email) {
-    const fromEmails = normalized.contact.emails.find((value) => typeof value === "string" && value.includes("@"));
+  if (!normalized.contact?.email) {
+    const emails = normalized.contact?.emails ?? [];
+    const fromEmails = emails.find((value) => typeof value === "string" && value.includes("@"));
     const fromRaw = normalized.rawText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
     const email = fromEmails?.trim() || fromRaw?.trim();
     if (email) {
-      normalized.contact.email = email;
-      if (!normalized.contact.emails.length) normalized.contact.emails = [email];
+      normalized.contact = {
+        ...(normalized.contact ?? {}),
+        email,
+        emails: emails.length ? emails : [email],
+      };
     }
   }
 
