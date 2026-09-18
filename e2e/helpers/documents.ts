@@ -1,6 +1,8 @@
 import { Packer, Document, Paragraph } from "docx";
-import { textToSimplePdf } from "./simple-pdf";
-import { imageOnlyPdf } from "../../src/test/fixtures/resume-samples";
+import {
+  imageOnlyPdf,
+  textToSimplePdf,
+} from "../../src/test/fixtures/resume-samples";
 
 export { textToSimplePdf, imageOnlyPdf };
 
@@ -40,6 +42,7 @@ export const IMPORT_RESUME_DOCX_TEXT = IMPORT_RESUME_TEXT.replace(
 );
 
 export function importResumePdf(): Buffer {
+  // Use the multi-page-capable fixture builder shared with python-mode (valid xref).
   return textToSimplePdf(IMPORT_RESUME_TEXT);
 }
 
