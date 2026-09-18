@@ -365,18 +365,35 @@ describe("ResumePipeline generation crash recovery (postgres)", () => {
   });
 
   it("rejects steal of an active stage claim", async () => {
-    const { run, pipeline } = await seedV0Generating();
-    setResumeGenerationFaultPoint("after_provider");
+    const { app, run, pipeline } = await seedV0Generating();
+    const client = pythonClient.getPythonIntelligenceClient();
+    let providerEntered!: () => void;
+    let finishProvider!: () => void;
+    const entered = new Promise<void>((resolve) => { providerEntered = resolve; });
+    const pending = new Promise<void>((resolve) => { finishProvider = resolve; });
+    clientSpy.mockReturnValue({
+      ...client,
+      generateResume: async (...args: Parameters<typeof client.generateResume>) => {
+        const response = await client.generateResume(...args);
+        providerEntered();
+        await pending;
+        return response;
+      },
+    } as never);
     const first = pipeline.handleStage(run, "V0_GENERATING");
-    await expect(first).rejects.toMatchObject({ code: "FAULT_INJECTED" });
-
-    const active = await repos.workflows.getById(run.id);
-    const claimKey = "claimed:V0_GENERATING";
-    expect(active?.payload[claimKey]).toBeTruthy();
-    const steal = await pipeline.handleStage(active!, "V0_GENERATING");
-    expect(steal).toBeUndefined();
+    try {
+      // Observe a real in-flight worker, not a completed exception that releases its lease.
+      await Promise.race([entered, first.then(() => { throw new Error("Provider was not reached"); })]);
+      const active = await repos.workflows.getById(run.id);
+      expect(active?.payload["claimed:V0_GENERATING"]).toBeTruthy();
+      expect(await pipeline.handleStage(active!, "V0_GENERATING")).toBeUndefined();
+      expect(generateCalls).toBe(1);
+      expect((await repos.workflows.getById(run.id))?.stage).toBe("V0_GENERATING");
+    } finally {
+      finishProvider();
+      await first;
+    }
     expect(generateCalls).toBe(1);
-    const still = await repos.workflows.getById(run.id);
-    expect(still?.stage).toBe("V0_GENERATING");
+    await assertRecovered(run.id, app.publicId);
   });
 });

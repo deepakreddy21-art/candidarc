@@ -355,6 +355,33 @@ describe("workflow concurrency", () => {
     expect((await repos.usage.findByIdempotency(tenantId, "no-change-reserved"))?.status).toBe("released");
   });
 
+  it("an old worker cannot release a successor's lease or erase a saved checkpoint", async () => {
+    const { repos, engine, userId, tenantId } = await setupWorkflowRuntime(false);
+    const service = new CustomerGenerateService(repos, engine, getStorage());
+    const created = await service.generate(context(userId, tenantId, repos), {
+      jobDescription: "Platform engineer working with TypeScript and Kubernetes APIs.", idempotencyKey: "owned-lease-release",
+    });
+    const run = (await repos.workflows.getByPublicId(tenantId, created.workflowId))!;
+    const stage = run.stage;
+    const key = `claimed:${stage}`;
+    const first = (await repos.workflows.claimStage(tenantId, run.id, stage))!;
+    const oldLease = first.payload[key] as Record<string, unknown>;
+    await repos.workflows.updateRun(run.id, { payload: {
+      ...first.payload, [key]: { ...oldLease, expiresAt: "1970-01-01T00:00:00.000Z" },
+      checkpoint: { completed: true },
+    } });
+    const next = (await repos.workflows.claimStage(tenantId, run.id, stage))!;
+    expect(await repos.workflows.releaseStageClaim(tenantId, run.id, stage, oldLease)).toBe(false);
+    expect(await repos.workflows.releaseStageClaim("other-tenant", run.id, stage, next.payload[key])).toBe(false);
+    const released = await Promise.all(Array.from({ length: 8 }, () =>
+      repos.workflows.releaseStageClaim(tenantId, run.id, stage, next.payload[key])));
+    expect(released.filter(Boolean)).toHaveLength(1);
+    const stored = (await repos.workflows.getById(run.id))!;
+    expect(stored.payload[key]).toBeUndefined();
+    expect(stored.payload.checkpoint).toEqual({ completed: true });
+    expect(await repos.workflows.claimStage(tenantId, run.id, stage)).not.toBeNull();
+  });
+
   it("queueForStage returns null for completed research and evidence stages", () => {
     expect(queueForStage("RESEARCH_COMPLETED")).toBeNull();
     expect(queueForStage("EVIDENCE_MATCHING_COMPLETED")).toBeNull();

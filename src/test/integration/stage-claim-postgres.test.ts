@@ -187,4 +187,28 @@ describe("workflow stage claims (postgres integration)", () => {
     expect(claimed?.payload.keep).toBe("value");
     expect(claimed?.payload["claimed:RESEARCH_QUEUED"]).toMatchObject({ attempt: 2 });
   });
+
+  it("atomically releases only its own lease and preserves newer payload writes", async () => {
+    const run = await createRun({ untouched: 42 });
+    const first = (await repos.workflows.claimStage(tenantId, run.id, "V0_GENERATING"))!;
+    const key = "claimed:V0_GENERATING";
+    const oldLease = first.payload[key] as Record<string, unknown>;
+    await repos.workflows.updateRun(run.id, { payload: {
+      ...first.payload, [key]: { ...oldLease, expiresAt: "1970-01-01T00:00:00.000Z" },
+      checkpoint: { completed: true },
+    } });
+    const next = (await repos.workflows.claimStage(tenantId, run.id, "V0_GENERATING"))!;
+    expect(next.payload[key]).not.toEqual(oldLease);
+    expect(await repos.workflows.releaseStageClaim(tenantId, run.id, "V0_GENERATING", oldLease)).toBe(false);
+    expect(await repos.workflows.releaseStageClaim(otherTenantId, run.id, "V0_GENERATING", next.payload[key])).toBe(false);
+    expect(await repos.workflows.releaseStageClaim(tenantId, run.id, "V1_GENERATING", next.payload[key])).toBe(false);
+    const released = await Promise.all(Array.from({ length: 8 }, () =>
+      repos.workflows.releaseStageClaim(tenantId, run.id, "V0_GENERATING", next.payload[key])));
+    expect(released.filter(Boolean)).toHaveLength(1);
+    const stored = (await repos.workflows.getById(run.id))!;
+    expect(stored.payload[key]).toBeUndefined();
+    expect(stored.payload.checkpoint).toEqual({ completed: true });
+    expect(stored.payload.untouched).toBe(42);
+    expect(await repos.workflows.claimStage(tenantId, run.id, "V0_GENERATING")).not.toBeNull();
+  });
 });

@@ -270,14 +270,8 @@ export class ResumePipeline {
           logger.debug({ stage: claimed.stage }, "pipeline no-op stage");
       }
     } catch (error) {
-      const current = await this.deps.workflows.getById(run.id);
       const claimKey = `claimed:${expectedStage}`;
-      if (current && stageMatchesJobClaim(current.stage, expectedStage) &&
-          JSON.stringify(current.payload[claimKey]) === JSON.stringify(claimed.payload[claimKey])) {
-        const payload = { ...current.payload };
-        delete payload[claimKey];
-        await this.deps.workflows.updateRun(run.id, { payload });
-      }
+      await this.deps.workflows.releaseStageClaim(run.tenantId, run.id, expectedStage, claimed.payload[claimKey]);
       throw error;
     }
   }
