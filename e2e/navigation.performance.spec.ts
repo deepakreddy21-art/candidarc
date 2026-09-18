@@ -15,9 +15,9 @@ const destinations: Destination[] = [
     homeHref: /\/app\/opportunities/,
     usable: async (page) => {
       await expect(page.getByRole("heading", { name: /jobs for you/i })).toBeVisible();
-      await expect(
-        page.getByTestId("job-row").first().or(page.getByText(/no jobs match|no matching jobs|try adjusting/i)),
-      ).toBeVisible({ timeout: 15_000 });
+      const jobRow = page.getByTestId("job-row").first();
+      const empty = page.getByText(/no jobs match|no matching jobs|try adjusting/i);
+      await expect(jobRow.or(empty).first()).toBeVisible({ timeout: 15_000 });
       await expect(page.getByRole("textbox", { name: /search jobs/i })).toBeEnabled();
     },
   },
@@ -27,13 +27,11 @@ const destinations: Destination[] = [
     homeHref: /\/app\/radar(?:\?|$)/,
     usable: async (page) => {
       await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();
-      await expect(
-        page
-          .getByRole("button", { name: /new application|track an application|add application/i })
-          .or(page.getByPlaceholder(/search/i))
-          .or(page.getByText(/no applications|start tracking/i)),
-      ).toBeVisible({ timeout: 15_000 });
       await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
+      const search = page.getByPlaceholder(/search/i);
+      const empty = page.getByText(/no applications|start tracking/i);
+      const add = page.getByRole("button", { name: /new application|track an application|add application/i });
+      await expect(search.or(empty).or(add).first()).toBeVisible({ timeout: 15_000 });
     },
   },
   {
@@ -42,12 +40,10 @@ const destinations: Destination[] = [
     homeHref: /\/app\/radar(?:\?|$)/,
     usable: async (page) => {
       await expect(page.getByRole("heading", { name: /^Resumes$/i })).toBeVisible();
-      await expect(
-        page
-          .getByRole("link", { name: /create|generate|new resume/i })
-          .or(page.getByRole("button", { name: /create|generate|new resume/i }))
-          .or(page.getByText(/no resumes|tailor a resume/i)),
-      ).toBeVisible({ timeout: 15_000 });
+      const createLink = page.getByRole("link", { name: /create|generate|new resume/i });
+      const createButton = page.getByRole("button", { name: /create|generate|new resume/i });
+      const empty = page.getByText(/no resumes|tailor a resume/i);
+      await expect(createLink.or(createButton).or(empty).first()).toBeVisible({ timeout: 15_000 });
     },
   },
   {
@@ -66,9 +62,9 @@ const destinations: Destination[] = [
     homeHref: /\/app\/radar(?:\?|$)/,
     usable: async (page) => {
       await expect(page.getByRole("heading", { name: /^Settings$/i })).toBeVisible();
-      await expect(
-        page.getByRole("link", { name: /privacy|preferences|integrations/i }).first(),
-      ).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByRole("link", { name: /privacy|preferences|integrations/i }).first()).toBeVisible({
+        timeout: 15_000,
+      });
     },
   },
 ];
