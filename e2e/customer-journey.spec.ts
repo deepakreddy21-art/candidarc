@@ -44,7 +44,7 @@ Requirements: 5+ years experience, strong ownership, measurable impact.`;
     await expect(
       page
         .getByText(
-          /Researching the role|Tailoring your resume|Quality checking|Working on your resume|We need a few details/i,
+          /Researching the role|Tailoring your résumé|Checking your résumé|Working on your resume|We need a few details/i,
         )
         .first(),
     ).toBeVisible({

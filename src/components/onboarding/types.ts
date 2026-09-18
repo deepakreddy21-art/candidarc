@@ -1,17 +1,17 @@
 export const ONBOARDING_STEPS = [
   {
     id: 0,
-    title: "What kind of work are you looking for?",
-    panel: "Roles and work setup first. CandidArc uses this to focus Jobs and resume recommendations.",
+    title: "What kind of role are you looking for?",
+    panel: "Tell us how you want to work. CandidArc uses this to focus Jobs and recommendations.",
   },
   {
     id: 1,
-    title: "Add your career profile",
-    panel: "Upload a résumé or enter details. This is the evidence CandidArc can safely use when tailoring.",
+    title: "Start with what you already have",
+    panel: "Upload a résumé or build without one. This is the evidence CandidArc can safely use when tailoring.",
   },
   {
     id: 2,
-    title: "Review and start",
+    title: "Your profile, ready for your next move",
     panel:
       "When you choose a job, CandidArc uses posting requirements and public team signals to prioritize your real experience—never to invent claims.",
   },

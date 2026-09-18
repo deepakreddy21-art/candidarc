@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:where(.dark, .dark *));
+/* Light-only product. Dark custom-variant kept inert so leftover .dark classes never activate. */
+@custom-variant dark (&:where(.never-dark));
 
 @theme inline {
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
@@ -18,6 +19,10 @@
   --color-border-strong: var(--border-strong);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
+  --color-forest: var(--forest);
+  --color-mint: var(--mint);
+  --color-lime: var(--lime);
+  --color-on-forest: var(--on-forest);
   --color-cyan: var(--cyan);
   --color-success: var(--success);
   --color-warning: var(--warning);
@@ -29,48 +34,62 @@
   --radius-lg: 10px;
   --radius-xl: 12px;
   --radius-2xl: 14px;
+
+  --duration-press: 150ms;
+  --duration-panel: 260ms;
 }
 
 :root {
-  --background: #f4f4f0;
-  --canvas: #fafaf7;
+  /* Named brand roles — green/light direction */
   --surface: #ffffff;
-  --surface-2: #f1f1ec;
-  --foreground: #111318;
-  --foreground-secondary: #626873;
-  --foreground-muted: #8a9099;
-  --border: rgba(17, 19, 24, 0.09);
-  --border-strong: rgba(17, 19, 24, 0.16);
+  --canvas: #f6f8f5;
+  --background: #f6f8f5;
+  --surface-2: #eaf5ee;
   --accent: #1f6f5b;
   --accent-hover: #185a4a;
+  --forest: #0b3d2e;
+  --mint: #eaf5ee;
+  --lime: #d7f27a;
+  --foreground: #14231b;
+  --foreground-secondary: #596a60;
+  --foreground-muted: #596a60;
+  --border: #dce6df;
+  --border-strong: color-mix(in oklab, #14231b 18%, transparent);
+  --on-forest: #ffffff;
   --cyan: #2a7a8c;
   --success: #1fad76;
   --warning: #c47f1a;
   --destructive: #c44b54;
   --ring: #1f6f5b;
-  --shadow-sm: 0 1px 2px rgba(17, 19, 24, 0.03);
-  --shadow-md: 0 4px 12px rgba(17, 19, 24, 0.05);
+  --shadow-sm: 0 1px 2px rgba(20, 35, 27, 0.04);
+  --shadow-md: 0 4px 16px rgba(20, 35, 27, 0.06);
 }
 
+/* Force light tokens even if a stale .dark class is present from saved prefs. */
+html.dark,
+html.dark body,
 .dark {
-  --background: #0d0f13;
-  --canvas: #12151b;
-  --surface: #171a21;
-  --surface-2: #1d212a;
-  --foreground: #f5f6f8;
-  --foreground-secondary: #a9afba;
-  --foreground-muted: #737b89;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.15);
-  --accent: #3d9b82;
-  --accent-hover: #4fad94;
-  --cyan: #4aa3b5;
-  --success: #2ec48a;
-  --warning: #d9a04a;
-  --destructive: #e07078;
-  --ring: #3d9b82;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.28);
+  --surface: #ffffff;
+  --canvas: #f6f8f5;
+  --background: #f6f8f5;
+  --surface-2: #eaf5ee;
+  --accent: #1f6f5b;
+  --accent-hover: #185a4a;
+  --forest: #0b3d2e;
+  --mint: #eaf5ee;
+  --lime: #d7f27a;
+  --foreground: #14231b;
+  --foreground-secondary: #596a60;
+  --foreground-muted: #596a60;
+  --border: #dce6df;
+  --border-strong: color-mix(in oklab, #14231b 18%, transparent);
+  --on-forest: #ffffff;
+  --cyan: #2a7a8c;
+  --success: #1fad76;
+  --warning: #c47f1a;
+  --destructive: #c44b54;
+  --ring: #1f6f5b;
+  color-scheme: light;
 }
 
 @layer base {
@@ -80,11 +99,12 @@
 
   html {
     @apply scroll-smooth antialiased;
+    color-scheme: light;
   }
 
   body {
     @apply bg-background text-foreground font-sans;
-    font-size: 15px;
+    font-size: 16px;
     line-height: 1.5;
   }
 
@@ -100,8 +120,8 @@
 @layer utilities {
   .arc-bg {
     background-image:
-      radial-gradient(ellipse 80% 50% at 10% -10%, color-mix(in oklab, var(--accent) 12%, transparent), transparent),
-      radial-gradient(ellipse 60% 40% at 100% 0%, color-mix(in oklab, var(--cyan) 10%, transparent), transparent);
+      radial-gradient(ellipse 80% 50% at 8% -8%, color-mix(in oklab, var(--accent) 10%, transparent), transparent),
+      radial-gradient(ellipse 50% 36% at 100% 0%, color-mix(in oklab, var(--mint) 80%, transparent), transparent);
   }
 
   .arc-line {
@@ -109,9 +129,18 @@
       90deg,
       transparent,
       color-mix(in oklab, var(--accent) 45%, transparent),
-      color-mix(in oklab, var(--cyan) 45%, transparent),
+      color-mix(in oklab, var(--lime) 55%, transparent),
       transparent
     );
+  }
+
+  .panel-forest {
+    background: var(--forest);
+    color: var(--on-forest);
+  }
+
+  .panel-mint {
+    background: var(--mint);
   }
 
   .text-balance {
@@ -161,5 +190,14 @@
   }
   50% {
     transform: scaleY(1);
+  }
+}
+
+@keyframes arc-marker {
+  0% {
+    offset-distance: 0%;
+  }
+  100% {
+    offset-distance: 100%;
   }
 }

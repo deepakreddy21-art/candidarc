@@ -7,7 +7,6 @@ import { Bell, Briefcase, ClipboardList, FileText, Menu, Search, Settings, User,
 import { useEffect, useMemo, useState } from "react";
 import { Logo } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { CommandPalette } from "@/components/command-palette";
 import { Tooltip } from "@/components/ui/tabs";
 import { useUiStore } from "@/stores/ui";
@@ -305,7 +304,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </Link>
               </Button>
             </Tooltip>
-            <ThemeToggle />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" aria-label="User menu" className="rounded-full">

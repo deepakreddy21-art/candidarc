@@ -5,9 +5,19 @@ import { ThemeProvider as NextThemesProvider } from "next-themes";
 import { TooltipProvider } from "@/components/ui/tabs";
 import { Toaster } from "sonner";
 
+/** Light-only: ignore OS/system preference and clear stale dark class. */
 export function Providers({ children }: { children: React.ReactNode }) {
+  React.useEffect(() => {
+    document.documentElement.classList.remove("dark");
+    try {
+      localStorage.setItem("theme", "light");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   return (
-    <NextThemesProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+    <NextThemesProvider attribute="class" defaultTheme="light" forcedTheme="light" enableSystem={false} disableTransitionOnChange>
       <TooltipProvider>
         {children}
         <Toaster
