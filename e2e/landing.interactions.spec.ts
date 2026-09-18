@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("landing interactions", () => {
-  test("Get started opens signup", async ({ page }) => {
+  test("Create my account opens signup", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("link", { name: /get started/i }).first().click();
+    await page.getByRole("link", { name: /create my account/i }).first().click();
     await expect(page).toHaveURL(/\/sign-up/);
     await expect(page.getByRole("heading", { name: /build my application/i })).toBeVisible();
   });

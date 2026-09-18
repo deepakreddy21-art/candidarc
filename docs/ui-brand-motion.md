@@ -1,7 +1,8 @@
 # UI brand motion — requirement checklist
 
 Starting SHA: `9b766396646fefdc9ab3b8ecc45796d72d66c495` (`origin/master`).  
-Branch: `feature/ui-brand-motion`.
+Branch: `feature/ui-brand-motion`.  
+PR: https://github.com/deepakreddy21-art/candidarc/pull/8  
 
 | Requirement | Implementation | Status |
 | --- | --- | --- |
