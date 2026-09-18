@@ -15,6 +15,7 @@ export default defineConfig({
       "**/.next/**",
       // Requires FastAPI venv — run via `npm run test:python-mode`
       "**/python-mode-generate.test.ts",
+      "**/onboarding-resume-import-journey.test.ts",
     ],
   },
   resolve: {

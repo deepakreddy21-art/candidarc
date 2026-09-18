@@ -16,7 +16,7 @@ function legacyRedirect(request: NextRequest): NextResponse | null {
 
   if (pathname === "/app/evidence") {
 
-    return NextResponse.redirect(new URL("/app/settings/profile", request.url));
+    return NextResponse.redirect(new URL("/app/profile", request.url));
 
   }
 

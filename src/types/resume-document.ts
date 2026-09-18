@@ -1,7 +1,11 @@
 /**
  * Canonical resume document model shared by browser preview, PDF, and DOCX renderers.
- * ATS-safe: single-column reading order, plain text bullets, no tables/columns in body.
+ * Template: CandidArc ATS v1 — ATS-safe single-column reading order.
+ * Not an official MIT/Harvard/alumni template.
  */
+export const CANDIDARC_ATS_V1_TEMPLATE = "CandidArc ATS v1";
+export const CANDIDARC_ATS_V1_TEMPLATE_ID = "candidarc-ats-v1";
+
 export interface ResumeDocumentContact {
   name: string;
   email?: string;
@@ -37,13 +41,22 @@ export interface ResumeDocument {
     role: string;
     company: string;
     generatedAt?: string;
+    /** Named template identifier shown in HTML meta — never printed as employment. */
+    template?: string;
+    templateId?: string;
   };
 }
 
 export interface ResumeLayoutValidation {
+  /** Authoritative when measured from a rendered PDF; otherwise a pre-render estimate. */
   pageCountEstimate: number;
+  /** Actual PDF page count from a PDF parser when available. */
+  measuredPageCount?: number;
   withinPageLimit: boolean;
   overflowRisk: "low" | "medium" | "high";
   atsTextOrder: string[];
   warnings: string[];
+  blankPageIndexes?: number[];
+  clippedText?: boolean;
+  unnoticedThirdPage?: boolean;
 }

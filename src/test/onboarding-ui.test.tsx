@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChipInput, MultiToggle } from "@/components/onboarding/chip-input";
+import { StepCareerProfile } from "@/components/onboarding/step-career-profile";
 import {
   formToPayload,
   normalizeList,
@@ -25,21 +26,27 @@ describe("onboarding helpers", () => {
     form.targetRoles = ["Backend Engineer"];
     expect(validateStepClient(0, form)).toMatch(/seniority/i);
     form.seniority = "senior";
+    expect(validateStepClient(0, form)).toMatch(/job type/i);
+    form.jobTypes = ["full-time"];
+    expect(validateStepClient(0, form)).toMatch(/workplace/i);
+    form.workplaceModes = ["remote"];
     expect(validateStepClient(0, form)).toBeNull();
   });
 
-  it("requires job types and workplace modes on step 1", () => {
+  it("requires job types and workplace modes on combined preferences step", () => {
     const form = emptyOnboardingForm();
+    form.targetRoles = ["Backend Engineer"];
+    form.seniority = "senior";
     form.jobTypes = ["full-time"];
-    expect(validateStepClient(1, form)).toMatch(/workplace/i);
+    expect(validateStepClient(0, form)).toMatch(/workplace/i);
     form.workplaceModes = ["remote"];
-    expect(validateStepClient(1, form)).toBeNull();
+    expect(validateStepClient(0, form)).toBeNull();
   });
 
   it("allows confirmed upload path without manual employment", () => {
     const form = emptyOnboardingForm();
     form.fullName = "";
-    expect(validateStepClient(2, form, "confirmed")).toBeNull();
+    expect(validateStepClient(1, form, "confirmed")).toBeNull();
   });
 
   it("maps form payload for persistence", () => {
@@ -75,7 +82,9 @@ describe("onboarding helpers", () => {
     expect(merged.jobTypes).toEqual(["full-time"]);
     expect(merged.workplaceModes).toEqual(["remote"]);
     expect(merged.preferredLocations).toEqual(["Austin"]);
-    expect(merged.fullName).toBe("Keep Me");
+    // Contact fields come from extraction so the review form shows imported details.
+    expect(merged.fullName).toBe("Parsed Name");
+    expect(merged.email).toBe("parsed@example.com");
     expect(merged.skills).toContain("Go");
   });
 });
@@ -133,5 +142,54 @@ describe("MultiToggle", () => {
     await user.click(screen.getByRole("button", { name: "Full-time" }));
     await user.click(screen.getByRole("button", { name: "Contract" }));
     expect(values).toEqual(["full-time", "contract"]);
+  });
+});
+
+describe("StepCareerProfile import UX", () => {
+  it("shows imported employment review cards instead of blank employment editor", () => {
+    const form = emptyOnboardingForm();
+    form.careerProfileMode = "upload";
+    form.fullName = "Jordan Blake";
+    form.skills = ["TypeScript", "Kubernetes"];
+    form.employment = [
+      { title: "Platform Engineer", company: "Harbor Systems", bullets: ["Built pipelines"] },
+      { title: "Software Engineer", company: "Northwind Labs", bullets: ["Designed APIs"] },
+    ];
+    form.education = [{ school: "Cascadia University", degree: "B.S. Computer Science" }];
+    form.certifications = [{ name: "AWS Solutions Architect Associate" }];
+    render(
+      <StepCareerProfile
+        form={form}
+        onChange={() => undefined}
+        errors={{}}
+        importStatus="ready_for_review"
+        uploading={false}
+        onUpload={() => undefined}
+        statusMessage={null}
+      />,
+    );
+    expect(screen.getByTestId("import-summary").textContent).toMatch(/We imported your résumé: 2 roles/i);
+    expect(screen.getByTestId("imported-employment-cards")).toBeTruthy();
+    expect(screen.getByText("Professional experience")).toBeTruthy();
+  });
+
+  it("shows Retry when import failed and does not show blank analyzing forever", () => {
+    const form = emptyOnboardingForm();
+    form.careerProfileMode = "upload";
+    render(
+      <StepCareerProfile
+        form={form}
+        onChange={() => undefined}
+        errors={{}}
+        importStatus="failed"
+        uploading={false}
+        onUpload={() => undefined}
+        onRetryImport={() => undefined}
+        statusMessage="Could not load résumé import status"
+        importErrorCode="IMPORT_STATUS_FAILED"
+      />,
+    );
+    expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+    expect(screen.queryByText(/Structuring career details/i)).toBeNull();
   });
 });

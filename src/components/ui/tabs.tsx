@@ -75,20 +75,26 @@ export function Switch({
   checked,
   onCheckedChange,
   id,
+  disabled,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
 }: {
   checked?: boolean;
   onCheckedChange?: (v: boolean) => void;
   id?: string;
+  disabled?: boolean;
   "aria-label"?: string;
+  "aria-describedby"?: string;
 }) {
   return (
     <SwitchPrimitive.Root
       id={id}
       checked={checked}
+      disabled={disabled}
       onCheckedChange={onCheckedChange}
       aria-label={ariaLabel}
-      className="peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border border-border-strong bg-surface-2 transition-colors data-[state=checked]:bg-accent"
+      aria-describedby={ariaDescribedBy}
+      className="peer inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border border-border-strong bg-surface-2 transition-colors data-[state=checked]:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
     >
       <SwitchPrimitive.Thumb className="pointer-events-none block h-4 w-4 translate-x-1 rounded-full bg-white shadow transition-transform data-[state=checked]:translate-x-5" />
     </SwitchPrimitive.Root>

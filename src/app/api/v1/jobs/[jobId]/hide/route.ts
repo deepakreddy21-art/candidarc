@@ -16,7 +16,7 @@ export async function POST(request: Request, { params }: Params) {
     requestId = ctx.requestId;
     requireUser(ctx);
     const runtime = await getRuntime();
-    const hidden = getRadarService(runtime.services.radar).hide(ctx, jobId);
+    const hidden = await getRadarService(runtime.services.radar).hide(ctx, jobId);
     return jsonOk({ hidden }, { status: 201 });
   } catch (err) {
     return jsonError(err, requestId || undefined);
@@ -32,7 +32,7 @@ export async function DELETE(request: Request, { params }: Params) {
     requestId = ctx.requestId;
     requireUser(ctx);
     const runtime = await getRuntime();
-    const result = getRadarService(runtime.services.radar).unhide(ctx, jobId);
+    const result = await getRadarService(runtime.services.radar).unhide(ctx, jobId);
     return jsonOk(result);
   } catch (err) {
     return jsonError(err, requestId || undefined);

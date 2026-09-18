@@ -29,8 +29,8 @@ import type {
   RadarStore,
 } from "./types";
 
-function newId(prefix: string): string {
-  return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+function newId(): string {
+  return randomUUID();
 }
 
 /**
@@ -326,7 +326,7 @@ export class MemoryRadarStore implements RadarStore {
   }
 
   async createInteraction(interaction: JobInteraction): Promise<JobInteraction> {
-    const withId = { ...interaction, id: interaction.id || newId("int") };
+    const withId = { ...interaction, id: interaction.id || newId() };
     this.interactions.push(withId);
     return withId;
   }

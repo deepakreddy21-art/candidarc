@@ -1,11 +1,12 @@
 "use client";
 
-import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { product } from "@/config/product";
+
+const BILLING_BLOCKED_REASON = "Billing portal is not configured in this environment. No charges are available.";
 
 export default function BillingSettingsPage() {
   return (
@@ -15,17 +16,29 @@ export default function BillingSettingsPage() {
         <CardHeader>
           <div className="flex flex-wrap items-center gap-2">
             <CardTitle>Pro · monthly</CardTitle>
-            <Badge tone="success">Active</Badge>
+            <Badge tone="success">Demo</Badge>
           </div>
           <CardDescription>Unlimited opportunities, sequential audits, Radar, and Application Copilot.</CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button type="button" onClick={() => toast.message("Opening billing portal")}>
-            Manage billing
-          </Button>
-          <Button type="button" variant="secondary" onClick={() => toast.success("Invoice emailed")}>
-            Download latest invoice
-          </Button>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-foreground-secondary">{BILLING_BLOCKED_REASON}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" disabled title={BILLING_BLOCKED_REASON} aria-describedby="billing-unavailable">
+              Manage billing
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled
+              title={BILLING_BLOCKED_REASON}
+              aria-describedby="billing-unavailable"
+            >
+              Download latest invoice
+            </Button>
+          </div>
+          <p id="billing-unavailable" className="text-xs text-foreground-muted">
+            {BILLING_BLOCKED_REASON}
+          </p>
         </CardContent>
       </Card>
       <Card>
@@ -33,9 +46,9 @@ export default function BillingSettingsPage() {
           <CardTitle>Usage this period</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-3 text-sm">
-          <Usage label="Applications" value="3" />
-          <Usage label="Audit cycles" value="4" />
-          <Usage label="Copilot packages" value="1" />
+          <Usage label="Applications" value="—" />
+          <Usage label="Audit cycles" value="—" />
+          <Usage label="Copilot packages" value="—" />
         </CardContent>
       </Card>
     </div>

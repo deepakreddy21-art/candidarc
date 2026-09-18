@@ -66,39 +66,80 @@ export interface CandidateProfile {
   modelImprovementOptIn?: boolean;
   resumeImportStatus?: string | null;
   version?: number;
+  onboardingFlowVersion?: number;
 }
 
 export type ResumeImportExtraction = {
+  schemaVersion?: 1 | 2;
   contact?: {
     fullName?: string;
+    firstName?: string;
+    middleName?: string;
+    lastName?: string;
     email?: string;
+    emails?: string[];
     phone?: string;
+    phones?: string[];
     location?: string;
     linkedIn?: string;
     github?: string;
     portfolio?: string;
+    otherUrls?: string[];
   };
+  professionalSummary?: string;
   employment: Array<{
     title?: string;
     company?: string;
     location?: string;
     startDate?: string;
     endDate?: string;
+    isCurrent?: boolean;
     bullets: string[];
+    technologies?: string[];
+    sourceOrder?: number;
   }>;
   education: Array<{
     institution?: string;
     degree?: string;
     field?: string;
+    location?: string;
+    startDate?: string;
     endDate?: string;
+    gpa?: string;
+    honors?: string;
   }>;
   projects: Array<{
     name?: string;
+    role?: string;
+    organization?: string;
+    startDate?: string;
+    endDate?: string;
     description?: string;
+    bullets?: string[];
     technologies: string[];
+    url?: string;
+    repoUrl?: string;
   }>;
   skills: string[];
+  skillGroups?: Array<{ category: string; skills: string[] }>;
   certifications: string[];
+  certificationEntries?: Array<{
+    name: string;
+    issuer?: string;
+    issueDate?: string;
+    expirationDate?: string;
+    credentialId?: string;
+    credentialUrl?: string;
+  }>;
+  publications?: Array<{
+    title: string;
+    authors?: string[];
+    publisher?: string;
+    publicationDate?: string;
+    doi?: string;
+    url?: string;
+    description?: string;
+  }>;
   evidence: Array<{
     title: string;
     summary: string;
@@ -106,7 +147,12 @@ export type ResumeImportExtraction = {
   }>;
   rawText?: string;
   parseWarnings?: string[];
+  pageCount?: number;
+  extractionQuality?: "high" | "medium" | "low";
+  missingFields?: string[];
+  usable?: boolean;
   error?: string;
+  errorCode?: string;
 };
 
 export interface JobDescription {
@@ -321,6 +367,27 @@ export interface Application {
   nextAction: string;
   archived: boolean;
   roleFamily: string;
+  /** Candidate-facing application tracker status (presentation). */
+  candidateStatus?:
+    | "Saved"
+    | "Ready to apply"
+    | "Applied"
+    | "Interviewing"
+    | "Offer"
+    | "Rejected"
+    | "Withdrawn";
+  /** Optimistic concurrency token for status updates. */
+  version?: number;
+  /** Latest customer resume workflow public id for deep links. */
+  workflowId?: string;
+  notes?: string;
+  contacts?: Array<{ name: string; role?: string; email?: string; url?: string }>;
+  appliedAt?: string;
+  followUpAt?: string;
+  interviewAt?: string;
+  interviewTimezone?: string;
+  coverLetter?: string;
+  outreachDraft?: string;
 }
 
 export interface ActivityEvent {

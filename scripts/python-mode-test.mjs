@@ -124,6 +124,7 @@ try {
     "src/test/python-mode-generate.test.ts",
     "src/test/python-intelligence-client.test.ts",
     "src/test/python-mode-pipeline-journey.test.ts",
+    "src/test/onboarding-resume-import-journey.test.ts",
   ]);
   if (phase1 !== 0) shutdown(phase1);
 

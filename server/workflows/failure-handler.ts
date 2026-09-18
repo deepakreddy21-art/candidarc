@@ -29,7 +29,12 @@ export const CUSTOMER_QUEUE_FAILURE_MESSAGE =
 export const DOCUMENT_PREPARATION_STALE_MS = 3 * 60 * 1000;
 
 function safeErrorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error && typeof (error as { code: unknown }).code === "string") {
+    const code = (error as { code: string }).code;
+    if (/^[A-Z][A-Z0-9_]{2,48}$/.test(code)) return code;
+  }
   if (error instanceof Error) {
+    if (/PDF_RENDER_FAILED/i.test(error.message)) return "PDF_RENDER_FAILED";
     if (/PDF content verification failed/i.test(error.message)) return "PDF_CONTENT_VERIFICATION_FAILED";
     if (/startxref/i.test(error.message)) return "PDF_INVALID_XREF";
     const code = error.message.match(/^[A-Z][A-Z0-9_]{2,48}$/)?.[0];

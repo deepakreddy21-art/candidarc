@@ -43,7 +43,7 @@ import {
 } from "./final-qa";
 import type { QueueAdapter } from "./queues";
 import { extractTechQuestions, hasUnansweredTechQuestions, type TechQuestion } from "../resumes/tech-questions";
-import { computeCandidArcQualityScore } from "../resumes/quality-score";
+import { attachQualityProvenance, computeCandidArcQualityScore, qualityContactFromSnapshot } from "../resumes/quality-score";
 import {
   applyJobExtractionToApplication,
   fetchJobDescriptionFromUrl,
@@ -1359,7 +1359,7 @@ export class ResumePipeline {
         applicationId: run.applicationId,
         applicationPublicId: run.applicationPublicId,
         title: `${run.applicationPublicId} resume`,
-        templateId: "alumni-clean",
+        templateId: "candidarc-ats-v1",
         length: "one-page",
         currentVersionPublicId: null,
       });
@@ -2019,16 +2019,29 @@ export class ResumePipeline {
       nextAction: "Export resume",
       metadata: {
         ...(application?.metadata ?? {}),
-        qualityReport: computeCandidArcQualityScore({
-          sections: latest.sections as Array<Record<string, unknown>>,
-          jobRequirements: Array.isArray(application?.metadata?.jobRequirements)
-            ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
-            : [],
-          knownTechnologies,
-          pageCount: result.estimatedPages,
-          aiRoleAlignment: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.jobAlignment ?? latest.score),
-          aiAtsReadability: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.atsCompatibility),
-        }),
+        qualityReport: attachQualityProvenance(
+          computeCandidArcQualityScore({
+            sections: latest.sections as Array<Record<string, unknown>>,
+            contact: qualityContactFromSnapshot({
+              metadata: application?.metadata as Record<string, unknown> | undefined,
+              location: application?.location,
+            }),
+            jobRequirements: Array.isArray(application?.metadata?.jobRequirements)
+              ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
+              : [],
+            knownTechnologies,
+            pageCount: result.estimatedPages,
+            aiRoleAlignment: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.jobAlignment ?? latest.score),
+            aiAtsReadability: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.atsCompatibility),
+          }),
+          {
+            versionPublicId: latest.publicId,
+            contact: qualityContactFromSnapshot({
+              metadata: application?.metadata as Record<string, unknown> | undefined,
+              location: application?.location,
+            }),
+          },
+        ),
         knownTechnologies,
       },
     });

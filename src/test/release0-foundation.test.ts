@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEMO_SESSION_SECRET, getEnv, resetEnvCache } from "../../server/config/env";
+import { DEMO_SESSION_SECRET, getEnv, getMigrationEnv, resetEnvCache } from "../../server/config/env";
 import { BullMqQueueAdapter, InProcessQueueAdapter } from "../../server/workflows/queues";
 import { runDeterministicFinalQa } from "../../server/workflows/final-qa";
 import { allowDemoFallback, api, ApiError } from "@/services/api";
@@ -38,6 +38,19 @@ describe("Release 0 production foundation", () => {
         ...unsafe,
       }),
     ).toThrow(/Unsafe production runtime/);
+  });
+
+  it("allows postgres without redis for migrations but not for app runtime", () => {
+    const migrateSafe = {
+      CANDIDARC_DATA_MODE: "postgres",
+      DATABASE_URL: "postgres://candidarc:candidarc@localhost:5432/candidarc_test",
+      QUEUE_BACKEND: "inprocess",
+      APP_MODE: "demo",
+      AI_MODE: "mock",
+    };
+    expect(() => getEnv(migrateSafe)).toThrow(/Incompatible configuration/);
+    expect(() => getMigrationEnv(migrateSafe)).not.toThrow();
+    expect(getMigrationEnv(migrateSafe).CANDIDARC_DATA_MODE).toBe("postgres");
   });
 
   it("disables demo fallback explicitly in production", () => {

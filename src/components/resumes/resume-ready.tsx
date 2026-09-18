@@ -1,18 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Download, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { ResumeDocument } from "@/types/resume-document";
 import { buildResumeDocument } from "@/lib/resume-document";
-import type { ResumeSection } from "@/types/domain";
 import { ResumePreview } from "./resume-preview";
 import { RefinePanel } from "./refine-panel";
 import { VersionHistory } from "./version-history";
 import { QualityReport } from "./quality-report";
+import { AskPanel } from "@/components/assistant/ask-panel";
 
 type ReadyData = {
   workflowId: string;
@@ -20,7 +21,9 @@ type ReadyData = {
   resume?: {
     versionLabel: string;
     previewHtml?: string;
-    sections?: ResumeSection[];
+    /** Canonical document including contact — preferred over reconstructing from sections. */
+    document?: ResumeDocument;
+    sections?: unknown[];
     role?: string;
     company?: string;
     candidateName?: string;
@@ -36,21 +39,35 @@ type ReadyData = {
     remainingSkillGaps?: string[];
   };
   downloads: { pdfReady: boolean; docxReady: boolean };
+  documentRetryAvailable?: boolean;
   enhancementAvailable?: boolean;
 };
 
-export function ResumeReady({ data }: { data: ReadyData }) {
+export function ResumeReady({
+  data,
+  onRetryDocuments,
+  retryingDocuments,
+}: {
+  data: ReadyData;
+  onRetryDocuments?: () => void;
+  retryingDocuments?: boolean;
+}) {
   const router = useRouter();
   const [enhancing, setEnhancing] = useState(false);
+  const [selectedText, setSelectedText] = useState("");
+  const [compareId, setCompareId] = useState<string | undefined>(data.versions?.[1]?.id);
 
-  const resumeDoc = data.resume?.sections?.length
-    ? buildResumeDocument({
-        sections: data.resume.sections,
-        candidateName: data.resume.candidateName ?? "Candidate",
-        role: data.resume.role ?? "Target role",
-        company: data.resume.company ?? "Target company",
-      })
-    : null;
+  const resumeDoc = useMemo(() => {
+    if (data.resume?.document) return data.resume.document;
+    const sections = data.resume?.sections;
+    if (!Array.isArray(sections) || sections.length === 0) return null;
+    return buildResumeDocument({
+      sections,
+      candidateName: data.resume?.candidateName ?? "Candidate",
+      role: data.resume?.role ?? "",
+      company: data.resume?.company ?? "",
+    });
+  }, [data.resume]);
 
   async function enhance() {
     setEnhancing(true);
@@ -104,6 +121,16 @@ export function ResumeReady({ data }: { data: ReadyData }) {
               Download Word
             </a>
           </Button>
+          {data.documentRetryAvailable && !data.downloads.pdfReady ? (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => onRetryDocuments?.()}
+              disabled={retryingDocuments || !onRetryDocuments}
+            >
+              {retryingDocuments ? "Retrying PDF…" : "Retry PDF"}
+            </Button>
+          ) : null}
           <Button asChild variant="ghost">
             <Link href="/app/opportunities">View applications</Link>
           </Button>
@@ -115,7 +142,14 @@ export function ResumeReady({ data }: { data: ReadyData }) {
         </CardHeader>
         <CardContent>
           {resumeDoc ? (
-            <ResumePreview document={resumeDoc} />
+            <div
+              onMouseUp={() => {
+                const text = window.getSelection()?.toString().trim() ?? "";
+                if (text.length >= 8) setSelectedText(text);
+              }}
+            >
+              <ResumePreview document={resumeDoc} />
+            </div>
           ) : data.resume?.previewHtml ? (
             <iframe
               title="Resume preview"
@@ -128,9 +162,23 @@ export function ResumeReady({ data }: { data: ReadyData }) {
         </CardContent>
       </Card>
       <div className="grid gap-5 lg:grid-cols-2">
-        <RefinePanel workflowId={data.workflowId} />
-        <VersionHistory versions={data.versions ?? []} />
+        <RefinePanel workflowId={data.workflowId} selectedText={selectedText} />
+        <VersionHistory
+          versions={data.versions ?? []}
+          currentId={data.versions?.[0]?.id}
+          onRestore={(id) => {
+            const label = data.versions?.find((v) => v.id === id)?.label ?? "prior version";
+            toast.message(`Prior versions stay immutable. Comparing against ${label}. Create a new version if you want that snapshot again.`);
+            setCompareId(id);
+          }}
+        />
       </div>
+      {compareId && data.versions?.length ? (
+        <p className="text-xs text-foreground-muted">
+          Comparing against {data.versions.find((v) => v.id === compareId)?.label ?? "a prior version"}. Downloads always use the latest checked document.
+        </p>
+      ) : null}
+      <AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />
       <QualityReport report={data.qualityReport} />
     </div>
   );

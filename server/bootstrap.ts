@@ -1,6 +1,5 @@
 import { getEnv, isFeatureCopilotEnabled, isFeatureRadarEnabled } from "./config/env";
 import {
-  type ApplicationRecord,
   type AuditFindingRecord,
   type AuditRunRecord,
   type CandidateProfileRecord,
@@ -14,6 +13,8 @@ import {
 } from "./database/repositories";
 import { seedDemoAppsIntoMemory, getDemoExtras } from "./database/seed-demo-apps";
 import { ApplicationsService } from "./modules/applications/service";
+import { NotificationsService } from "./modules/notifications/service";
+import { AssistantService } from "./modules/assistant/service";
 import { ResearchService } from "./modules/research/service";
 import { EvidenceService } from "./modules/evidence/service";
 import { ResumesService } from "./modules/resumes/service";
@@ -25,19 +26,16 @@ import { getStorage } from "./storage";
 import { DbWorkflowEngine } from "./workflows/engine";
 import { getQueueAdapter, type QueueAdapter } from "./workflows/queues";
 import { ResumePipeline } from "./workflows/resume-pipeline";
-import { handleWorkflowJobExhausted, type WorkflowJobPayload } from "./workflows/failure-handler";
+import { handleWorkflowJobExhausted, CUSTOMER_DOCUMENT_FAILURE_MESSAGE, type WorkflowJobPayload } from "./workflows/failure-handler";
 import { stageMatchesJobClaim } from "./workflows/stages";
 import { logger } from "./observability/logger";
-import type { WorkflowStage as BackendStage } from "./domain/types";
+import { AppError } from "./domain/types";
 import type {
-  Application,
-  ApplicationStatus,
   Audit,
   AuditFinding,
   CandidateProfile,
   EvidenceItem,
   Resume,
-  WorkflowStage,
 } from "@/types/domain";
 import { ProfileService } from "./modules/profile/service";
 import { ResumeImportService } from "./modules/resumes/import-service";
@@ -46,7 +44,7 @@ import { RadarService } from "./radar/service";
 import { registerRadarQueueHandlers } from "./radar/queues";
 import { CopilotService } from "./copilot/service";
 import { CustomerGenerateService } from "./modules/resumes/customer-generate";
-import { renderPdfAndDocx } from "./resumes/document-renderer";
+import { PdfRenderFailedError, renderPdfAndDocx } from "./resumes/document-renderer";
 
 export type RuntimeServices = {
   applications: ApplicationsService;
@@ -62,6 +60,8 @@ export type RuntimeServices = {
   radar: RadarService | null;
   copilot: CopilotService | null;
   customerResumes: CustomerGenerateService;
+  notifications: NotificationsService;
+  assistant: AssistantService;
 };
 
 export type Runtime = {
@@ -96,70 +96,7 @@ const WORKFLOW_QUEUES = [
   "resume-audit",
 ] as const;
 
-const BACKEND_TO_UI_STAGE: Record<string, WorkflowStage> = {
-  APPLICATION_CREATED: "research",
-  RESEARCH_QUEUED: "research",
-  RESEARCH_RUNNING: "research",
-  RESEARCH_REVIEW_REQUIRED: "research",
-  RESEARCH_COMPLETED: "research",
-  EVIDENCE_MATCHING_RUNNING: "evidence-match",
-  EVIDENCE_MATCHING_COMPLETED: "evidence-match",
-  V0_GENERATING: "resume-v0",
-  V0_READY: "resume-v0",
-  HR_AUDIT_1_RUNNING: "hr-audit-1",
-  HR_AUDIT_1_REVIEW: "hr-audit-1",
-  V1_GENERATING: "resume-v1",
-  V1_READY: "resume-v1",
-  EM_AUDIT_1_RUNNING: "em-audit-1",
-  EM_AUDIT_1_REVIEW: "em-audit-1",
-  V2_GENERATING: "resume-v2",
-  V2_READY: "resume-v2",
-  HR_AUDIT_2_RUNNING: "hr-audit-2",
-  HR_AUDIT_2_REVIEW: "hr-audit-2",
-  V3_GENERATING: "resume-v3",
-  V3_READY: "resume-v3",
-  EM_AUDIT_2_RUNNING: "em-audit-2",
-  EM_AUDIT_2_REVIEW: "em-audit-2",
-  V4_GENERATING: "resume-v4",
-  V4_READY: "resume-v4",
-  FINAL_QA_RUNNING: "final-qa",
-  FINAL_QA_FAILED: "final-qa",
-  FINAL_READY: "ready",
-  CANCELLED: "ready",
-  FAILED: "ready",
-};
-
-export function mapBackendStageToUi(stage: BackendStage | string): WorkflowStage {
-  return BACKEND_TO_UI_STAGE[stage] ?? "research";
-}
-
-export function mapApplicationToUi(app: ApplicationRecord): Application {
-  const status = (app.archived ? "archived" : app.status) as ApplicationStatus;
-  return {
-    id: app.publicId,
-    company: app.company,
-    companyMark: app.companyMark,
-    role: app.role,
-    location: app.location,
-    employmentType: app.employmentType,
-    createdAt: app.createdAt,
-    updatedAt: app.updatedAt,
-    deadline: app.deadline,
-    status,
-    stage: mapBackendStageToUi(app.stage),
-    resumeScore: app.resumeScore,
-    evidenceCoverage: app.evidenceCoverage,
-    atsAlignment: app.atsAlignment,
-    interviewStatus: app.interviewStatus as Application["interviewStatus"],
-    researchConfidence: app.researchConfidence,
-    ownerProfileId: "cand-deepak",
-    jobDescriptionId: app.jobDescriptionPublicId ?? "jd-cisco",
-    resumeId: app.resumePublicId ?? "resume-cisco",
-    nextAction: app.nextAction,
-    archived: app.archived,
-    roleFamily: app.roleFamily,
-  };
-}
+export { mapApplicationToUi, mapBackendStageToUi } from "./mappers/application-ui";
 
 export function mapProfileToUi(p: CandidateProfileRecord): CandidateProfile {
   return {
@@ -196,6 +133,10 @@ export function mapProfileToUi(p: CandidateProfileRecord): CandidateProfile {
     modelImprovementOptIn: p.modelImprovementOptIn,
     resumeImportStatus: p.resumeImportStatus,
     version: p.version,
+    onboardingFlowVersion:
+      typeof (p.resumeImportExtraction as { onboardingFlowVersion?: number } | null)?.onboardingFlowVersion === "number"
+        ? (p.resumeImportExtraction as { onboardingFlowVersion?: number }).onboardingFlowVersion
+        : undefined,
   };
 }
 
@@ -381,6 +322,30 @@ async function buildRuntime(): Promise<Runtime> {
   const pipeline = ResumePipeline.fromRepos(repos, engine, queue);
 
   queue.onExhaustedRetries(async (job, error) => {
+    if (
+      (job.queue === "document-parsing" && job.name === "resume.extract") ||
+      (job.queue === "maintenance" && job.name === "files.malware_scan")
+    ) {
+      const payload = job.payload as { tenantId?: string; filePublicId?: string };
+      if (payload.tenantId && payload.filePublicId) {
+        const importService = ResumeImportService.fromRepos(repos, getStorage(), queue);
+        const code =
+          error instanceof AppError
+            ? error.code
+            : job.queue === "maintenance"
+              ? "MALWARE_SCAN_FAILED"
+              : "PARSE_FAILED";
+        await importService.markImportFailed(
+          payload.tenantId,
+          payload.filePublicId,
+          code,
+          job.queue === "maintenance"
+            ? "Security scanning could not finish. Please try uploading again."
+            : "We couldn’t finish reading your resume. Please try again or enter details manually.",
+        );
+      }
+      return;
+    }
     await handleWorkflowJobExhausted(repos, engine, job, error);
   });
 
@@ -410,7 +375,15 @@ async function buildRuntime(): Promise<Runtime> {
   }
 
   queue.registerHandler("pdf-rendering", async (job) => {
-    const payload = job.payload as { tenantId?: string; applicationId?: string; applicationPublicId?: string; versionId?: string; versionPublicId?: string; ownerUserId?: string };
+    const payload = job.payload as {
+      tenantId?: string;
+      applicationId?: string;
+      applicationPublicId?: string;
+      versionId?: string;
+      versionPublicId?: string;
+      ownerUserId?: string;
+      formats?: Array<"pdf" | "docx">;
+    };
     const tenantId = payload.tenantId;
     const applicationPublicId = payload.applicationId ?? payload.applicationPublicId;
     const versionPublicId = payload.versionId ?? payload.versionPublicId;
@@ -420,6 +393,18 @@ async function buildRuntime(): Promise<Runtime> {
     const app = await repos.applications.getByPublicId(tenantId, applicationPublicId);
     const version = await repos.resumes.getVersion(tenantId, versionPublicId);
     if (!app || !version) throw new Error("Document rendering source not found");
+    const existingFiles =
+      app.metadata?.customerFiles && typeof app.metadata.customerFiles === "object"
+        ? (app.metadata.customerFiles as Record<string, unknown>)
+        : {};
+    const priorPending = Array.isArray(existingFiles.pendingFormats)
+      ? (existingFiles.pendingFormats as unknown[]).filter((f): f is "pdf" | "docx" => f === "pdf" || f === "docx")
+      : [];
+    const formats = payload.formats?.length
+      ? payload.formats
+      : priorPending.length
+        ? priorPending
+        : (["pdf", "docx"] as Array<"pdf" | "docx">);
     const rendered = await renderPdfAndDocx({
       resumeVersion: version,
       candidateName: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : "Candidate",
@@ -427,6 +412,7 @@ async function buildRuntime(): Promise<Runtime> {
       company: app.company,
       tenantId,
       applicationId: app.publicId,
+      formats,
       contact: {
         name: typeof app.metadata?.candidateName === "string" ? app.metadata.candidateName : undefined,
         email: typeof app.metadata?.candidateEmail === "string" ? app.metadata.candidateEmail : undefined,
@@ -442,22 +428,20 @@ async function buildRuntime(): Promise<Runtime> {
     const pdfStorageKey = `generated/${ownerSegment}/${applicationPublicId}/${versionSegment}/resume.pdf`;
     const docxStorageKey = `generated/${ownerSegment}/${applicationPublicId}/${versionSegment}/resume.docx`;
     const storage = getStorage();
-    await Promise.all([
-      storage.putObject({
+
+    const nextFiles: Record<string, unknown> = { ...existingFiles };
+    if (typeof rendered.pageCount === "number" && rendered.pageCount > 0) {
+      nextFiles.pageCount = rendered.pageCount;
+    }
+
+    if (rendered.pdfBuffer) {
+      await storage.putObject({
         tenantId,
         key: pdfStorageKey,
         body: rendered.pdfBuffer,
         contentType: "application/pdf",
-      }),
-      storage.putObject({
-        tenantId,
-        key: docxStorageKey,
-        body: rendered.docxBuffer,
-        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      }),
-    ]);
-    await Promise.all([
-      repos.files.create({
+      });
+      await repos.files.create({
         id: newId("sf"),
         publicId: rendered.pdfFileId,
         tenantId,
@@ -468,8 +452,22 @@ async function buildRuntime(): Promise<Runtime> {
         size: rendered.pdfBuffer.byteLength,
         scanStatus: "clean",
         retentionState: "active",
-      }),
-      repos.files.create({
+      });
+      nextFiles.pdfFileId = rendered.pdfFileId;
+      nextFiles.pdfStorageKey = pdfStorageKey;
+      nextFiles.pdfError = undefined;
+    } else if (formats.includes("pdf")) {
+      nextFiles.pdfError = rendered.pdfError ?? "PDF_RENDER_FAILED";
+    }
+
+    if (rendered.docxBuffer) {
+      await storage.putObject({
+        tenantId,
+        key: docxStorageKey,
+        body: rendered.docxBuffer,
+        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+      await repos.files.create({
         id: newId("sf"),
         publicId: rendered.docxFileId,
         tenantId,
@@ -480,31 +478,107 @@ async function buildRuntime(): Promise<Runtime> {
         size: rendered.docxBuffer.byteLength,
         scanStatus: "clean",
         retentionState: "active",
-      }),
-    ]);
+      });
+      nextFiles.docxFileId = rendered.docxFileId;
+      nextFiles.docxStorageKey = docxStorageKey;
+      nextFiles.docxError = undefined;
+    } else if (formats.includes("docx")) {
+      nextFiles.docxError = rendered.docxError ?? "DOCX_RENDER_FAILED";
+    }
+
+    const pendingFormats: Array<"pdf" | "docx"> = [];
+    if (formats.includes("pdf") && !rendered.pdfBuffer) pendingFormats.push("pdf");
+    if (formats.includes("docx") && !rendered.docxBuffer) pendingFormats.push("docx");
+    nextFiles.pendingFormats = pendingFormats.length ? pendingFormats : undefined;
+
     const finals = Array.isArray(app.metadata?.customerFinalVersions)
       ? app.metadata.customerFinalVersions.filter((item): item is string => typeof item === "string")
       : [];
+    const pdfReady = Boolean(nextFiles.pdfStorageKey) && !nextFiles.pdfError;
+    const docxReady = Boolean(nextFiles.docxStorageKey) && !nextFiles.docxError;
+    const bothReady = pdfReady && docxReady;
+
+    if (bothReady) {
+      await repos.applications.update(tenantId, app.publicId, {
+        status: "ready",
+        stage: "FINAL_READY",
+        workflowStage: "FINAL_READY",
+        nextAction: "Download resume",
+        metadata: {
+          ...app.metadata,
+          documentRenderFailed: undefined,
+          customerError: undefined,
+          documentRenderErrorClass: undefined,
+          documentRenderFailedAt: undefined,
+          failedAtStage: undefined,
+          customerFiles: nextFiles,
+          customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
+        },
+      });
+      logger.info({ jobId: job.id, applicationPublicId, versionPublicId, pageCount: rendered.pageCount }, "resume documents rendered");
+      return;
+    }
+
+    const anyReady = pdfReady || docxReady;
+    if (anyReady && pendingFormats.length) {
+      await repos.applications.update(tenantId, app.publicId, {
+        status: "ready",
+        stage: "FINAL_READY",
+        workflowStage: "FINAL_READY",
+        nextAction: "Preparing downloads",
+        metadata: {
+          ...app.metadata,
+          documentRenderFailed: undefined,
+          customerError: undefined,
+          documentRenderErrorClass: undefined,
+          documentRenderFailedAt: undefined,
+          failedAtStage: undefined,
+          customerFiles: nextFiles,
+          customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
+        },
+      });
+      await queue.enqueue(
+        "pdf-rendering",
+        "customer-resume.render.retry",
+        {
+          tenantId,
+          applicationId: applicationPublicId,
+          applicationPublicId,
+          versionId: versionPublicId,
+          versionPublicId,
+          ownerUserId: app.ownerUserId ?? payload.ownerUserId,
+          formats: pendingFormats,
+        },
+        {
+          idempotencyKey: `customer-render-retry:${applicationPublicId}:${versionPublicId}:${pendingFormats.sort().join("+")}`,
+          delayMs: 5_000,
+        },
+      );
+      throw new PdfRenderFailedError(rendered.pdfError ?? "PDF_RENDER_FAILED", {
+        pendingFormats,
+        partialSuccess: true,
+        docxError: rendered.docxError,
+      });
+    }
+
+    const errorClass = rendered.pdfError ?? rendered.docxError ?? "PDF_RENDER_FAILED";
     await repos.applications.update(tenantId, app.publicId, {
-      status: "ready",
-      nextAction: "Download resume",
+      status: "failed",
+      stage: "FAILED",
+      workflowStage: "FAILED",
+      nextAction: "Retry Generation",
       metadata: {
         ...app.metadata,
-        documentRenderFailed: undefined,
-        customerError: undefined,
-        documentRenderErrorClass: undefined,
-        documentRenderFailedAt: undefined,
-        customerFiles: {
-          pdfFileId: rendered.pdfFileId,
-          docxFileId: rendered.docxFileId,
-          pdfStorageKey,
-          docxStorageKey,
-          pageCount: rendered.pageCount,
-        },
+        documentRenderFailed: true,
+        customerError: CUSTOMER_DOCUMENT_FAILURE_MESSAGE,
+        documentRenderErrorClass: errorClass,
+        documentRenderFailedAt: new Date().toISOString(),
+        failedAtStage: "FINAL_QA_RUNNING",
+        customerFiles: nextFiles,
         customerFinalVersions: finals.includes(version.publicId) ? finals : [...finals, version.publicId],
       },
     });
-    logger.info({ jobId: job.id, applicationPublicId, versionPublicId }, "resume documents rendered");
+    throw new PdfRenderFailedError(errorClass, { pendingFormats });
   });
 
   const storage = getStorage();
@@ -533,7 +607,60 @@ async function buildRuntime(): Promise<Runtime> {
     if (env.APP_MODE === "demo") {
       seedDemoCatalog();
     }
-    radar = RadarService.create(applications, repos, customerResumes);
+    let radarStore: import("./radar/persistence/types").RadarStore | undefined;
+    if (env.CANDIDARC_DATA_MODE === "postgres") {
+      const { getDb } = await import("./database/client");
+      const db = getDb();
+      if (db) {
+        const { createPostgresRadarStore } = await import("./radar/persistence/postgres-store");
+        radarStore = createPostgresRadarStore(db);
+      }
+    }
+    radar = RadarService.create(applications, repos, customerResumes, radarStore);
+    if (radarStore?.hydrateCatalog) {
+      try {
+        const hydrated = await radarStore.hydrateCatalog();
+        radar.catalog.applyHydratedSnapshot(hydrated);
+        radar.index.reindexAll();
+        if (
+          hydrated.jobs.length > 0 ||
+          (hydrated.savedJobs?.length ?? 0) > 0 ||
+          (hydrated.hiddenJobs?.length ?? 0) > 0 ||
+          (hydrated.savedSearches?.length ?? 0) > 0 ||
+          (hydrated.alerts?.length ?? 0) > 0
+        ) {
+          logger.info(
+            {
+              jobs: hydrated.jobs.length,
+              companies: hydrated.companies.length,
+              savedJobs: hydrated.savedJobs?.length ?? 0,
+              hiddenJobs: hydrated.hiddenJobs?.length ?? 0,
+              savedSearches: hydrated.savedSearches?.length ?? 0,
+              alerts: hydrated.alerts?.length ?? 0,
+            },
+            "radar catalog hydrated from postgres",
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, "radar postgres hydrate skipped");
+      }
+    }
+    if (radarStore?.syncCatalog && env.APP_MODE === "demo") {
+      try {
+        await radarStore.syncCatalog({
+          companies: [...radar.catalog.companies.values()],
+          sources: [...radar.catalog.sources.values()],
+          jobs: [...radar.catalog.canonicalJobs.values()],
+          sightings: [...radar.catalog.sightings.values()],
+        });
+        logger.info(
+          { jobs: radar.catalog.canonicalJobs.size },
+          "radar catalog synced to postgres",
+        );
+      } catch (err) {
+        logger.warn({ err }, "radar postgres sync skipped");
+      }
+    }
     registerRadarQueueHandlers(queue, radar.catalog, radar.index);
     void queue.enqueue("job-indexing", "radar-reindex", { reason: "bootstrap" });
     void queue.enqueue("job-alerting", "radar-alerts-sweep", { reason: "bootstrap" });
@@ -555,6 +682,8 @@ async function buildRuntime(): Promise<Runtime> {
     radar,
     copilot,
     customerResumes,
+    notifications: new NotificationsService(),
+    assistant: new AssistantService(),
   };
 
   if (mode === "memory" && env.QUEUE_BACKEND === "inprocess" && !queueDrainStarted) {

@@ -6,7 +6,6 @@ import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/app/settings", label: "Overview", exact: true },
-  { href: "/app/settings/profile", label: "Profile" },
   { href: "/app/settings/preferences", label: "Preferences" },
   { href: "/app/settings/integrations", label: "Integrations" },
   { href: "/app/settings/privacy", label: "Privacy" },

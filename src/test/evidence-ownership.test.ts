@@ -212,6 +212,15 @@ describe("evidence ownership", () => {
     const service = new CustomerGenerateService(repos, new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter()), getStorage());
     const ctx = context(userId, tenantId, repos);
 
+    await repos.candidateProfiles.update(tenantId, userId, {
+      resumeImportExtraction: null,
+      resumeImportStatus: null,
+    });
+    const leftover = await repos.evidence.list(tenantId, { ownerUserId: userId });
+    for (const item of leftover) {
+      await repos.evidence.softDelete(tenantId, item.publicId);
+    }
+
     await expect(
       service.generate(ctx, {
         jobDescription: "Requires production experience with distributed systems and APIs.",
@@ -221,6 +230,46 @@ describe("evidence ownership", () => {
       code: "PROFILE_EVIDENCE_REQUIRED",
       status: 422,
     } satisfies Partial<AppError>);
+  });
+
+  it("starts generation after onboarding materializes career evidence", async () => {
+    resetStorage();
+    const store = createEmptyMemoryStore();
+    const { repos, userId, tenantId } = await ensureDemoUser(store);
+    const ctx = context(userId, tenantId, repos);
+    const profileService = ProfileService.fromRepos(repos);
+    let profile = await profileService.getOrCreate(ctx);
+    await repos.evidence.list(tenantId, { ownerUserId: userId }).then(async (items) => {
+      for (const item of items) await repos.evidence.softDelete(tenantId, item.publicId);
+    });
+    profile = await profileService.updateOnboarding(ctx, {
+      expectedVersion: profile.version,
+      step: 3,
+      data: {
+        targetRoles: ["Platform Engineer"],
+        seniority: "senior",
+        jobTypes: ["full-time"],
+        workplaceModes: ["remote"],
+        fullName: "Ada Lovelace",
+        skills: ["TypeScript"],
+        employment: [{ title: "Engineer", company: "Example Co", bullets: ["Shipped APIs"] }],
+        careerProfileMode: "manual",
+      },
+    });
+    await profileService.updateOnboarding(ctx, { expectedVersion: profile.version, completed: true });
+    const service = new CustomerGenerateService(
+      repos,
+      new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter()),
+      getStorage(),
+    );
+    const started = await service.generate(ctx, {
+      jobDescription: "Requires TypeScript and API design experience.",
+      company: "Northwind Labs",
+      role: "Platform Engineer",
+      idempotencyKey: "after-onboarding",
+    });
+    expect(started.workflowId).toBeTruthy();
+    expect(started.status).toBe("queued");
   });
 
   it("mock provider never emits ev-unknown evidence ids", async () => {

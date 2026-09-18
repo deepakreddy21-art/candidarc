@@ -5,13 +5,9 @@ import { cn } from "@/lib/utils";
 
 
 const STAGES = [
-
-  { id: "understanding", label: "Understanding role" },
-
-  { id: "tailoring", label: "Tailoring experience" },
-
-  { id: "preparing", label: "Preparing documents" },
-
+  { id: "understanding", label: "Researching the role" },
+  { id: "tailoring", label: "Tailoring your resume" },
+  { id: "preparing", label: "Quality checking" },
 ] as const;
 
 
@@ -73,7 +69,7 @@ export function CreatingState({
             </h1>
             <p className="text-sm text-foreground-secondary">
               {needsInput
-                ? "Answer the technology questions below so we can tailor your resume accurately."
+                ? "Add a few missing profile details so we can finish your resume."
                 : `${formatElapsed(elapsedMs)} · Still working — reload this page anytime to check progress.`}
             </p>
 

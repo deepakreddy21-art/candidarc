@@ -253,6 +253,103 @@ class JobParseResponse(StrictModel):
     warnings: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=50)
 
 
+class ResumeParseProvenance(StrictModel):
+    source_text: str | None = Field(default=None, max_length=4_000)
+    page_number: int | None = Field(default=None, ge=1, le=10_000)
+    location_hint: str | None = Field(default=None, max_length=256)
+    confidence: Confidence = "medium"
+    warnings: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=20)
+    extracted_or_normalized: Literal["extracted", "normalized"] = "extracted"
+
+
+class ResumeParseContact(StrictModel):
+    full_name: str | None = None
+    first_name: str | None = None
+    middle_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    emails: list[Annotated[str, Field(max_length=320)]] = Field(default_factory=list, max_length=10)
+    phone: str | None = None
+    phones: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list, max_length=10)
+    location: str | None = None
+    linkedin: str | None = None
+    github: str | None = None
+    portfolio: str | None = None
+    other_urls: list[Annotated[str, Field(max_length=512)]] = Field(default_factory=list, max_length=20)
+    provenance: ResumeParseProvenance | None = None
+
+
+class ResumeParseEmployment(StrictModel):
+    title: str | None = None
+    employer: str | None = None
+    location: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    is_current: bool | None = None
+    bullets: list[Annotated[str, Field(max_length=2_000)]] = Field(default_factory=list, max_length=40)
+    technologies: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=40)
+    source_order: int | None = Field(default=None, ge=0, le=10_000)
+    provenance: ResumeParseProvenance | None = None
+
+
+class ResumeParseEducation(StrictModel):
+    institution: str | None = None
+    degree: str | None = None
+    field: str | None = None
+    location: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    gpa: str | None = None
+    honors: str | None = None
+    provenance: ResumeParseProvenance | None = None
+
+
+class ResumeParseProject(StrictModel):
+    name: str | None = None
+    role: str | None = None
+    organization: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    description: str | None = None
+    bullets: list[Annotated[str, Field(max_length=2_000)]] = Field(default_factory=list, max_length=40)
+    technologies: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=40)
+    url: str | None = None
+    repo_url: str | None = None
+    provenance: ResumeParseProvenance | None = None
+
+
+class ResumeParseEvidence(StrictModel):
+    title: StrShort
+    summary: StrMed
+    technologies: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=40)
+
+
+class ResumeParseCertification(StrictModel):
+    name: str = Field(min_length=1, max_length=256)
+    issuer: str | None = None
+    issue_date: str | None = None
+    expiration_date: str | None = None
+    credential_id: str | None = None
+    credential_url: str | None = None
+    provenance: ResumeParseProvenance | None = None
+
+
+class ResumeParsePublication(StrictModel):
+    title: str = Field(min_length=1, max_length=512)
+    authors: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=40)
+    publisher: str | None = None
+    publication_date: str | None = None
+    doi: str | None = None
+    url: str | None = None
+    description: str | None = Field(default=None, max_length=2_000)
+    provenance: ResumeParseProvenance | None = None
+
+
+class ResumeParseSkillGroup(StrictModel):
+    category: str = Field(min_length=1, max_length=128)
+    skills: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=100)
+
+
 class ResumeParseRequest(StrictModel):
     context: RequestContext
     filename: str = Field(min_length=1, max_length=512)
@@ -261,9 +358,25 @@ class ResumeParseRequest(StrictModel):
 
 
 class ResumeParseResponse(StrictModel):
+    schema_version: Literal[2] = 2
     text: str = Field(max_length=500_000)
     page_count: int | None = Field(default=None, ge=0, le=10_000)
     warnings: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=50)
+    contact: ResumeParseContact | None = None
+    professional_summary: str | None = Field(default=None, max_length=20_000)
+    employment: list[ResumeParseEmployment] = Field(default_factory=list, max_length=40)
+    education: list[ResumeParseEducation] = Field(default_factory=list, max_length=20)
+    projects: list[ResumeParseProject] = Field(default_factory=list, max_length=20)
+    skills: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=200)
+    skill_groups: list[ResumeParseSkillGroup] = Field(default_factory=list, max_length=40)
+    # Legacy string certifications retained for compatibility; prefer certification_entries.
+    certifications: list[Annotated[str, Field(max_length=256)]] = Field(default_factory=list, max_length=40)
+    certification_entries: list[ResumeParseCertification] = Field(default_factory=list, max_length=40)
+    publications: list[ResumeParsePublication] = Field(default_factory=list, max_length=40)
+    evidence: list[ResumeParseEvidence] = Field(default_factory=list, max_length=40)
+    extraction_quality: Literal["high", "medium", "low"] | None = None
+    missing_fields: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list, max_length=40)
+    usable: bool | None = None
 
 
 class ResearchSource(StrictModel):

@@ -1,24 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { JobCard } from "@/components/radar/job-card";
+import { JobCard, fitCategoryFromLabel } from "@/components/radar/job-card";
 import { FreshnessControls } from "@/components/radar/freshness-controls";
 import { RepostFilter } from "@/components/radar/repost-filter";
 import { radarJobs } from "@/data/radar-seed";
 import { TooltipProvider } from "@/components/ui/tabs";
 
 describe("Radar UI", () => {
-  it("renders job card with repost and company-direct labels", () => {
+  it("renders compact job row without match percentage", () => {
     const job = radarJobs.find((j) => j.classification === "REPOSTED") ?? radarJobs[0]!;
     render(
       <TooltipProvider>
         <JobCard job={job} />
       </TooltipProvider>,
     );
-    expect(screen.getByText(job.company)).toBeInTheDocument();
+    expect(screen.getByTestId("job-row")).toBeInTheDocument();
     expect(screen.getByText(job.title)).toBeInTheDocument();
-    expect(screen.getByText(/First discovered by CandidArc/i)).toBeInTheDocument();
-    expect(screen.getByText(/Company direct/i)).toBeInTheDocument();
+    expect(screen.getAllByText(new RegExp(job.company)).length).toBeGreaterThan(0);
     expect(screen.queryByText(/%$/)).not.toBeInTheDocument();
+  });
+
+  it("maps match labels to Strong/Good/Stretch", () => {
+    expect(fitCategoryFromLabel("Strong match")).toBe("Strong");
+    expect(fitCategoryFromLabel("Good match")).toBe("Good");
+    expect(fitCategoryFromLabel("Stretch opportunity")).toBe("Stretch");
+    expect(fitCategoryFromLabel("Not recommended")).toBeNull();
   });
 
   it("exposes freshness presets and basis controls", () => {

@@ -17,7 +17,7 @@ export async function POST(request: Request, { params }: Params) {
     requireUser(ctx);
     const runtime = await getRuntime();
     const radar = getRadarService(runtime.services.radar);
-    const saved = radar.save(ctx, jobId);
+    const saved = await radar.save(ctx, jobId);
     return jsonOk({ saved }, { status: 201 });
   } catch (err) {
     return jsonError(err, requestId || undefined);
@@ -34,7 +34,7 @@ export async function DELETE(request: Request, { params }: Params) {
     requireUser(ctx);
     const runtime = await getRuntime();
     const radar = getRadarService(runtime.services.radar);
-    const result = radar.unsave(ctx, jobId);
+    const result = await radar.unsave(ctx, jobId);
     return jsonOk(result);
   } catch (err) {
     return jsonError(err, requestId || undefined);

@@ -1,6 +1,22 @@
 import { z } from "zod";
 import type { JobSearchQuery } from "./types";
 
+const UI_SORT_TO_BACKEND: Record<string, "freshness" | "match" | "discovered" | "original" | "company" | "title"> = {
+  best_match: "match",
+  genuinely_newest: "original",
+  recently_discovered: "discovered",
+  recently_reposted: "original",
+  recently_verified: "discovered",
+  highest_compensation: "match",
+  company_direct_first: "company",
+  freshness: "freshness",
+  match: "match",
+  discovered: "discovered",
+  original: "original",
+  company: "company",
+  title: "title",
+};
+
 export const jobSearchQuerySchema = z.object({
   keywords: z.string().optional(),
   company: z.string().optional(),
@@ -13,8 +29,18 @@ export const jobSearchQuerySchema = z.object({
       if (typeof v === "boolean") return v;
       return v === "true" || v === "1";
     }),
+  remotePolicy: z.enum(["remote", "hybrid", "onsite", "unknown"]).optional(),
+  savedOnly: z
+    .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      if (typeof v === "boolean") return v;
+      return v === "true" || v === "1";
+    }),
   employmentType: z.string().optional(),
   seniority: z.string().optional(),
+  sponsorship: z.enum(["stated", "historical", "not_offered", "unknown"]).optional(),
   freshnessPreset: z.string().optional(),
   freshnessCustomStart: z.string().optional(),
   freshnessCustomEnd: z.string().optional(),
@@ -52,11 +78,58 @@ export const jobSearchQuerySchema = z.object({
     }),
   matchScoreMin: z.coerce.number().min(0).max(100).optional(),
   timezone: z.string().optional(),
-  sort: z.enum(["freshness", "match", "discovered", "original", "company", "title"]).optional(),
+  sort: z.preprocess((value) => {
+    if (typeof value !== "string" || !value) return undefined;
+    return UI_SORT_TO_BACKEND[value] ?? value;
+  }, z.enum(["freshness", "match", "discovered", "original", "company", "title"]).optional()),
   sortDir: z.enum(["asc", "desc"]).optional(),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
+
+/** Accept Radar UI search payloads (q, tab, best_match sort) on saved-search and alert POSTs. */
+export function coerceJobSearchQueryInput(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const o = { ...(value as Record<string, unknown>) };
+  if (typeof o.q === "string" && o.keywords == null) o.keywords = o.q;
+  if (o.remote === "remote" || o.remote === "hybrid" || o.remote === "onsite") {
+    if (o.remotePolicy == null) o.remotePolicy = o.remote;
+    delete o.remote;
+  }
+  if (
+    o.remotePolicy == null &&
+    (o.arrangement === "remote" || o.arrangement === "hybrid" || o.arrangement === "onsite")
+  ) {
+    o.remotePolicy = o.arrangement;
+  }
+  if (o.remotePolicy === "any" || o.remotePolicy === "unspecified") delete o.remotePolicy;
+  if (o.freshnessType === "any") delete o.freshnessType;
+  if (typeof o.customStart === "string" && o.freshnessCustomStart == null) o.freshnessCustomStart = o.customStart;
+  if (typeof o.customEnd === "string" && o.freshnessCustomEnd == null) o.freshnessCustomEnd = o.customEnd;
+  if (typeof o.sort === "string") {
+    const mapped = UI_SORT_TO_BACKEND[o.sort];
+    if (mapped) o.sort = mapped;
+    else delete o.sort;
+  }
+  for (const key of [
+    "q",
+    "tab",
+    "arrangement",
+    "includeReposts",
+    "hidePossibleDuplicates",
+    "compensationMin",
+    "excludedCompanies",
+    "excludeCompanies",
+    "customStart",
+    "customEnd",
+    "savedOnly",
+  ]) {
+    delete o[key];
+  }
+  return o;
+}
+
+const jobSearchQueryFromUi = z.preprocess((value) => coerceJobSearchQueryInput(value ?? {}), jobSearchQuerySchema);
 
 export function parseJobSearchParams(url: URL): JobSearchQuery {
   const raw: Record<string, string> = {};
@@ -72,8 +145,12 @@ export function parseJobSearchParams(url: URL): JobSearchQuery {
     "company",
     "location",
     "remote",
+    "remotePolicy",
+    "arrangement",
+    "savedOnly",
     "employmentType",
     "seniority",
+    "sponsorship",
     "freshnessPreset",
     "freshnessCustomStart",
     "freshnessCustomEnd",
@@ -124,13 +201,16 @@ export function parseJobSearchParams(url: URL): JobSearchQuery {
     if (sort === "recently_discovered") raw.freshnessBasis = "discovered";
   }
 
-  // remote policy: UI may send remote|hybrid|onsite|any
+  // remote policy: UI may send remote|hybrid|onsite|any as `remote` or `arrangement`
+  if (raw.arrangement === "remote" || raw.arrangement === "hybrid" || raw.arrangement === "onsite") {
+    if (!raw.remotePolicy) raw.remotePolicy = raw.arrangement;
+    delete raw.arrangement;
+  }
   if (raw.remote === "any" || raw.remote === "unspecified") {
     delete raw.remote;
-  } else if (raw.remote === "remote" || raw.remote === "hybrid") {
-    raw.remote = "true";
-  } else if (raw.remote === "onsite") {
-    raw.remote = "false";
+  } else if (raw.remote === "remote" || raw.remote === "hybrid" || raw.remote === "onsite") {
+    raw.remotePolicy = raw.remote;
+    delete raw.remote;
   }
 
   if (raw.freshnessType === "any") delete raw.freshnessType;
@@ -141,7 +221,7 @@ export function parseJobSearchParams(url: URL): JobSearchQuery {
 
 export const savedSearchBodySchema = z.object({
   name: z.string().min(1).max(120),
-  query: jobSearchQuerySchema.default({}),
+  query: jobSearchQueryFromUi,
   alertEnabled: z.boolean().optional(),
 });
 
@@ -180,7 +260,7 @@ const alertCadenceSchema = z
 
 export const jobAlertBodySchema = z.object({
   name: z.string().min(1).max(120),
-  query: jobSearchQuerySchema.default({}),
+  query: jobSearchQueryFromUi,
   cadence: alertCadenceSchema,
   channels: z.array(z.enum(["in_app", "email", "push"])).optional(),
   active: z.boolean().optional(),

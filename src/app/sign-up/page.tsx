@@ -10,6 +10,7 @@ import { Input, Label } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthDivider, GoogleAuthButton, GoogleAuthErrorBanner } from "@/components/auth/google-auth-button";
+import { PasswordField } from "@/components/auth/password-field";
 import { product } from "@/config/product";
 
 export default function SignUpPage() {
@@ -75,16 +76,11 @@ export default function SignUpPage() {
                 <Label htmlFor="email">Email</Label>
                 <Input id="email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  autoComplete="new-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </div>
+              <PasswordField
+                autoComplete="new-password"
+                value={password}
+                onChange={setPassword}
+              />
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? "Creating…" : "Create account"}
               </Button>

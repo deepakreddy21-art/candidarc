@@ -340,22 +340,104 @@ export class PostgresRepositories implements Repositories {
         ),
       update: async (tenantId, publicId, patch) =>
         withTenant(tenantId, async (db) => {
+          const values = toApplicationPatch(patch) as Record<string, unknown>;
+          delete values.version;
           const row = (
             await db
               .update(s.applications)
-              .set(toApplicationPatch(patch))
-              .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.publicId, publicId)))
+              .set({
+                ...values,
+                version: sql`${s.applications.version} + 1`,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(s.applications.tenantId, tenantId),
+                  eq(s.applications.publicId, publicId),
+                  isNull(s.applications.deletedAt),
+                ),
+              )
               .returning()
           )[0];
           if (!row) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
           return mapApplication(row)!;
+        }),
+      updateCandidateStatusCas: async (tenantId, publicId, input) =>
+        withTenant(tenantId, async (db) => {
+          const statusJson = JSON.stringify({ candidateStatus: input.candidateStatus });
+          const patchValues = input.patch
+            ? (toApplicationPatch(input.patch) as Record<string, unknown>)
+            : {};
+          delete patchValues.version;
+          delete patchValues.metadata;
+
+          const row = (
+            await db
+              .update(s.applications)
+              .set({
+                ...patchValues,
+                metadata: sql`coalesce(${s.applications.metadata}, '{}'::jsonb) || ${statusJson}::jsonb`,
+                version: sql`${s.applications.version} + 1`,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(s.applications.tenantId, tenantId),
+                  eq(s.applications.publicId, publicId),
+                  isNull(s.applications.deletedAt),
+                  eq(s.applications.version, input.expectedVersion),
+                  sql`coalesce(${s.applications.metadata}->>'candidateStatus', '') is distinct from ${input.candidateStatus}`,
+                ),
+              )
+              .returning()
+          )[0];
+          if (row) return mapApplication(row)!;
+
+          const existing = (
+            await db
+              .select()
+              .from(s.applications)
+              .where(
+                and(
+                  eq(s.applications.tenantId, tenantId),
+                  eq(s.applications.publicId, publicId),
+                  isNull(s.applications.deletedAt),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (!existing) throw new AppError("APPLICATION_NOT_FOUND", "Application not found", 404);
+          const mapped = mapApplication(existing)!;
+          const currentStatus =
+            typeof mapped.metadata?.candidateStatus === "string"
+              ? mapped.metadata.candidateStatus
+              : undefined;
+          if (currentStatus === input.candidateStatus) {
+            return mapped;
+          }
+          throw new AppError(
+            "APPLICATION_VERSION_CONFLICT",
+            "Application was updated elsewhere. Reload and try again.",
+            409,
+            {
+              expectedVersion: input.expectedVersion,
+              currentVersion: mapped.version,
+              application: mapped,
+            },
+          );
         }),
       softDelete: async (tenantId, publicId) =>
         withTenant(tenantId, async (db) => {
           await db
             .update(s.applications)
             .set({ deletedAt: new Date(), archived: true })
-            .where(and(eq(s.applications.tenantId, tenantId), eq(s.applications.publicId, publicId)));
+            .where(
+              and(
+                eq(s.applications.tenantId, tenantId),
+                eq(s.applications.publicId, publicId),
+                isNull(s.applications.deletedAt),
+              ),
+            );
         }),
     };
 

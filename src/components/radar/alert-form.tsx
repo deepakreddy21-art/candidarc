@@ -97,8 +97,10 @@ export function AlertForm({
                 type="checkbox"
                 checked={channels.includes(c.value)}
                 onChange={() => toggleChannel(c.value)}
+                disabled={c.value !== "in_app"}
               />
               {c.label}
+              {c.value !== "in_app" ? " (unconfigured)" : ""}
             </label>
           ))}
         </div>
@@ -106,7 +108,7 @@ export function AlertForm({
 
       <p className="text-xs text-foreground-muted">
         Repost alerts include original age. Repeated source refreshes do not spam deliveries.
-        Channels are adapter-based; delivery depends on configured providers.
+        In-app delivery is available. Email and push stay off until an approved provider is configured — creating an email channel will not send mail.
       </p>
 
       <Button type="submit" disabled={submitting || !name.trim() || channels.length === 0}>

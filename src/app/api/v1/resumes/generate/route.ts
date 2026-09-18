@@ -6,6 +6,8 @@ import { assertRateLimit } from "@server/http/rate-limit";
 import { jsonError, jsonOk, parseJsonBody } from "@server/http/response";
 import { customerGenerateInputSchema } from "@server/modules/resumes/customer-generate";
 
+/** Customer generate: onboarding/manual career profiles are materialized into evidence before queueing. */
+
 export async function POST(request: Request) {
   let requestId = "";
   try {

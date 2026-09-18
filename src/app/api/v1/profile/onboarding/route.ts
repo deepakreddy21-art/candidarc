@@ -5,6 +5,8 @@ import { requireUser } from "@server/auth/guards";
 import { updateOnboardingRequestSchema } from "@server/contracts/api";
 import { assertCsrf } from "@server/http/csrf";
 
+/** Completing onboarding materializes career evidence from the saved profile. */
+
 export async function GET(request: Request) {
   let requestId = "";
   try {

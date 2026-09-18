@@ -7,8 +7,14 @@ import { newId } from "../../database/repositories";
 import { AppError } from "../../domain/types";
 import { previewHtmlFromDocument } from "../../resumes/document-renderer";
 import { buildResumeDocument } from "../../resumes/resume-document";
+import { syncCareerEvidenceFromProfile } from "../profile/career-evidence";
 import { mapInternalStageToCustomer, needsInputForTechQuestions } from "../../resumes/customer-status";
-import { computeCandidArcQualityScore } from "../../resumes/quality-score";
+import {
+  attachQualityProvenance,
+  computeCandidArcQualityScore,
+  qualityContactFromSnapshot,
+  selectFreshQualityReport,
+} from "../../resumes/quality-score";
 import {
   applyTechAnswers,
   claimableTechnologies,
@@ -61,6 +67,8 @@ export const techAnswersInputSchema = z.object({
 export const refineResumeInputSchema = z.object({
   instruction: z.string().min(3).max(4000),
   quickAction: z.string().max(100).optional(),
+  selectedText: z.string().max(4000).optional(),
+  sectionId: z.string().max(120).optional(),
 });
 
 type GenerateInput = z.infer<typeof customerGenerateInputSchema>;
@@ -77,22 +85,6 @@ function contactFromMetadata(metadata?: Record<string, unknown>) {
   };
 }
 
-function previewHtml(
-  version: ResumeVersionRecord,
-  candidateName: string,
-  role: string,
-  company: string,
-  metadata?: Record<string, unknown>,
-): string {
-  const document = buildResumeDocument({
-    sections: version.sections,
-    candidateName,
-    role,
-    company,
-    contact: contactFromMetadata(metadata),
-  });
-  return previewHtmlFromDocument(document);
-}
 
 type CustomerFilesMeta = {
   pdfFileId?: string;
@@ -100,6 +92,10 @@ type CustomerFilesMeta = {
   pdfStorageKey?: string;
   docxStorageKey?: string;
   pageCount?: number;
+  pdfError?: string;
+  docxError?: string;
+  /** Formats still needing a retry (independent of résumé version regeneration). */
+  pendingFormats?: Array<"pdf" | "docx">;
 };
 
 function hasUnansweredTechQuestionsLocal(questions: TechQuestion[]): boolean {
@@ -144,7 +140,15 @@ export class CustomerGenerateService {
   async generate(ctx: AuthContext, input: GenerateInput) {
     const { user, tenantId } = this.tenant(ctx);
     const profile = await this.repos.candidateProfiles.getByUser(tenantId, user.id);
-    const ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
+    let ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
+    if (!ownedEvidence.length && profile) {
+      await syncCareerEvidenceFromProfile(this.repos.evidence, {
+        tenantId,
+        userId: user.id,
+        profile,
+      });
+      ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
+    }
     if (!ownedEvidence.length) {
       throw new AppError(
         "PROFILE_EVIDENCE_REQUIRED",
@@ -222,12 +226,27 @@ export class CustomerGenerateService {
       message: "Customer resume generation queued",
       payload: { customerFacing: true, autoAdvanceAudits: true, cycleBase: 0 },
     });
+    await this.repos.applications.update(tenantId, app.publicId, {
+      metadata: {
+        ...app.metadata,
+        customerFacing: true,
+        customerWorkflowPublicId: workflow.publicId,
+      },
+    });
     return { workflowId: workflow.publicId, applicationId: app.publicId, status: "queued" as const };
   }
 
   async getCustomerWorkflow(ctx: AuthContext, workflowId: string) {
     const { tenantId, user } = this.tenant(ctx);
-    const requested = await this.repos.workflows.getByPublicId(tenantId, workflowId);
+    let requested = await this.repos.workflows.getByPublicId(tenantId, workflowId);
+    // Deep-link compatibility: Applications may historically link by application public id.
+    if (!requested) {
+      const byApp = await this.repos.applications.getByPublicId(tenantId, workflowId);
+      if (byApp) {
+        const runs = await this.repos.workflows.listByApplication(tenantId, byApp.publicId);
+        requested = runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null;
+      }
+    }
     if (!requested) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
     const app = await this.repos.applications.getByPublicId(tenantId, requested.applicationPublicId);
     if (!app || app.metadata?.customerFacing !== true) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
@@ -240,10 +259,16 @@ export class CustomerGenerateService {
     const files = (currentApp.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
     const { pdfReady, docxReady } = await documentsReady(this.storage, tenantId, files);
     const documentsAreReady = pdfReady && docxReady;
+    const anyDocumentReady = pdfReady || docxReady;
+    const hasFinalVersion =
+      Array.isArray(currentApp.metadata?.customerFinalVersions) &&
+      (currentApp.metadata.customerFinalVersions as unknown[]).some((id) => typeof id === "string");
+    const previewable = hasFinalVersion && anyDocumentReady;
 
     if (
       currentApp.workflowStage === "FINAL_READY" &&
       !documentsAreReady &&
+      !anyDocumentReady &&
       currentApp.metadata?.documentRenderFailed !== true
     ) {
       const timedOut = await failStaleDocumentPreparation(this.repos, this.engine, {
@@ -258,16 +283,17 @@ export class CustomerGenerateService {
     }
 
     const questions = (currentApp.metadata?.techQuestions ?? []) as TechQuestion[];
+    const generationFailed =
+      latestRun.status === "failed" ||
+      currentApp.workflowStage === "FINAL_QA_FAILED" ||
+      currentApp.workflowStage === "FAILED" ||
+      latestRun.stage === "FINAL_QA_FAILED" ||
+      latestRun.stage === "FAILED" ||
+      currentApp.status === "failed" ||
+      currentApp.metadata?.documentRenderFailed === true;
     const mapped = mapInternalStageToCustomer(currentApp.workflowStage, {
-      failed:
-        latestRun.status === "failed" ||
-        currentApp.workflowStage === "FINAL_QA_FAILED" ||
-        currentApp.workflowStage === "FAILED" ||
-        latestRun.stage === "FINAL_QA_FAILED" ||
-        latestRun.stage === "FAILED" ||
-        currentApp.metadata?.documentRenderFailed === true ||
-        currentApp.status === "failed",
-      documentsReady: documentsAreReady,
+      failed: generationFailed && !previewable,
+      documentsReady: previewable || documentsAreReady,
       startedAt: latestRun.startedAt ?? latestRun.createdAt,
       needsInput:
         needsInputForTechQuestions(currentApp.workflowStage, questions) ||
@@ -286,6 +312,7 @@ export class CustomerGenerateService {
       pipelineLabel: mapped.pipelineLabel,
       elapsedMs: mapped.elapsedMs,
       downloads: { pdfReady, docxReady },
+      documentRetryAvailable: previewable && !documentsAreReady,
     };
     // Optional tech confirmation only while generation is waiting on input — hide after advance.
     if (mapped.status === "needs_input" && questions.length) {
@@ -302,14 +329,13 @@ export class CustomerGenerateService {
       if (current) {
         const customerNumber = Math.max(1, finalVersions.findIndex((version) => version.publicId === current.publicId) + 1);
         const breakdown = (current.scoreBreakdown ?? {}) as Record<string, number>;
+        const contact = qualityContactFromSnapshot({
+          metadata: currentApp.metadata,
+          location: currentApp.location,
+        });
         const quality = computeCandidArcQualityScore({
           sections: current.sections as Array<Record<string, unknown>>,
-          contact: {
-            email: typeof currentApp.metadata?.candidateEmail === "string" ? currentApp.metadata.candidateEmail : undefined,
-            phone: typeof currentApp.metadata?.candidatePhone === "string" ? currentApp.metadata.candidatePhone : undefined,
-            location: currentApp.location,
-            linkedIn: typeof currentApp.metadata?.candidateLinkedIn === "string" ? currentApp.metadata.candidateLinkedIn : undefined,
-          },
+          contact,
           jobRequirements: Array.isArray(currentApp.metadata?.jobRequirements)
             ? (currentApp.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
             : [],
@@ -320,41 +346,52 @@ export class CustomerGenerateService {
           aiRoleAlignment: breakdown.jobAlignment ?? current.score,
           aiAtsReadability: breakdown.atsCompatibility,
         });
+        const freshQuality = attachQualityProvenance(quality, { versionPublicId: current.publicId, contact });
+        const qualityReport = selectFreshQualityReport(persistedQuality, freshQuality);
+        if (qualityReport !== persistedQuality) {
+          await this.repos.applications.update(tenantId, currentApp.publicId, {
+            metadata: { ...(currentApp.metadata ?? {}), qualityReport },
+          });
+        }
+        const canonicalDocument = buildResumeDocument({
+          sections: current.sections,
+          candidateName:
+            typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
+          role: currentApp.role,
+          company: currentApp.company,
+          contact: contactFromMetadata(currentApp.metadata),
+        });
         response.resume = {
           versionId: current.publicId,
           versionLabel: `Version ${customerNumber}`,
-          previewHtml: previewHtml(
-            current,
-            typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
-            currentApp.role,
-            currentApp.company,
-            currentApp.metadata,
-          ),
+          document: canonicalDocument,
+          previewHtml: previewHtmlFromDocument(canonicalDocument),
           sections: current.sections,
           createdAt: current.createdAt,
           role: currentApp.role,
           company: currentApp.company,
-          candidateName: typeof currentApp.metadata?.candidateName === "string" ? currentApp.metadata.candidateName : "Candidate",
+          candidateName: canonicalDocument.contact.name,
         };
         response.versions = finalVersions.map((version, index) => ({
           id: version.publicId,
           label: `Version ${index + 1}`,
           createdAt: version.createdAt,
         }));
-        response.qualityReport = persistedQuality ?? {
-          name: quality.name,
-          summary: quality.summary,
-          score: quality.score,
-          roleAlignment: quality.roleAlignment,
-          atsReadability: quality.atsReadability,
-          verifiedClaims: quality.verifiedClaims,
+        response.qualityReport = {
+          name: qualityReport.name,
+          summary: qualityReport.summary,
+          score: qualityReport.score,
+          roleAlignment: qualityReport.roleAlignment,
+          atsReadability: qualityReport.atsReadability,
+          verifiedClaims: qualityReport.verifiedClaims,
           researchSourcesUsed: typeof currentApp.metadata?.researchSourceCount === "number" ? currentApp.metadata.researchSourceCount : undefined,
-          remainingSkillGaps: quality.remainingSkillGaps ?? [],
-          passed: quality.passed,
-          missing: quality.missing,
-          verifiedConclusions: quality.verifiedConclusions,
-          aiEstimates: quality.aiEstimates,
-          nextSteps: quality.nextSteps,
+          remainingSkillGaps: qualityReport.remainingSkillGaps ?? [],
+          passed: qualityReport.passed,
+          missing: qualityReport.missing,
+          verifiedConclusions: qualityReport.verifiedConclusions,
+          aiEstimates: qualityReport.aiEstimates,
+          nextSteps: qualityReport.nextSteps,
+          checks: qualityReport.checks,
         };
       }
       if (currentApp.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;
@@ -381,6 +418,82 @@ export class CustomerGenerateService {
     if (app.ownerUserId && app.ownerUserId !== user.id) {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
+
+    const files = (app.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
+    const pendingFormats = Array.isArray(files.pendingFormats)
+      ? files.pendingFormats.filter((f): f is "pdf" | "docx" => f === "pdf" || f === "docx")
+      : [];
+    const hasFinalVersion =
+      Array.isArray(app.metadata?.customerFinalVersions) &&
+      (app.metadata.customerFinalVersions as unknown[]).some((id) => typeof id === "string");
+    const documentOnlyRetry =
+      Boolean(app.metadata?.documentRenderFailed) &&
+      hasFinalVersion &&
+      (pendingFormats.length > 0 ||
+        Boolean(files.pdfError) ||
+        Boolean(files.docxError) ||
+        Boolean(files.pdfStorageKey) ||
+        Boolean(files.docxStorageKey));
+
+    // Retry failed PDF/DOCX only — do not regenerate résumé content, version, or billing.
+    if (documentOnlyRetry) {
+      const resume = await this.repos.resumes.getByApplication(tenantId, app.publicId);
+      const versions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
+      const finalIds = (app.metadata?.customerFinalVersions ?? []) as string[];
+      const version =
+        versions.find((item) => finalIds.includes(item.publicId)) ?? versions.at(-1) ?? null;
+      if (!version) {
+        throw new AppError("RESUME_VERSION_NOT_FOUND", "No résumé version available to re-render", 404);
+      }
+      const formats: Array<"pdf" | "docx"> =
+        pendingFormats.length > 0
+          ? pendingFormats
+          : [
+              ...(files.pdfError || !files.pdfStorageKey ? (["pdf"] as const) : []),
+              ...(files.docxError || !files.docxStorageKey ? (["docx"] as const) : []),
+            ];
+      if (!formats.length) {
+        throw new AppError("WORKFLOW_NOT_RETRYABLE", "No failed document formats to retry", 409);
+      }
+      const { getRuntime } = await import("../../bootstrap");
+      const runtime = await getRuntime();
+      await runtime.queue.enqueue(
+        "pdf-rendering",
+        "customer-resume.render",
+        {
+          tenantId,
+          applicationId: app.publicId,
+          applicationPublicId: app.publicId,
+          versionId: version.publicId,
+          versionPublicId: version.publicId,
+          workflowId: run.publicId,
+          workflowPublicId: run.publicId,
+          workflowRunId: run.id,
+          ownerUserId: app.ownerUserId,
+          formats,
+        },
+        { idempotencyKey: `customer-render-retry:${app.publicId}:${version.publicId}:${formats.join(",")}:${Date.now()}` },
+      );
+      await this.repos.applications.update(tenantId, app.publicId, {
+        status: "resume",
+        nextAction: "Preparing resume documents",
+        metadata: {
+          ...app.metadata,
+          documentRenderFailed: undefined,
+          customerError: undefined,
+          documentRenderErrorClass: undefined,
+          documentRenderFailedAt: undefined,
+          customerFiles: {
+            ...files,
+            pendingFormats: formats,
+            pdfError: formats.includes("pdf") ? undefined : files.pdfError,
+            docxError: formats.includes("docx") ? undefined : files.docxError,
+          },
+        },
+      });
+      return { workflowId: run.publicId, applicationId: app.publicId, status: "queued" as const };
+    }
+
     const retryable =
       run.status === "failed" ||
       run.stage === "FAILED" ||
@@ -579,7 +692,7 @@ export class CustomerGenerateService {
     }
   }
 
-  async refine(ctx: AuthContext, workflowId: string, input: { instruction: string; quickAction?: string }) {
+  async refine(ctx: AuthContext, workflowId: string, input: { instruction: string; quickAction?: string; selectedText?: string; sectionId?: string }) {
     const { tenantId, user } = this.tenant(ctx);
     const original = await this.repos.workflows.getByPublicId(tenantId, workflowId);
     if (!original) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
@@ -588,6 +701,10 @@ export class CustomerGenerateService {
     if (app.ownerUserId && app.ownerUserId !== user.id) {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
+    const selected = input.selectedText?.trim();
+    const instruction = selected
+      ? `Improve only this selected text (do not rewrite the rest of the resume unless required for grammar). Selected text:\n${selected}\n\nInstruction: ${input.instruction}`
+      : input.instruction;
     const resume = await this.repos.resumes.getByApplication(tenantId, app.publicId);
     const versions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
     const cycleBase = (versions.at(-1)?.versionNumber ?? -1) + 1;
@@ -596,15 +713,29 @@ export class CustomerGenerateService {
       applicationId: app.id,
       applicationPublicId: app.publicId,
       stage: "RESEARCH_QUEUED",
-      idempotencyKey: `customer-refine:${app.publicId}:${createHash("sha256").update(`${input.quickAction ?? ""}:${input.instruction}`).digest("hex")}:${cycleBase}`,
+      idempotencyKey: `customer-refine:${app.publicId}:${createHash("sha256").update(`${input.quickAction ?? ""}:${instruction}`).digest("hex")}:${cycleBase}`,
       message: "Resume refinement queued",
-      payload: { customerFacing: true, autoAdvanceAudits: true, cycleBase, refinementInstruction: input.instruction, quickAction: input.quickAction },
+      payload: {
+        customerFacing: true,
+        autoAdvanceAudits: true,
+        cycleBase,
+        refinementInstruction: instruction,
+        quickAction: input.quickAction,
+        selectedText: selected,
+        sectionId: input.sectionId,
+      },
     });
     await this.repos.applications.update(tenantId, app.publicId, {
       stage: "RESEARCH_QUEUED",
       workflowStage: "RESEARCH_QUEUED",
       status: "researching",
-      metadata: { ...app.metadata, customerFiles: undefined, refinementInstruction: input.instruction, enhancementAvailable: false },
+      metadata: {
+        ...app.metadata,
+        customerFiles: undefined,
+        refinementInstruction: instruction,
+        enhancementAvailable: false,
+        customerWorkflowPublicId: workflow.publicId,
+      },
     });
     return { workflowId: workflow.publicId, applicationId: app.publicId, status: "queued" as const };
   }

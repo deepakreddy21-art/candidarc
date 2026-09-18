@@ -146,6 +146,8 @@ export interface CanonicalJob {
   locations: string[];
   remotePolicy: RemotePolicy;
   visaSponsorship?: boolean | null;
+  /** Company-level sourced history only — never proof this role sponsors. */
+  historicalSponsorship?: boolean | null;
   degreeRequired?: boolean | null;
   securityClearanceRequired?: boolean | null;
   techStack: string[];
@@ -348,8 +350,14 @@ export interface JobSearchQuery {
   company?: string;
   location?: string;
   remote?: boolean;
+  /** Exact workplace mode when UI distinguishes remote vs hybrid vs onsite. */
+  remotePolicy?: "remote" | "hybrid" | "onsite" | "unknown";
+  /** When true, only jobs saved by the authenticated tenant/user. */
+  savedOnly?: boolean;
   employmentType?: string;
   seniority?: string;
+  /** Posting-level sponsorship signal, not a visa-eligibility decision. */
+  sponsorship?: "stated" | "historical" | "not_offered" | "unknown";
   freshnessPreset?: string;
   freshnessCustomStart?: string;
   freshnessCustomEnd?: string;

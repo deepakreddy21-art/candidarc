@@ -15,10 +15,15 @@ const quickActions = [
   "Make it more concise",
   "Emphasize leadership",
   "Fit to one page",
-  "Change template",
 ];
 
-export function RefinePanel({ workflowId }: { workflowId: string }) {
+export function RefinePanel({
+  workflowId,
+  selectedText,
+}: {
+  workflowId: string;
+  selectedText?: string;
+}) {
   const router = useRouter();
   const [instruction, setInstruction] = useState("");
   const [quickAction, setQuickAction] = useState<string>();
@@ -33,7 +38,11 @@ export function RefinePanel({ workflowId }: { workflowId: string }) {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json", "x-csrf-token": csrf },
-        body: JSON.stringify({ instruction, quickAction }),
+        body: JSON.stringify({
+          instruction,
+          quickAction,
+          selectedText: selectedText?.trim() || undefined,
+        }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error?.message ?? "Could not create a new version");
@@ -50,6 +59,13 @@ export function RefinePanel({ workflowId }: { workflowId: string }) {
     <Card>
       <CardHeader><CardTitle>Refine this resume</CardTitle></CardHeader>
       <CardContent className="space-y-4">
+        {selectedText ? (
+          <p className="rounded-md border border-border bg-canvas p-2 text-xs text-foreground-secondary">
+            Improving selected text only: “{selectedText.slice(0, 180)}{selectedText.length > 180 ? "…" : ""}”
+          </p>
+        ) : (
+          <p className="text-xs text-foreground-muted">Select text in the preview to improve a section instead of the whole resume.</p>
+        )}
         <div className="flex flex-wrap gap-2">
           {quickActions.map((action) => (
             <Button

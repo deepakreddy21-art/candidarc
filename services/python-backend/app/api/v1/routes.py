@@ -179,9 +179,24 @@ async def resumes_parse(body: ResumeParseRequest) -> ResumeParseResponse:
     try:
         return await parse_resume_bytes(body.filename, body.content_type, body.content_base64)
     except ValueError as exc:
+        code = str(exc)
+        messages = {
+            "IMAGE_ONLY_PDF_OCR_REQUIRED": "This PDF appears to contain scanned images. Upload a text-based PDF or DOCX, or enter your details manually. OCR is not available.",
+            "PDF_ENCRYPTED": "This PDF is password-protected. Upload an unlocked PDF or DOCX.",
+            "CORRUPT_PDF": "This PDF could not be read. Try exporting again or upload a DOCX.",
+            "EMPTY_DOCUMENT": "This file appears empty. Upload a text-based PDF or DOCX.",
+            "LEGACY_DOC_UNSUPPORTED": "Legacy .doc Word files are not supported. Open the file in Word or LibreOffice and save it as .docx, then upload again.",
+            "DOCUMENT_TOO_LARGE": "File is too large. Maximum size is 10 MB.",
+            "PDF_PAGE_LIMIT_EXCEEDED": "This PDF exceeds the 30-page limit.",
+            "PARSE_TIMEOUT": "Parsing timed out. Try a smaller file or enter details manually.",
+            "INVALID_PDF_MAGIC": "This file is not a valid PDF.",
+            "INVALID_DOCX_MAGIC": "This file is not a valid DOCX.",
+            "UNSUPPORTED_DOCUMENT_TYPE": "Unsupported file type. Upload a PDF or DOCX.",
+            "PYTHON_BACKEND_UNAVAILABLE": "Resume parsing is temporarily unavailable.",
+        }
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": str(exc), "message": "Unsupported document"},
+            detail={"code": code, "message": messages.get(code, "Unsupported or unreadable document")},
         ) from exc
 
 

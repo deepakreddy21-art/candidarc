@@ -19,16 +19,17 @@ export async function PATCH(request: Request, { params }: Params) {
     requireUser(ctx);
     const body = await parseJsonBody(request, jobAlertPatchSchema);
     const runtime = await getRuntime();
-    const alert = toAlertView(
-      getRadarService(runtime.services.radar).updateAlert(ctx, id, {
-        name: body.name,
-        query: body.query,
-        cadence: body.cadence,
-        enabled: body.enabled ?? body.active,
-        includeReposts: body.includeReposts,
-        includeRefreshes: body.includeRefreshes,
-      }),
-    );
+    const patch = {
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.query !== undefined ? { query: body.query } : {}),
+      ...(body.cadence !== undefined ? { cadence: body.cadence } : {}),
+      ...(body.includeReposts !== undefined ? { includeReposts: body.includeReposts } : {}),
+      ...(body.includeRefreshes !== undefined ? { includeRefreshes: body.includeRefreshes } : {}),
+      ...(body.enabled !== undefined || body.active !== undefined
+        ? { enabled: body.enabled ?? body.active }
+        : {}),
+    };
+    const alert = toAlertView(await getRadarService(runtime.services.radar).updateAlert(ctx, id, patch));
     return jsonOk({ alert });
   } catch (err) {
     return jsonError(err, requestId || undefined);
@@ -44,7 +45,7 @@ export async function DELETE(request: Request, { params }: Params) {
     requestId = ctx.requestId;
     requireUser(ctx);
     const runtime = await getRuntime();
-    const result = getRadarService(runtime.services.radar).deleteAlert(ctx, id);
+    const result = await getRadarService(runtime.services.radar).deleteAlert(ctx, id);
     return jsonOk(result);
   } catch (err) {
     return jsonError(err, requestId || undefined);

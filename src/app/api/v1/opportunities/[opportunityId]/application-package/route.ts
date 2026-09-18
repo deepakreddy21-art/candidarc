@@ -17,6 +17,12 @@ export async function GET(request: Request, { params }: Params) {
     const user = requireUser(ctx);
     const runtime = await getRuntime();
     const copilot = getCopilotService(runtime.services.copilot);
+    try {
+      const profile = await runtime.services.profile.get(ctx);
+      copilot.upsertProfileAnswers(ctx.activeTenantId ?? "demo", user.id, profile);
+    } catch {
+      /* Profile is optional for package preview. */
+    }
     const applicationPackage = copilot.getOrCreatePackage(
       ctx.activeTenantId ?? "demo",
       user.id,

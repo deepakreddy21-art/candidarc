@@ -72,7 +72,7 @@ describe("radar tenant isolation", () => {
       activeTenantId: a.tenantId,
     };
 
-    service.save(authA, job.publicId);
+    await service.save(authA, job.publicId);
     expect([...catalog.savedJobs.values()].some((s) => s.userId === a.userId && s.canonicalJobId === job.id)).toBe(true);
     expect([...catalog.savedJobs.values()].some((s) => s.userId === "usr_other")).toBe(false);
 
@@ -117,13 +117,15 @@ describe("radar alerts", () => {
     const service = new RadarService(catalog);
     const auth = ctx(userId, tenantId);
     const job = [...catalog.canonicalJobs.values()].find((j) => j.classification === "NEW")!;
-    service.createAlert(auth, {
+    const created = await service.createAlert(auth, {
       name: "New AI",
       cadence: "immediate",
       includeReposts: false,
       includeRefreshes: false,
       query: { freshnessType: "genuinely_new" },
     });
+    expect(created.enabled).toBe(true);
+    expect(catalog.alertDeliveries.length).toBeGreaterThan(0);
     catalog.evaluateAlertsForJob(job);
     catalog.evaluateAlertsForJob(job);
     const keys = new Set(catalog.alertDeliveries.map((d) => d.dedupeKey));

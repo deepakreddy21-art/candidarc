@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, FileText, LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,10 +74,72 @@ export function ApplicationCopilot({
 }) {
   const [mode, setMode] = useState<ApplicationMode>("prepare_only");
   const [approved, setApproved] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [handoffReady, setHandoffReady] = useState(false);
   const unresolved = useMemo(
     () => answers.filter((answer) => answer.confidence === "UNSUPPORTED"),
     [answers],
   );
+
+  function csrfToken() {
+    return decodeURIComponent(
+      document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ?? "",
+    );
+  }
+
+  async function approveAnswer(answerId: string) {
+    if (approved.includes(answerId) || busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/v1/opportunities/${opportunityId}/application-package`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json", "x-csrf-token": csrfToken() },
+        body: JSON.stringify({ approveAnswerId: answerId, mode, company, role }),
+      });
+      if (!response.ok) throw new Error("Could not approve this answer");
+      setApproved((items) => [...new Set([...items, answerId])]);
+      toast.success("Answer approved for this opportunity only");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not approve this answer");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function completePackage() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/v1/opportunities/${opportunityId}/application-package`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json", "x-csrf-token": csrfToken() },
+        body: JSON.stringify({ mode, company, role }),
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error?.message ?? "Could not prepare the application package");
+      if (mode === "prepare_only") {
+        const blob = new Blob([JSON.stringify(body.applicationPackage ?? body, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "application-package.json";
+        link.click();
+        URL.revokeObjectURL(url);
+        toast.success("Application package downloaded. Nothing was submitted.");
+      } else {
+        setHandoffReady(true);
+        toast.message("Employer form is ready for your review. CandidArc does not submit applications.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not prepare the application package");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -148,9 +211,11 @@ export function ApplicationCopilot({
                 </div>
                 {answer.requiresApproval ? (
                   <Button
+                    type="button"
                     size="sm"
                     variant={isApproved ? "secondary" : "default"}
-                    onClick={() => setApproved((items) => [...new Set([...items, answer.id])])}
+                    disabled={isApproved || busy}
+                    onClick={() => void approveAnswer(answer.id)}
                   >
                     {isApproved ? "Approved" : "Approve autofill"}
                   </Button>
@@ -168,10 +233,23 @@ export function ApplicationCopilot({
       </Card>
 
       <div className="flex justify-end">
-        <Button disabled={mode === "autofill_review" && answers.some((a) => a.requiresApproval && !approved.includes(a.id))}>
-          {mode === "prepare_only" ? "Download application package" : "Continue to employer form"}
+        <Button
+          type="button"
+          disabled={busy || (mode === "autofill_review" && answers.some((a) => a.requiresApproval && !approved.includes(a.id)))}
+          onClick={() => void completePackage()}
+        >
+          {busy
+            ? "Preparing…"
+            : mode === "prepare_only"
+              ? "Download application package"
+              : "Continue to employer form"}
         </Button>
       </div>
+      {handoffReady ? (
+        <p role="status" className="text-sm text-foreground-secondary">
+          Review the employer site yourself. Opening it does not mark this application as Applied.
+        </p>
+      ) : null}
       <p className="sr-only">Opportunity {opportunityId}</p>
     </div>
   );

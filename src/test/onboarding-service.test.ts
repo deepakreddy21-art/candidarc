@@ -141,6 +141,8 @@ describe("onboarding persistence", () => {
     });
     expect(second.onboardingCompletedAt).toBe(stamp);
     expect(second.version).toBe(first.version);
+    const evidence = await repos.evidence.list(tenantId, { ownerUserId: userId });
+    expect(evidence.some((item) => /Analytical/i.test(item.title) || /Engineer/i.test(item.title))).toBe(true);
   });
 
   it("uses atomic compare-and-swap for concurrent same-version updates", async () => {

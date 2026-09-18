@@ -131,6 +131,26 @@ export function mapPythonBackendErrorToAppError(error: unknown): AppError {
     );
   }
   if (status === 422) {
+    const documentCodes: Record<string, string> = {
+      IMAGE_ONLY_PDF_OCR_REQUIRED:
+        "This PDF appears to contain scanned images. OCR is not available in this release. Upload a text-based PDF or DOCX, or enter your details manually.",
+      PDF_ENCRYPTED: "This PDF is password-protected. Upload an unlocked PDF or DOCX.",
+      CORRUPT_PDF: "This PDF could not be read. Try exporting again or upload a DOCX.",
+      DOCUMENT_TOO_LARGE: "File is too large. Maximum size is 10 MB.",
+      PDF_PAGE_LIMIT_EXCEEDED: "This PDF exceeds the 30-page limit.",
+      PARSE_TIMEOUT: "Parsing timed out. Try a smaller file or enter details manually.",
+      EMPTY_DOCUMENT: "No text could be extracted from this file.",
+      INVALID_PDF_MAGIC: "This file does not look like a valid PDF.",
+      INVALID_DOCX_MAGIC: "This file does not look like a valid DOCX.",
+      UNSUPPORTED_DOCUMENT_TYPE: "Only PDF and DOCX resumes are supported.",
+      LEGACY_DOC_UNSUPPORTED:
+        "Legacy .doc Word files are not supported. Open the file in Microsoft Word and Save As DOCX (.docx), then upload again.",
+      INVALID_BASE64: "Resume upload was corrupted in transit. Please try again.",
+      DOCX_ZIP_BOMB_SUSPECTED: "This DOCX could not be opened safely.",
+    };
+    if (code && documentCodes[code]) {
+      return new AppError(code, documentCodes[code], 422, details);
+    }
     // Unknown 422: do not mislabel deployment/contract failures as unsupported claims.
     return new AppError(
       "PYTHON_CONTRACT_MISMATCH",
@@ -814,9 +834,132 @@ export class PythonIntelligenceClient {
     });
     return z
       .object({
+        schema_version: z.union([z.literal(1), z.literal(2)]).optional(),
         text: z.string(),
         page_count: z.number().nullable().optional(),
         warnings: z.array(z.string()).default([]),
+        contact: z
+          .object({
+            full_name: z.string().nullable().optional(),
+            first_name: z.string().nullable().optional(),
+            middle_name: z.string().nullable().optional(),
+            last_name: z.string().nullable().optional(),
+            email: z.string().nullable().optional(),
+            emails: z.array(z.string()).default([]),
+            phone: z.string().nullable().optional(),
+            phones: z.array(z.string()).default([]),
+            location: z.string().nullable().optional(),
+            linkedin: z.string().nullable().optional(),
+            github: z.string().nullable().optional(),
+            portfolio: z.string().nullable().optional(),
+            other_urls: z.array(z.string()).default([]),
+            provenance: z
+              .object({
+                source_text: z.string().nullable().optional(),
+                page_number: z.number().nullable().optional(),
+                location_hint: z.string().nullable().optional(),
+                confidence: z.enum(["high", "medium", "low"]).optional(),
+                warnings: z.array(z.string()).default([]),
+                extracted_or_normalized: z.enum(["extracted", "normalized"]).optional(),
+              })
+              .nullable()
+              .optional(),
+          })
+          .nullable()
+          .optional(),
+        professional_summary: z.string().nullable().optional(),
+        employment: z
+          .array(
+            z.object({
+              title: z.string().nullable().optional(),
+              employer: z.string().nullable().optional(),
+              location: z.string().nullable().optional(),
+              start_date: z.string().nullable().optional(),
+              end_date: z.string().nullable().optional(),
+              is_current: z.boolean().nullable().optional(),
+              bullets: z.array(z.string()).default([]),
+              technologies: z.array(z.string()).default([]),
+              source_order: z.number().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
+            }),
+          )
+          .default([]),
+        education: z
+          .array(
+            z.object({
+              institution: z.string().nullable().optional(),
+              degree: z.string().nullable().optional(),
+              field: z.string().nullable().optional(),
+              location: z.string().nullable().optional(),
+              start_date: z.string().nullable().optional(),
+              end_date: z.string().nullable().optional(),
+              gpa: z.string().nullable().optional(),
+              honors: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
+            }),
+          )
+          .default([]),
+        projects: z
+          .array(
+            z.object({
+              name: z.string().nullable().optional(),
+              role: z.string().nullable().optional(),
+              organization: z.string().nullable().optional(),
+              start_date: z.string().nullable().optional(),
+              end_date: z.string().nullable().optional(),
+              description: z.string().nullable().optional(),
+              bullets: z.array(z.string()).default([]),
+              technologies: z.array(z.string()).default([]),
+              url: z.string().nullable().optional(),
+              repo_url: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
+            }),
+          )
+          .default([]),
+        skills: z.array(z.string()).default([]),
+        skill_groups: z
+          .array(z.object({ category: z.string(), skills: z.array(z.string()).default([]) }))
+          .default([]),
+        certifications: z.array(z.string()).default([]),
+        certification_entries: z
+          .array(
+            z.object({
+              name: z.string(),
+              issuer: z.string().nullable().optional(),
+              issue_date: z.string().nullable().optional(),
+              expiration_date: z.string().nullable().optional(),
+              credential_id: z.string().nullable().optional(),
+              credential_url: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
+            }),
+          )
+          .default([]),
+        publications: z
+          .array(
+            z.object({
+              title: z.string(),
+              authors: z.array(z.string()).default([]),
+              publisher: z.string().nullable().optional(),
+              publication_date: z.string().nullable().optional(),
+              doi: z.string().nullable().optional(),
+              url: z.string().nullable().optional(),
+              description: z.string().nullable().optional(),
+              provenance: z.record(z.string(), z.unknown()).nullable().optional(),
+            }),
+          )
+          .default([]),
+        evidence: z
+          .array(
+            z.object({
+              title: z.string(),
+              summary: z.string(),
+              technologies: z.array(z.string()).default([]),
+            }),
+          )
+          .default([]),
+        extraction_quality: z.enum(["high", "medium", "low"]).nullable().optional(),
+        missing_fields: z.array(z.string()).default([]),
+        usable: z.boolean().nullable().optional(),
       })
       .parse(data);
   }

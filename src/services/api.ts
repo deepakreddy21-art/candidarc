@@ -18,6 +18,25 @@ import type {
   AppInsights,
 } from "@/types/domain";
 import { allowDemoFallback as isDemoFallbackAllowed } from "@/lib/app-mode";
+import {
+  clientFetch,
+  clearClientRequestCaches,
+  isCancelledError,
+  isTimeoutError,
+  jsonHeaders,
+  RequestCancelledError,
+  RequestTimeoutError,
+  UPLOAD_TIMEOUT_MS,
+  LONG_WRITE_TIMEOUT_MS,
+} from "@/lib/http-client";
+
+export {
+  isCancelledError,
+  isTimeoutError,
+  RequestCancelledError,
+  RequestTimeoutError,
+  clearClientRequestCaches,
+};
 
 export { isDemoFallbackAllowed as allowDemoFallback };
 
@@ -93,10 +112,26 @@ async function ensureDemoStore() {
 const shouldUseMockApi = () => process.env.NEXT_PUBLIC_USE_MOCK_API === "true";
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string,
+    public readonly requestId?: string,
+  ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+type ErrorBody = { error?: { message?: string; code?: string; requestId?: string }; message?: string };
+
+function apiErrorFromBody(body: ErrorBody | null, status: number): ApiError {
+  return new ApiError(
+    body?.error?.message ?? body?.message ?? `Request failed (${status})`,
+    status,
+    body?.error?.code,
+    body?.error?.requestId,
+  );
 }
 
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
@@ -138,25 +173,21 @@ export type WorkflowResponse = {
 async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
   try {
-    const csrf = typeof document === "undefined"
-      ? undefined
-      : document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
-    const res = await fetch(`/api/v1${path}`, {
+    const res = await clientFetch(`/api/v1${path}`, {
       method: "POST",
       body: form,
-      credentials: "include",
-      headers: {
-        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-      },
+      timeoutMs: UPLOAD_TIMEOUT_MS,
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => null) as { error?: { message?: string }; message?: string } | null;
-      if (!isDemoFallbackAllowed()) throw new ApiError(body?.error?.message ?? body?.message ?? `Request failed (${res.status})`, res.status);
+      const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
+      if (!isDemoFallbackAllowed()) throw apiErrorFromBody(body, res.status);
       return { ok: false, network: false, status: res.status };
     }
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isTimeoutError(error)) throw error instanceof RequestTimeoutError ? error : new RequestTimeoutError();
+    if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(error instanceof Error ? error.message : "Network request failed");
@@ -165,29 +196,23 @@ async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>>
   }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
+async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<ApiResult<T>> {
   if (shouldUseMockApi()) return { ok: false, network: false };
   try {
-    const csrf = typeof document === "undefined"
-      ? undefined
-      : document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1];
-    const res = await fetch(`/api/v1${path}`, {
+    const res = await clientFetch(`/api/v1${path}`, {
       ...init,
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        ...(csrf ? { "x-csrf-token": decodeURIComponent(csrf) } : {}),
-        ...(init?.headers ?? {}),
-      },
+      headers: jsonHeaders(init?.headers, { jsonBody: init?.body != null }),
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => null) as { error?: { message?: string }; message?: string } | null;
-      if (!isDemoFallbackAllowed()) throw new ApiError(body?.error?.message ?? body?.message ?? `Request failed (${res.status})`, res.status);
+      const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
+      if (!isDemoFallbackAllowed()) throw apiErrorFromBody(body, res.status);
       return { ok: false, network: false, status: res.status };
     }
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isTimeoutError(error)) throw error instanceof RequestTimeoutError ? error : new RequestTimeoutError();
+    if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(error instanceof Error ? error.message : "Network request failed");
@@ -252,6 +277,17 @@ const mock = {
     await ensureDemoStore();
     await delay();
     applications = applications.map((a) => (ids.includes(a.id) ? { ...a, archived: true, status: "archived" } : a));
+  },
+  async updateApplication(
+    id: string,
+    patch: Partial<Pick<Application, "company" | "role" | "location" | "nextAction" | "candidateStatus">>,
+  ): Promise<Application> {
+    await ensureDemoStore();
+    await delay();
+    const idx = applications.findIndex((a) => a.id === id);
+    if (idx < 0) throw new Error("Application not found");
+    applications[idx] = { ...applications[idx]!, ...patch, updatedAt: new Date().toISOString() };
+    return structuredClone(applications[idx]!);
   },
   async getJobDescription(id: string): Promise<JobDescription | undefined> {
     await ensureDemoStore();
@@ -378,6 +414,10 @@ export const api = {
       body: JSON.stringify(patch),
     });
     if (res.ok) return res.data.profile;
+    // HTTP failures must surface to the UI — never pretend a rejected write succeeded via mock.
+    if (typeof res.status === "number") {
+      throw new ApiError("Could not save profile", res.status);
+    }
     if (!isDemoFallbackAllowed()) throw new ApiError("Could not save profile", res.status);
     return mock.updateProfile(patch);
   },
@@ -434,20 +474,27 @@ export const api = {
       form,
     );
     if (res.ok) return res.data;
-    throw new ApiError("Resume upload failed", res.status);
+    throw apiErrorFromBody(
+      { error: { message: "Resume upload failed" } },
+      res.status ?? 500,
+    );
   },
   async getResumeImportStatus(): Promise<{
     status: string | null;
     extraction: ResumeImportExtraction | null;
     file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
+    replacementAttemptStatus?: string | null;
+    confirmedProfileIntact?: boolean;
   }> {
     const res = await apiFetch<{
       status: string | null;
       extraction: ResumeImportExtraction | null;
       file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
+      replacementAttemptStatus?: string | null;
+      confirmedProfileIntact?: boolean;
     }>("/profile/resume/import");
     if (res.ok) return res.data;
-    return { status: null, extraction: null, file: null };
+    throw new ApiError("Could not load résumé import status", res.status);
   },
   async confirmResumeImport(): Promise<{ profile: CandidateProfile; extraction: ResumeImportExtraction }> {
     const res = await apiFetch<{ profile: CandidateProfile; extraction: ResumeImportExtraction }>(
@@ -461,7 +508,11 @@ export const api = {
     const q = includeArchived ? "?includeArchived=true" : "";
     const res = await apiFetch<{ applications: Application[] }>(`/applications${q}`);
     if (res.ok) return res.data.applications;
-    if (!isDemoFallbackAllowed()) return [];
+    // Server errors must reach page Retry UI; mock only covers transport-unavailable demo boots.
+    if (typeof res.status === "number") {
+      throw new ApiError("Could not load applications", res.status);
+    }
+    if (!isDemoFallbackAllowed()) throw new ApiError("Could not load applications", 503);
     return mock.listApplications(includeArchived);
   },
   async getApplication(id: string): Promise<Application | undefined> {
@@ -473,6 +524,7 @@ export const api = {
   async createApplication(input: CreateApplicationRequest): Promise<Application> {
     const res = await apiFetch<{ application: Application }>("/applications", {
       method: "POST",
+      timeoutMs: LONG_WRITE_TIMEOUT_MS,
       body: JSON.stringify({
         company: input.company,
         role: input.role,
@@ -502,6 +554,47 @@ export const api = {
       if (!isDemoFallbackAllowed()) throw new ApiError("Could not archive applications", 503);
       await mock.archiveApplications(ids);
     }
+  },
+  async restoreApplication(id: string): Promise<Application | undefined> {
+    const res = await apiFetch<{ application: Application }>(`/applications/${id}/restore`, {
+      method: "POST",
+      body: "{}",
+    });
+    if (res.ok) return res.data.application;
+    if (!isDemoFallbackAllowed()) throw new ApiError("Could not restore application", res.status);
+    const current = await mock.getApplication(id);
+    if (!current) return undefined;
+    return mock.updateApplication(id, { archived: false } as never);
+  },
+  async updateApplication(
+    id: string,
+    patch: Partial<{
+      company: string;
+      role: string;
+      location: string;
+      employmentType: string;
+      deadline: string;
+      roleFamily: string;
+      nextAction: string;
+      candidateStatus: Application["candidateStatus"];
+      expectedVersion: number;
+      notes: string;
+      contacts: Application["contacts"];
+      appliedAt: string;
+      followUpAt: string;
+      interviewAt: string;
+      interviewTimezone: string;
+      coverLetter: string;
+      outreachDraft: string;
+    }>,
+  ): Promise<Application> {
+    const res = await apiFetch<{ application: Application }>(`/applications/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) return res.data.application;
+    if (!isDemoFallbackAllowed()) throw new ApiError("Could not update application", res.status);
+    return mock.updateApplication(id, patch);
   },
   async getJobDescription(id: string): Promise<JobDescription | undefined> {
     if (!isDemoFallbackAllowed()) return undefined;
@@ -684,10 +777,14 @@ export const api = {
     return mock.listActivities();
   },
   async listNotifications(): Promise<Notification[]> {
+    const res = await apiFetch<{ notifications: Notification[] }>("/notifications");
+    if (res.ok) return res.data.notifications;
     if (!isDemoFallbackAllowed()) return [];
     return mock.listNotifications();
   },
   async markNotificationRead(id: string): Promise<void> {
+    const res = await apiFetch<{ ok: boolean }>(`/notifications/${id}`, { method: "POST", body: JSON.stringify({}) });
+    if (res.ok) return;
     if (!isDemoFallbackAllowed()) return;
     return mock.markNotificationRead(id);
   },

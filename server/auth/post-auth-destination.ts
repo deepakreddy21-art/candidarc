@@ -35,7 +35,7 @@ export async function resolvePostAuthDestination(
     };
   }
   return {
-    path: sanitizeReturnPath(input.preferredReturnPath, "/app"),
+    path: sanitizeReturnPath(input.preferredReturnPath, "/app/radar"),
     reason: "onboarding_complete",
   };
 }

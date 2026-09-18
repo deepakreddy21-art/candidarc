@@ -104,6 +104,62 @@ export default function RadarAlertsPage() {
                     <p className="mt-1 text-xs text-foreground-muted">
                       Created {formatRelative(alert.createdAt)}
                     </p>
+                    <div className="mt-3 flex flex-wrap items-end gap-2">
+                      <label className="space-y-1 text-xs">
+                        <span className="text-foreground-muted">Name</span>
+                        <input
+                          aria-label={`Alert name for ${alert.name}`}
+                          defaultValue={alert.name}
+                          className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+                          onBlur={async (event) => {
+                            const nextName = event.target.value.trim();
+                            if (!nextName || nextName === alert.name) return;
+                            try {
+                              await radarApi.updateAlert(alert.id, { name: nextName, cadence: alert.cadence });
+                              toast.success("Alert renamed");
+                              await reload();
+                            } catch (error) {
+                              toast.error(error instanceof Error ? error.message : "Could not rename alert");
+                            }
+                          }}
+                        />
+                      </label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={async () => {
+                          try {
+                            await radarApi.updateAlert(alert.id, {
+                              active: !alert.active,
+                              cadence: alert.active ? "paused" : alert.cadence === "paused" ? "daily" : alert.cadence,
+                            });
+                            toast.success(alert.active ? "Alert paused" : "Alert resumed");
+                            await reload();
+                          } catch (error) {
+                            toast.error(error instanceof Error ? error.message : "Could not update alert");
+                          }
+                        }}
+                      >
+                        {alert.active ? "Pause" : "Resume"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        onClick={async () => {
+                          try {
+                            await radarApi.deleteAlert(alert.id);
+                            toast.success("Alert deleted");
+                            await reload();
+                          } catch (error) {
+                            toast.error(error instanceof Error ? error.message : "Could not delete alert");
+                          }
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

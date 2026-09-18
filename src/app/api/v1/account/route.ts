@@ -1,11 +1,10 @@
 import { buildAuthContext } from "@server/http/context";
-import { jsonOk, jsonError } from "@server/http/response";
+import { jsonError } from "@server/http/response";
 import { requireUser, requireTenantMembership } from "@server/auth/guards";
 import { getRuntime } from "@server/bootstrap";
 import { AppError } from "@server/domain/types";
 import { assertRateLimit } from "@server/http/rate-limit";
 import { assertCsrf } from "@server/http/csrf";
-import { hashToken, parseSessionCookie, revokeSession, verifySession } from "@server/auth/session";
 
 /**
  * GET /api/v1/account/export — downloadable JSON of the caller's tenant-scoped data.
@@ -78,7 +77,9 @@ export async function GET(request: Request) {
 }
 
 /**
- * DELETE /api/v1/account — soft-delete applications/profile PII and revoke the session.
+ * DELETE /api/v1/account — complete account deletion is not available in this release.
+ * Returns a typed unavailable response without mutating applications, profile, documents,
+ * evidence, sessions, or account records.
  */
 export async function DELETE(request: Request) {
   let requestId = "";
@@ -87,43 +88,18 @@ export async function DELETE(request: Request) {
     assertCsrf(request);
     const ctx = await buildAuthContext(request);
     requestId = ctx.requestId;
-    const user = requireUser(ctx);
+    requireUser(ctx);
     if (!ctx.activeTenantId) throw new AppError("TENANT_REQUIRED", "Active tenant required", 400);
     requireTenantMembership(ctx, ctx.activeTenantId);
-    const runtime = await getRuntime();
-    const tenantId = ctx.activeTenantId;
 
-    const apps = await runtime.repos.applications.list(tenantId, { includeArchived: true });
-    for (const app of apps) {
-      await runtime.repos.applications.softDelete(tenantId, app.publicId);
-    }
-
-    await runtime.repos.candidateProfiles.update(tenantId, user.id, {
-      deletedAt: new Date().toISOString(),
-      fullName: "Deleted User",
-      preferredName: null,
-      email: `deleted+${user.publicId}@invalid.local`,
-      phone: null,
-      linkedIn: null,
-      github: null,
-      portfolio: null,
-      summary: null,
-      headline: null,
-    });
-
-    const token = parseSessionCookie(request.headers.get("cookie"));
-    const session = await verifySession(token);
-    if (session) {
-      const record = await runtime.repos.sessions.findByTokenHash(hashToken(session.token));
-      if (record) await runtime.repos.sessions.revoke(record.id);
-    }
-    const { cookie } = revokeSession();
-    const response = jsonOk({
-      deleted: true,
-      message: "Account data deleted for this tenant. Your session has been revoked.",
-    });
-    response.headers.set("Set-Cookie", cookie);
-    return response;
+    return jsonError(
+      new AppError(
+        "ACCOUNT_DELETION_UNAVAILABLE",
+        "Complete account deletion is not available yet. Export your data from Privacy settings. Your account and uploads remain unchanged.",
+        501,
+      ),
+      requestId,
+    );
   } catch (err) {
     return jsonError(err, requestId || undefined);
   }

@@ -195,6 +195,10 @@ export interface RadarJob {
   hidden?: boolean;
   linkedApplicationId?: string;
   demoData?: boolean;
+  sponsorshipLabel?: string;
+  sponsorshipExplanation?: string;
+  visaSponsorship?: boolean | null;
+  historicalSponsorship?: boolean | null;
 }
 
 export interface RadarSearchParams {
@@ -207,6 +211,7 @@ export interface RadarSearchParams {
   remotePolicy?: RemotePolicy | "any";
   employmentType?: string;
   seniority?: string;
+  sponsorship?: "stated" | "historical" | "not_offered" | "unknown";
   freshnessPreset?: FreshnessPreset;
   freshnessBasis?: FreshnessBasis;
   freshnessType?: FreshnessTypeFilter | "any";

@@ -14,6 +14,7 @@ import {
   validateStepClient,
   type OnboardingFormState,
 } from "@/components/onboarding/types";
+import { mapLoadedOnboardingStep, ONBOARDING_LAST_STEP } from "@/lib/onboarding-flow";
 import { createOnboardingSaveQueue } from "@/lib/onboarding-save-queue";
 import { mergeExtractionPreservingPreferences, profileToForm } from "@/lib/onboarding-form-map";
 import { api, ApiError } from "@/services/api";
@@ -31,6 +32,8 @@ export default function OnboardingPage() {
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [importErrorCode, setImportErrorCode] = useState<string | null>(null);
+  const pollStartedAt = useRef<number | null>(null);
   const formRef = useRef(form);
   formRef.current = form;
   const stepRef = useRef(step);
@@ -43,7 +46,11 @@ export default function OnboardingPage() {
       versionRef.current = saved.version ?? saved.data.version;
       const importState = await api.getResumeImportStatus();
       setImportStatus(importState.status);
-      setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
+      setImportErrorCode(importState.extraction?.errorCode ?? null);
+      const nextForm = profileToForm(saved.data, importState.extraction);
+      formRef.current = nextForm;
+      setForm(nextForm);
+      setStep(mapLoadedOnboardingStep(saved.step, saved.data.onboardingFlowVersion));
       setSaveStatus("Needs review");
     } catch {
       setSaveStatus("Save failed");
@@ -119,42 +126,58 @@ export default function OnboardingPage() {
   }
 
   useEffect(() => {
+    let cancelled = false;
     void (async () => {
       try {
         const saved = await api.getOnboardingProgress();
+        if (cancelled) return;
         if (saved.completedAt) {
           router.replace("/app");
           return;
         }
         const importState = await api.getResumeImportStatus();
+        if (cancelled) return;
         setImportStatus(importState.status);
         const nextForm = profileToForm(saved.data, importState.extraction);
         formRef.current = nextForm;
         setForm(nextForm);
-        setStep(Math.min(Math.max(saved.step ?? 0, 0), 3));
+        setStep(mapLoadedOnboardingStep(saved.step, saved.data.onboardingFlowVersion));
         versionRef.current = saved.version ?? saved.data.version;
       } catch (err) {
+        if (cancelled) return;
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
           router.replace("/sign-in?next=/onboarding");
           return;
         }
         toast.error("Could not load onboarding");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
+      cancelled = true;
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [router]);
 
   useEffect(() => {
-    if (!importStatus || ["ready_for_review", "confirmed", "failed"].includes(importStatus)) return;
+    if (!importStatus || ["ready_for_review", "confirmed", "failed"].includes(importStatus)) {
+      pollStartedAt.current = null;
+      return;
+    }
+    if (!pollStartedAt.current) pollStartedAt.current = Date.now();
     const timer = setInterval(() => {
-      void api
-        .getResumeImportStatus()
-        .then(async (state) => {
+      void (async () => {
+        try {
+          if (pollStartedAt.current && Date.now() - pollStartedAt.current > 90_000) {
+            setImportStatus("failed");
+            setImportErrorCode("IMPORT_TIMEOUT");
+            setStatusMessage("Import is taking too long. Retry or enter details manually.");
+            return;
+          }
+          const state = await api.getResumeImportStatus();
           setImportStatus(state.status);
+          setImportErrorCode(state.extraction?.errorCode ?? null);
           try {
             await syncVersionFromServer();
           } catch {
@@ -167,12 +190,19 @@ export default function OnboardingPage() {
               return next;
             });
           }
-          if (state.status === "ready_for_review") setStatusMessage("Resume ready — review the details below");
+          if (state.status === "ready_for_review") {
+            setStatusMessage("Resume ready — review the details below, then Continue");
+            setSaveStatus(null);
+          }
           if (state.status === "failed") {
             setStatusMessage(state.extraction?.error ?? "Resume parsing failed");
+            setImportErrorCode(state.extraction?.errorCode ?? "PARSE_FAILED");
           }
-        })
-        .catch(() => undefined);
+        } catch (err) {
+          // Transient status polling failures must not mark the import as terminal.
+          setStatusMessage(err instanceof ApiError ? err.message : "Could not check import status — retrying…");
+        }
+      })();
     }, 1500);
     return () => clearInterval(timer);
   }, [importStatus]);
@@ -180,18 +210,41 @@ export default function OnboardingPage() {
   async function handleUpload(file: File) {
     setUploading(true);
     setStatusMessage("Uploading…");
+    setImportErrorCode(null);
     try {
       await flushQueue({ form: formRef.current, step: stepRef.current });
+      // Keep confirmed/draft form values visible until the new extraction is ready.
+      // Server stages a new draft; failed upload/parse must not wipe prior profile data.
+      patchForm({
+        careerProfileMode: "upload",
+      });
       const result = await api.uploadResume(file);
       setImportStatus(result.importStatus);
-      setStatusMessage("Upload received — analyzing…");
+      setStatusMessage("Upload received — security scanning…");
+      pollStartedAt.current = Date.now();
       await syncVersionFromServer();
-      patchForm({ careerProfileMode: "upload" });
     } catch (err) {
       setStatusMessage(err instanceof ApiError ? err.message : "Upload failed");
       toast.error(err instanceof ApiError ? err.message : "Upload failed");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleRetryImport() {
+    setImportErrorCode(null);
+    setStatusMessage("Retrying…");
+    try {
+      const state = await api.getResumeImportStatus();
+      if (state.file?.id) {
+        // Re-upload is the safest idempotent retry path for the user — ask them to pick the file again.
+        setImportStatus("failed");
+        setStatusMessage("Choose the same file again to retry import.");
+      } else {
+        setStatusMessage("Choose a PDF or DOCX to retry.");
+      }
+    } catch (err) {
+      setStatusMessage(err instanceof ApiError ? err.message : "Retry failed");
     }
   }
 
@@ -205,13 +258,14 @@ export default function OnboardingPage() {
       setForm(nextForm);
       versionRef.current = result.profile.version;
       setStatusMessage("Career profile confirmed");
-      toast.success("Career details confirmed");
+      return true;
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         await handleStale();
-        return;
+        return false;
       }
       toast.error(err instanceof ApiError ? err.message : "Could not confirm resume");
+      return false;
     }
   }
 
@@ -220,18 +274,23 @@ export default function OnboardingPage() {
     const message = validateStepClient(step, current, importStatus);
     if (message) {
       if (step === 0 && !current.targetRoles.length) setErrors({ targetRoles: message });
-      else if (step === 0) setErrors({ seniority: message });
-      else if (step === 1 && !current.jobTypes.length) setErrors({ jobTypes: message });
-      else if (step === 1) setErrors({ workplaceModes: message });
-      else if (step === 2 && !current.fullName.trim()) setErrors({ fullName: message });
+      else if (step === 0 && !current.seniority) setErrors({ seniority: message });
+      else if (step === 0 && !current.jobTypes.length) setErrors({ jobTypes: message });
+      else if (step === 0) setErrors({ workplaceModes: message });
+      else if (step === 1 && !current.fullName.trim()) setErrors({ fullName: message });
       else setErrors({ career: message });
       toast.error(message);
       return;
     }
 
-    if (step < 3) {
+    if (step === 1 && importStatus === "ready_for_review") {
+      const ok = await handleConfirmImport();
+      if (!ok) return;
+    }
+
+    if (step < ONBOARDING_LAST_STEP) {
       try {
-        await flushQueue({ form: current, step: step + 1 });
+        await flushQueue({ form: formRef.current, step: step + 1 });
       } catch (err) {
         if (!(err instanceof ApiError && err.status === 409)) {
           toast.error(err instanceof ApiError ? err.message : "Could not save progress");
@@ -241,7 +300,7 @@ export default function OnboardingPage() {
     }
 
     try {
-      await flushQueue({ form: current, step: 3, completed: true });
+      await flushQueue({ form: formRef.current, step: ONBOARDING_LAST_STEP, completed: true });
       router.push("/onboarding/complete");
     } catch (err) {
       if (!(err instanceof ApiError && err.status === 409)) {
@@ -291,11 +350,15 @@ export default function OnboardingPage() {
       onBack={() => void handleBack()}
       onContinue={() => void handleContinue()}
       onLogout={() => void handleLogout()}
-      continueLabel={step === 3 ? "Finish setup" : "Continue"}
+      continueLabel={step === ONBOARDING_LAST_STEP ? "Finish setup" : "Continue"}
     >
-      {step === 0 ? <StepCareerDirection form={form} onChange={patchForm} errors={errors} /> : null}
-      {step === 1 ? <StepWorkPreferences form={form} onChange={patchForm} errors={errors} /> : null}
-      {step === 2 ? (
+      {step === 0 ? (
+        <div className="space-y-8">
+          <StepCareerDirection form={form} onChange={patchForm} errors={errors} />
+          <StepWorkPreferences form={form} onChange={patchForm} errors={errors} />
+        </div>
+      ) : null}
+      {step === 1 ? (
         <StepCareerProfile
           form={form}
           onChange={patchForm}
@@ -303,11 +366,12 @@ export default function OnboardingPage() {
           importStatus={importStatus}
           uploading={uploading}
           onUpload={(file) => void handleUpload(file)}
-          onConfirmImport={() => void handleConfirmImport()}
+          onRetryImport={() => void handleRetryImport()}
           statusMessage={statusMessage}
+          importErrorCode={importErrorCode}
         />
       ) : null}
-      {step === 3 ? (
+      {step === 2 ? (
         <StepReview
           form={form}
           importStatus={importStatus}

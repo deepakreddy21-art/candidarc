@@ -502,18 +502,20 @@ describe("Deepak QA production readiness journey", () => {
           linkedIn: QA.linkedIn,
         },
       });
+      expect(rendered.pdfBuffer).toBeTruthy();
+      expect(rendered.docxBuffer).toBeTruthy();
       const pdfKey = `generated/${user.id}/${app.publicId}/${version.publicId}/resume.pdf`;
       const docxKey = `generated/${user.id}/${app.publicId}/${version.publicId}/resume.docx`;
       await storage.putObject({
         tenantId: payload.tenantId,
         key: pdfKey,
-        body: rendered.pdfBuffer,
+        body: rendered.pdfBuffer!,
         contentType: "application/pdf",
       });
       await storage.putObject({
         tenantId: payload.tenantId,
         key: docxKey,
-        body: rendered.docxBuffer,
+        body: rendered.docxBuffer!,
         contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       });
       await repos.applications.update(payload.tenantId, app.publicId, {
@@ -675,7 +677,9 @@ describe("Deepak QA production readiness journey", () => {
     expect(docXml).toContain(QA.phone);
     expect(docXml).toMatch(/January 2024/);
     expect(docXml).toMatch(/Illinois Institute of Technology/i);
-    expect(docXml).toMatch(/Asteria AI Systems/i);
+    // Target employer stays outside the résumé body (CandidArc ATS v1).
+    expect(docXml).not.toMatch(/Asteria AI Systems/i);
+    expect(docXml).toMatch(/USAA|Dell Technologies/i);
     expect(docXml).toMatch(/Contact|Summary|Skills|Experience|Education/i);
     assertNoPrivatePii(docXml);
     expect(pdf.body.byteLength).toBeGreaterThan(500);

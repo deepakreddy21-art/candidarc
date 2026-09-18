@@ -56,7 +56,7 @@ export async function POST(request: Request) {
     const destination = await resolvePostAuthDestination(runtime.repos, {
       userId: user.id,
       tenantId,
-      preferredReturnPath: "/app",
+      preferredReturnPath: "/app/radar",
     });
 
     const response = jsonOk({

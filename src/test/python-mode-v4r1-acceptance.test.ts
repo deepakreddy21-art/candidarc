@@ -362,18 +362,20 @@ describeHttp("acceptance: V0→V4R1→FINAL_READY via real FastAPI", () => {
         location: "Remote",
       },
     });
+    expect(rendered.pdfBuffer).toBeTruthy();
+    expect(rendered.docxBuffer).toBeTruthy();
     const pdfKey = `generated/${USER}/${app.publicId}/${repair!.publicId}/resume.pdf`;
     const docxKey = `generated/${USER}/${app.publicId}/${repair!.publicId}/resume.docx`;
     await storage.putObject({
       tenantId: TENANT,
       key: pdfKey,
-      body: rendered.pdfBuffer,
+      body: rendered.pdfBuffer!,
       contentType: "application/pdf",
     });
     await storage.putObject({
       tenantId: TENANT,
       key: docxKey,
-      body: rendered.docxBuffer,
+      body: rendered.docxBuffer!,
       contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     });
     await repos.applications.update(TENANT, app.publicId, {

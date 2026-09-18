@@ -3,7 +3,6 @@
 import { Logo } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/ui/feedback";
-import { cn } from "@/lib/utils";
 import { ONBOARDING_STEPS } from "./types";
 
 type OnboardingShellProps = {
@@ -34,30 +33,26 @@ export function OnboardingShell({
 
   return (
     <div className="min-h-dvh bg-canvas text-foreground">
-      <div className="mx-auto grid min-h-dvh max-w-6xl lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-        <aside className="relative hidden overflow-hidden border-r border-border bg-[linear-gradient(160deg,#111318_0%,#1b2030_48%,#243044_100%)] px-10 py-10 text-white lg:flex lg:flex-col">
-          <div className="absolute inset-0 opacity-40 [background:radial-gradient(circle_at_20%_20%,rgba(88,101,242,0.35),transparent_45%),radial-gradient(circle_at_80%_70%,rgba(32,191,198,0.22),transparent_40%)]" />
-          <div className="relative z-10 flex h-full flex-col">
-            <Logo className="text-white" />
-            <div className="mt-auto space-y-4 pb-6">
-              <p className="text-xs font-medium uppercase tracking-[0.14em] text-white/55">
-                Step {step + 1} of {ONBOARDING_STEPS.length}
-              </p>
-              <h1 className="font-serif text-3xl leading-tight text-white">{current.title}</h1>
-              <p className="max-w-sm text-sm leading-relaxed text-white/70">{current.panel}</p>
-            </div>
+      <div className="mx-auto grid min-h-dvh max-w-6xl lg:grid-cols-[minmax(0,0.38fr)_minmax(0,0.62fr)]">
+        <aside className="relative hidden border-r border-border bg-surface-2 px-8 py-10 lg:flex lg:flex-col">
+          <Logo />
+          <div className="mt-auto max-w-sm space-y-3 pb-4">
+            <h1 className="font-serif text-3xl leading-tight text-foreground">{current.title}</h1>
+            <p className="text-sm leading-relaxed text-foreground-secondary">{current.panel}</p>
           </div>
         </aside>
 
-        <section className="flex min-h-dvh flex-col">
-          <header className="sticky top-0 z-20 border-b border-border bg-canvas/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-canvas/80 sm:px-8">
+        <section className="flex min-h-dvh flex-col lg:h-dvh">
+          <header className="shrink-0 border-b border-border bg-canvas px-4 py-3 sm:px-8">
             <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 lg:hidden">
-                <Logo />
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="lg:hidden">
+                  <Logo />
+                </div>
+                <p className="text-sm text-foreground-secondary" data-testid="onboarding-step">
+                  Step {step + 1} of {ONBOARDING_STEPS.length}
+                </p>
               </div>
-              <p className="text-sm text-foreground-secondary">
-                Step {step + 1} of {ONBOARDING_STEPS.length}
-              </p>
               <Button type="button" variant="ghost" size="sm" onClick={onLogout}>
                 Log out
               </Button>
@@ -71,15 +66,16 @@ export function OnboardingShell({
             </div>
           </header>
 
-          <div className="flex-1 px-4 py-6 sm:px-8 sm:py-8">
-            <div className="mx-auto w-full max-w-xl space-y-6">{children}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8">
+            <div className="mx-auto w-full max-w-xl space-y-6">
+              <div className="hidden lg:block">
+                <h2 className="font-serif text-2xl leading-tight">{current.title}</h2>
+              </div>
+              {children}
+            </div>
           </div>
 
-          <footer
-            className={cn(
-              "sticky bottom-0 border-t border-border bg-canvas/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-canvas/80 sm:px-8",
-            )}
-          >
+          <footer className="shrink-0 border-t border-border bg-canvas px-4 py-3 sm:px-8">
             <div className="mx-auto flex w-full max-w-xl items-center justify-between gap-3">
               <Button type="button" variant="secondary" onClick={onBack} disabled={step === 0 || saving}>
                 Back

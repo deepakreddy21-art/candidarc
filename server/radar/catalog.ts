@@ -16,6 +16,7 @@ import {
 import type { JobSourceListing } from "./providers/types";
 import { getLinkedInDemoListings } from "./providers/linkedin-licensed";
 import { listProviders } from "./providers/registry";
+import { matchesSponsorshipFilter } from "./sponsorship";
 import type {
   CandidateProfileForMatch,
   CanonicalJob,
@@ -39,6 +40,11 @@ import type {
   HiddenJob,
   SourceCoverage,
 } from "./types";
+
+/** Primary keys must be UUIDs for PostgresRadarStore. */
+function newEntityId(): string {
+  return randomUUID();
+}
 
 function newPublicId(prefix: string): string {
   return `${prefix}_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
@@ -122,7 +128,7 @@ export class CanonicalJobCatalog {
       }
     }
     const company: Company = {
-      id: newPublicId("co"),
+      id: newEntityId(),
       publicId: newPublicId("company"),
       name,
       normalizedName,
@@ -289,7 +295,7 @@ export class CanonicalJobCatalog {
           : listing.postedAt;
 
       job = {
-        id: newPublicId("cjob"),
+        id: newEntityId(),
         publicId: newPublicId("job"),
         companyId: company.id,
         companyName: company.name,
@@ -329,7 +335,7 @@ export class CanonicalJobCatalog {
     }
 
     const sighting: JobSighting = {
-      id: newPublicId("sight"),
+      id: newEntityId(),
       publicId: newPublicId("js"),
       canonicalJobId: job.id,
       sourceId,
@@ -384,7 +390,7 @@ export class CanonicalJobCatalog {
 
   private addSnapshot(sighting: JobSighting, listing: JobSourceListing) {
     const snap: JobSnapshot = {
-      id: newPublicId("snap"),
+      id: newEntityId(),
       sightingId: sighting.id,
       retrievedAt: nowIso(),
       contentHash: sighting.contentHash,
@@ -408,7 +414,7 @@ export class CanonicalJobCatalog {
     metadata?: Record<string, unknown>,
   ) {
     this.historyEvents.push({
-      id: newPublicId("hist"),
+      id: newEntityId(),
       canonicalJobId,
       sightingId,
       type,
@@ -511,6 +517,8 @@ export class CanonicalJobCatalog {
     ciscoJob.repostCount = Math.max(1, ciscoJob.repostCount);
     ciscoJob.repostedAt = iso(42 * 60_000);
     ciscoJob.originalPostedAt = iso(19 * 86_400_000);
+    ciscoJob.historicalSponsorship = true;
+    ciscoJob.visaSponsorship = null;
     ciscoJob.updatedAt = nowIso();
     this.canonicalJobs.set(ciscoJob.id, ciscoJob);
     this.pushHistory(
@@ -521,7 +529,7 @@ export class CanonicalJobCatalog {
     );
 
     // Superhuman — NEW, discovered recently (Ashby)
-    this.ingestListing(
+    const superhuman = this.ingestListing(
       {
         sourceListingId: "ashby-superhuman-sse-ai",
         sourceRequisitionId: "REQ-SH-SSE-AI-901",
@@ -547,6 +555,9 @@ export class CanonicalJobCatalog {
       },
       "ashby",
     );
+    const superhumanJob = this.canonicalJobs.get(superhuman.job.id)!;
+    superhumanJob.visaSponsorship = true;
+    this.canonicalJobs.set(superhumanJob.id, superhumanJob);
 
     // DoorDash ML Platform — REFRESHED
     const dd = this.ingestListing(
@@ -661,7 +672,7 @@ export class CanonicalJobCatalog {
       "ashby",
     );
 
-    this.ingestListing(
+    const usajobs = this.ingestListing(
       {
         sourceListingId: "usajobs-data-scientist-gs13",
         sourceRequisitionId: "DE-2026-44102",
@@ -684,6 +695,89 @@ export class CanonicalJobCatalog {
       },
       "usajobs",
     );
+    const usajobsJob = this.canonicalJobs.get(usajobs.job.id)!;
+    usajobsJob.visaSponsorship = false;
+    this.canonicalJobs.set(usajobsJob.id, usajobsJob);
+
+    this.ingestListing(
+      {
+        sourceListingId: "example-handoff-engineer",
+        sourceRequisitionId: "REQ-EXAMPLE-HANDOFF-1",
+        sourceCompanyIdentifier: "example",
+        title: "Example Handoff Engineer",
+        companyName: "Example Corp",
+        location: "Remote US",
+        locations: ["Remote US"],
+        description: "Controlled employer-site handoff fixture. TypeScript and Kubernetes.",
+        employmentType: "Full-time",
+        seniority: "Senior",
+        department: "Engineering",
+        applyUrl: "https://example.com/jobs/candidarc-handoff",
+        sourceUrl: "https://example.com/jobs/candidarc-handoff",
+        postedAt: iso(3 * 60 * 60_000),
+        postedPrecision: "EXACT_TIMESTAMP",
+        remotePolicy: "remote",
+        techStack: ["TypeScript", "Kubernetes"],
+        demoData: true,
+        attribution: "Controlled example.com handoff fixture",
+      },
+      "greenhouse",
+    );
+
+    const extraTitles = [
+      "Pagination Fixture Engineer 01",
+      "Pagination Fixture Engineer 02",
+      "Pagination Fixture Engineer 03",
+      "Pagination Fixture Engineer 04",
+      "Pagination Fixture Engineer 05",
+      "Pagination Fixture Engineer 06",
+      "Pagination Fixture Engineer 07",
+      "Pagination Fixture Engineer 08",
+      "Pagination Fixture Engineer 09",
+      "Pagination Fixture Engineer 10",
+      "Pagination Fixture Engineer 11",
+      "Pagination Fixture Engineer 12",
+      "Pagination Fixture Engineer 13",
+      "Pagination Fixture Engineer 14",
+      "Pagination Fixture Engineer 15",
+      "Pagination Fixture Engineer 16",
+      "Pagination Fixture Engineer 17",
+      "Pagination Fixture Engineer 18",
+      "Pagination Fixture Engineer 19",
+      "Pagination Fixture Engineer 20",
+      "Pagination Fixture Engineer 21",
+      "Pagination Fixture Engineer 22",
+      "Pagination Fixture Engineer 23",
+      "Pagination Fixture Engineer 24",
+    ] as const;
+    extraTitles.forEach((title, index) => {
+      // Keep pagination fixtures remote so filtered Remote + Load more can exceed one page.
+      const remotePolicy = "remote" as const;
+      this.ingestListing(
+        {
+          sourceListingId: `pagination-fixture-${index + 1}`,
+          sourceRequisitionId: `REQ-PAGE-${index + 1}`,
+          sourceCompanyIdentifier: `fixtureco-${index + 1}`,
+          title,
+          companyName: `Fixture Co ${index + 1}`,
+          location: remotePolicy === "remote" ? "Remote US" : "Austin, TX",
+          locations: remotePolicy === "remote" ? ["Remote US"] : ["Austin, TX"],
+          description: `${title} for catalog pagination. TypeScript, Python, Kubernetes.`,
+          employmentType: "Full-time",
+          seniority: "Mid-Senior",
+          department: "Engineering",
+          applyUrl: `https://example.com/jobs/pagination-${index + 1}`,
+          sourceUrl: `https://example.com/jobs/pagination-${index + 1}`,
+          postedAt: iso((index + 1) * 60 * 60_000),
+          postedPrecision: "EXACT_TIMESTAMP",
+          remotePolicy,
+          techStack: ["TypeScript", "Python", "Kubernetes"],
+          demoData: true,
+          attribution: "Pagination demo fixture",
+        },
+        "greenhouse",
+      );
+    });
 
     this.indexedAt = nowIso();
   }
@@ -766,10 +860,21 @@ export class CanonicalJobCatalog {
       jobs = jobs.filter((j) => j.locations.some((l) => l.toLowerCase().includes(loc)));
     }
 
-    if (query.remote === true) {
+    if (query.remotePolicy) {
+      jobs = jobs.filter((j) => j.remotePolicy === query.remotePolicy);
+    } else if (query.remote === true) {
       jobs = jobs.filter((j) => j.remotePolicy === "remote" || j.remotePolicy === "hybrid");
     } else if (query.remote === false) {
       jobs = jobs.filter((j) => j.remotePolicy === "onsite");
+    }
+
+    if (query.savedOnly && opts?.tenantId && opts?.userId) {
+      const savedIds = new Set(
+        [...this.savedJobs.values()]
+          .filter((s) => s.tenantId === opts.tenantId && s.userId === opts.userId)
+          .map((s) => s.canonicalJobId),
+      );
+      jobs = jobs.filter((j) => savedIds.has(j.id));
     }
 
     if (query.employmentType) {
@@ -780,6 +885,10 @@ export class CanonicalJobCatalog {
     if (query.seniority) {
       const s = query.seniority.toLowerCase();
       jobs = jobs.filter((j) => (j.seniority ?? "").toLowerCase().includes(s));
+    }
+
+    if (query.sponsorship) {
+      jobs = jobs.filter((j) => matchesSponsorshipFilter(j, query.sponsorship!));
     }
 
     jobs = jobs.filter((j) => this.matchesFreshnessType(j, query.freshnessType));
@@ -1079,6 +1188,53 @@ export class CanonicalJobCatalog {
     return `${tenantId}:${userId}:${jobId}`;
   }
 
+  /**
+   * Apply a persistence snapshot into the in-memory catalog (postgres hydrate).
+   * Existing keys are overwritten so restart recovers durable state.
+   */
+  applyHydratedSnapshot(input: {
+    companies?: Company[];
+    sources?: JobSource[];
+    jobs?: CanonicalJob[];
+    sightings?: JobSighting[];
+    savedJobs?: SavedJob[];
+    hiddenJobs?: HiddenJob[];
+    savedSearches?: SavedSearch[];
+    alerts?: JobAlert[];
+  }): void {
+    for (const company of input.companies ?? []) {
+      this.companies.set(company.id, company);
+    }
+    for (const source of input.sources ?? []) {
+      this.sources.set(source.id, source);
+      if (source.policy) this.policies.set(source.id, source.policy);
+    }
+    for (const job of input.jobs ?? []) {
+      this.canonicalJobs.set(job.id, job);
+    }
+    for (const sighting of input.sightings ?? []) {
+      this.sightings.set(sighting.id, sighting);
+      if (sighting.sourceId && sighting.sourceListingId) {
+        this.listingIndex.set(`${sighting.sourceId}:${sighting.sourceListingId}`, sighting.id);
+      }
+    }
+    for (const saved of input.savedJobs ?? []) {
+      const key = this.tenantKey(saved.tenantId, saved.userId, saved.canonicalJobId);
+      this.savedJobs.set(key, saved);
+    }
+    for (const hidden of input.hiddenJobs ?? []) {
+      const key = this.tenantKey(hidden.tenantId, hidden.userId, hidden.canonicalJobId);
+      this.hiddenJobs.set(key, hidden);
+    }
+    for (const search of input.savedSearches ?? []) {
+      this.savedSearches.set(search.id, search);
+    }
+    for (const alert of input.alerts ?? []) {
+      this.alerts.set(alert.id, alert);
+    }
+    this.indexedAt = nowIso();
+  }
+
   saveJob(tenantId: string, userId: string, jobPublicId: string): SavedJob {
     const job = this.getJob(jobPublicId);
     if (!job) throw new AppError("JOB_NOT_FOUND", "Job not found", 404);
@@ -1086,7 +1242,7 @@ export class CanonicalJobCatalog {
     const existing = this.savedJobs.get(key);
     if (existing) return existing;
     const row: SavedJob = {
-      id: newPublicId("saved"),
+      id: newEntityId(),
       tenantId,
       userId,
       canonicalJobId: job.id,
@@ -1109,7 +1265,7 @@ export class CanonicalJobCatalog {
     const existing = this.hiddenJobs.get(key);
     if (existing) return existing;
     const row: HiddenJob = {
-      id: newPublicId("hidden"),
+      id: newEntityId(),
       tenantId,
       userId,
       canonicalJobId: job.id,
@@ -1137,7 +1293,7 @@ export class CanonicalJobCatalog {
     input: { name: string; query: JobSearchQuery; alertEnabled?: boolean },
   ): SavedSearch {
     const row: SavedSearch = {
-      id: newPublicId("ss"),
+      id: newEntityId(),
       publicId: newPublicId("savedsearch"),
       tenantId,
       userId,
@@ -1198,7 +1354,7 @@ export class CanonicalJobCatalog {
     },
   ): JobAlert {
     const row: JobAlert = {
-      id: newPublicId("alert"),
+      id: newEntityId(),
       publicId: newPublicId("jobalert"),
       tenantId,
       userId,
@@ -1233,7 +1389,8 @@ export class CanonicalJobCatalog {
         (a.id === id || a.publicId === id) && a.tenantId === tenantId && a.userId === userId,
     );
     if (!row) throw new AppError("ALERT_NOT_FOUND", "Alert not found", 404);
-    Object.assign(row, patch, { updatedAt: nowIso() });
+    const cleaned = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+    Object.assign(row, cleaned, { updatedAt: nowIso() });
     this.alerts.set(row.id, row);
     return row;
   }
@@ -1295,7 +1452,7 @@ export class CanonicalJobCatalog {
       }
 
       const delivery: JobAlertDelivery = {
-        id: newPublicId("delivery"),
+        id: newEntityId(),
         alertId: alert.id,
         tenantId: alert.tenantId,
         userId: alert.userId,

@@ -1,25 +1,19 @@
 export const ONBOARDING_STEPS = [
   {
     id: 0,
-    title: "What roles are you targeting?",
-    panel:
-      "Tell us where you want to go. CandidArc will use this to focus your Job Radar and resume recommendations.",
+    title: "What kind of work are you looking for?",
+    panel: "Roles and work setup first. CandidArc uses this to focus Jobs and resume recommendations.",
   },
   {
     id: 1,
-    title: "Where and how do you want to work?",
-    panel: "These preferences remove irrelevant jobs before they reach your Radar.",
+    title: "Add your career profile",
+    panel: "Upload a résumé or enter details. This is the evidence CandidArc can safely use when tailoring.",
   },
   {
     id: 2,
-    title: "Build your career profile",
-    panel: "Your career profile is the evidence CandidArc can safely use when tailoring a resume.",
-  },
-  {
-    id: 3,
-    title: "Review what CandidArc can use",
+    title: "Review and start",
     panel:
-      "When you choose a job, CandidArc analyzes its requirements and public company or team signals—such as likely technologies, initiatives and hiring patterns. Those signals help prioritize your real experience. They never become claims about you unless your career evidence supports them.",
+      "When you choose a job, CandidArc uses posting requirements and public team signals to prioritize your real experience—never to invent claims.",
   },
 ] as const;
 
@@ -87,7 +81,32 @@ export type EmploymentDraft = {
   location?: string;
   startDate?: string;
   endDate?: string;
+  isCurrent?: boolean;
   bullets?: string[];
+  technologies?: string[];
+};
+
+export type ProjectDraft = {
+  name?: string;
+  role?: string;
+  organization?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+  bullets?: string[];
+  technologies?: string[];
+  url?: string;
+  repoUrl?: string;
+};
+
+export type PublicationDraft = {
+  title?: string;
+  authors?: string[];
+  publisher?: string;
+  publicationDate?: string;
+  doi?: string;
+  url?: string;
+  description?: string;
 };
 
 export type OnboardingFormState = {
@@ -113,8 +132,27 @@ export type OnboardingFormState = {
   summary: string;
   skills: string[];
   employment: EmploymentDraft[];
-  education: Array<{ school?: string; degree?: string; field?: string; endDate?: string }>;
-  certifications: Array<{ name: string; issuer?: string; date?: string }>;
+  projects: ProjectDraft[];
+  education: Array<{
+    school?: string;
+    degree?: string;
+    field?: string;
+    location?: string;
+    startDate?: string;
+    endDate?: string;
+    gpa?: string;
+    honors?: string;
+  }>;
+  certifications: Array<{
+    name: string;
+    issuer?: string;
+    date?: string;
+    expirationDate?: string;
+    credentialId?: string;
+    credentialUrl?: string;
+  }>;
+  publications: PublicationDraft[];
+  lowConfidenceCount: number;
   careerProfileMode: "upload" | "manual" | "";
   evidenceNotes: string;
 };
@@ -143,8 +181,11 @@ export function emptyOnboardingForm(): OnboardingFormState {
     summary: "",
     skills: [],
     employment: [],
+    projects: [],
     education: [],
     certifications: [],
+    publications: [],
+    lowConfidenceCount: 0,
     careerProfileMode: "",
     evidenceNotes: "",
   };
@@ -166,6 +207,7 @@ export function normalizeList(values: string[]): string[] {
 
 export function formToPayload(form: OnboardingFormState): Record<string, unknown> {
   return {
+    onboardingFlowVersion: 3,
     targetRoles: normalizeList(form.targetRoles),
     seniority: form.seniority || null,
     targetCompanies: normalizeList(form.targetCompanies),
@@ -188,8 +230,10 @@ export function formToPayload(form: OnboardingFormState): Record<string, unknown
     summary: form.summary.trim() || null,
     skills: normalizeList(form.skills),
     employment: form.employment,
+    projects: form.projects,
     education: form.education,
     certifications: form.certifications,
+    publications: form.publications,
     careerProfileMode: form.careerProfileMode || undefined,
     evidenceNotes: form.evidenceNotes.trim() || undefined,
   };
@@ -203,19 +247,23 @@ export function validateStepClient(
   if (step === 0) {
     if (!normalizeList(form.targetRoles).length) return "Add at least one target role";
     if (!form.seniority) return "Select a seniority level";
-  }
-  if (step === 1) {
     if (!form.jobTypes.length) return "Select at least one job type";
     if (!form.workplaceModes.length) return "Select at least one workplace mode";
   }
-  if (step === 2) {
-    if (importStatus === "confirmed") return null;
+  if (step === 1) {
+    if (importStatus === "confirmed" || importStatus === "ready_for_review") return null;
+    if (["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "")) {
+      return "Wait for résumé import to finish, or choose Enter manually";
+    }
     if (!form.fullName.trim()) return "Add your name";
     const hasEmployment = form.employment.some((row) => row.title?.trim() || row.company?.trim());
     const hasSkills = normalizeList(form.skills).length > 0;
-    if (!hasEmployment && !hasSkills) {
-      return "Add at least one role or a few skills, or upload and confirm a resume";
-    }
+    const hasEducation = form.education.some((row) => row.school?.trim() || row.degree?.trim());
+    const hasCerts = form.certifications.some((row) => row.name?.trim());
+    const hasProjects = form.projects.some((row) => row.name?.trim());
+    const hasNotes = Boolean(form.evidenceNotes.trim());
+    if (hasEmployment || hasSkills || hasEducation || hasCerts || hasProjects || hasNotes) return null;
+    return "Add employment, projects, education, skills, or upload a resume";
   }
   return null;
 }

@@ -10,6 +10,7 @@ import { Input, Label } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthDivider, GoogleAuthButton, GoogleAuthErrorBanner } from "@/components/auth/google-auth-button";
+import { PasswordField } from "@/components/auth/password-field";
 import { product } from "@/config/product";
 
 export default function SignInPage() {
@@ -74,16 +75,11 @@ export default function SignInPage() {
                 <Label htmlFor="email">Email</Label>
                 <Input id="email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </div>
+              <PasswordField
+                autoComplete="current-password"
+                value={password}
+                onChange={setPassword}
+              />
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? "Signing in…" : "Sign in"}
               </Button>

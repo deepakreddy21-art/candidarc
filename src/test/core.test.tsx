@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { WorkflowJourney } from "@/components/applications/workflow-journey";
 import { ApplicationFilters } from "@/components/applications/application-filters";
+import { CreatingState } from "@/components/resumes/creating-state";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TooltipProvider } from "@/components/ui/tabs";
 import { product } from "@/config/product";
@@ -28,12 +28,14 @@ describe("product config", () => {
   });
 });
 
-describe("WorkflowJourney", () => {
-  it("renders generation journey stages for final QA", () => {
-    render(<WorkflowJourney currentStage="final-qa" />);
-    expect(screen.getByText("Final QA")).toBeInTheDocument();
-    expect(screen.getByText("HR Audit 1 completed")).toBeInTheDocument();
-    expect(screen.getByText("Draft V0 generated")).toBeInTheDocument();
+describe("CreatingState", () => {
+  it("shows only three customer-facing resume phases", () => {
+    render(<CreatingState pipelineStage="tailoring" pipelineLabel="Tailoring your resume" />);
+    expect(screen.getByLabelText("Resume progress")).toBeInTheDocument();
+    expect(screen.getByText("Researching the role")).toBeInTheDocument();
+    expect(screen.getAllByText("Tailoring your resume").length).toBeGreaterThan(0);
+    expect(screen.getByText("Quality checking")).toBeInTheDocument();
+    expect(screen.queryByText(/Final QA|HR Audit|EM Audit|V0/i)).not.toBeInTheDocument();
   });
 });
 
@@ -59,6 +61,7 @@ describe("ApplicationFilters", () => {
     await user.type(screen.getByLabelText("Search"), "C");
     expect(onChange).toHaveBeenCalled();
     expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ query: "C" });
+    expect(screen.queryByText(/board|kanban/i)).not.toBeInTheDocument();
   });
 });
 

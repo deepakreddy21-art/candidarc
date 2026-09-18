@@ -109,12 +109,48 @@ export default function RadarSavedPage() {
                           {s.alertEnabled ? " · alert enabled" : ""}
                         </p>
                       </div>
-                      <Link
-                        href={`/app/radar/search?${qs}`}
-                        className={buttonVariants({ variant: "secondary", size: "sm" })}
-                      >
-                        Open
-                      </Link>
+                      <div className="flex flex-wrap items-end gap-2">
+                        <label className="space-y-1 text-xs">
+                          <span className="text-foreground-muted">Name</span>
+                          <input
+                            aria-label={`Saved search name for ${s.name}`}
+                            defaultValue={s.name}
+                            className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+                            onBlur={async (event) => {
+                              const nextName = event.target.value.trim();
+                              if (!nextName || nextName === s.name) return;
+                              try {
+                                await radarApi.updateSavedSearch(s.id, { name: nextName });
+                                toast.success("Search renamed");
+                                await reload();
+                              } catch (error) {
+                                toast.error(error instanceof Error ? error.message : "Could not rename search");
+                              }
+                            }}
+                          />
+                        </label>
+                        <Link
+                          href={`/app/radar/search?${qs}`}
+                          className={buttonVariants({ variant: "secondary", size: "sm" })}
+                        >
+                          Open
+                        </Link>
+                        <button
+                          type="button"
+                          className={buttonVariants({ variant: "ghost", size: "sm" })}
+                          onClick={async () => {
+                            try {
+                              await radarApi.deleteSavedSearch(s.id);
+                              toast.success("Search deleted");
+                              await reload();
+                            } catch (error) {
+                              toast.error(error instanceof Error ? error.message : "Could not delete search");
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </CardContent>
                   </Card>
                 );
@@ -132,7 +168,7 @@ export default function RadarSavedPage() {
             <SavedSearchForm
               initialQuery={{
                 q: "AI engineer",
-                remote: "remote",
+                remotePolicy: "remote",
                 freshnessPreset: "7d",
                 freshnessBasis: "discovered",
                 freshnessType: "new_or_reposted",

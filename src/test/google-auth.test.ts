@@ -1378,6 +1378,6 @@ describe("Password login redirectTo", () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { redirectTo: string };
-    expect(body.redirectTo).toBe("/app");
+    expect(body.redirectTo).toBe("/app/radar");
   });
 });

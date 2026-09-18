@@ -5,8 +5,8 @@ import postgres from "postgres";
 config();
 
 async function main() {
-  const { getEnv } = await import("../config/env");
-  const env = getEnv();
+  const { getMigrationEnv } = await import("../config/env");
+  const env = getMigrationEnv();
   if (env.CANDIDARC_DATA_MODE !== "postgres") {
     console.log("Skipping migrate: CANDIDARC_DATA_MODE is not postgres");
     return;
