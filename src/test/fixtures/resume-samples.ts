@@ -1,8 +1,11 @@
 /** Deterministic non-copyrighted résumé fixtures for import regression tests. */
 
 export const PROFESSIONAL_EXPERIENCE_RESUME = `Jordan Blake
-jordan.blake@example.com | (555) 010-2244 | Seattle, WA
-linkedin.com/in/jordanblake | github.com/jordanblake
+Email: jordan.blake@example.com
+Phone: (555) 010-2244
+Location: Seattle, WA
+LinkedIn: linkedin.com/in/jordanblake
+GitHub: github.com/jordanblake
 
 PROFESSIONAL EXPERIENCE
 
