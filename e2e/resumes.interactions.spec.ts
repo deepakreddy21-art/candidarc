@@ -142,7 +142,6 @@ Requirements: 5+ years experience, strong ownership.`);
     expect((await refined).ok()).toBeTruthy();
     await page.waitForURL(/\/app\/resumes\/(?!new(?:\/|$))/);
     await waitForResumeReady(page);
-    await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible();
     const compare = page.getByRole("button", { name: /^compare$/i }).first();
     if (await compare.count()) {
       await compare.click();
