@@ -92,14 +92,27 @@ async function measureVisit(
   await expect(page).toHaveURL(dest.homeHref, { timeout: 15_000 });
 
   const start = Date.now();
+  const feedbackRace = Promise.race([
+    page
+      .getByTestId("nav-pending")
+      .waitFor({ state: "visible", timeout: 2_000 })
+      .then(() => Date.now() - start),
+    page.waitForURL(dest.href, { timeout: 2_000 }).then(() => Date.now() - start),
+  ]);
+
   if (dest.name === "Settings") {
     await page.getByRole("button", { name: /user menu/i }).click();
     await page.getByRole("menuitem", { name: /^settings$/i }).click();
   } else {
     await nav.getByRole("link", { name: dest.name }).click();
   }
-  await expect(page.getByTestId("nav-pending").or(page.locator("main"))).toBeVisible({ timeout: 2_000 });
-  const feedbackMs = Date.now() - start;
+
+  let feedbackMs = 2_000;
+  try {
+    feedbackMs = await feedbackRace;
+  } catch {
+    // Neither pending bar nor URL settled within 2s — still require a real transition below.
+  }
   await expect(page).toHaveURL(dest.href, { timeout: 15_000 });
   await dest.usable(page);
   return { feedbackMs, usableMs: Date.now() - start };
