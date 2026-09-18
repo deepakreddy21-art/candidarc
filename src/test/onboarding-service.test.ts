@@ -10,7 +10,7 @@ import {
 } from "../../server/database/repositories";
 import { ProfileService } from "../../server/modules/profile/service";
 import { AppError } from "../../server/domain/types";
-import { normalizeTitleList } from "../../server/modules/profile/onboarding";
+import { normalizeTitleList, mergeExtraction } from "../../server/modules/profile/onboarding";
 
 function context(userId: string, tenantId: string, repos: Repositories): AuthContext {
   return {
@@ -269,5 +269,58 @@ describe("demo user onboarding", () => {
     const profile = await repos.candidateProfiles.getByUser(tenantId, userId);
     expect(profile?.onboardingCompletedAt).toBeTruthy();
     expect(DEMO_USER.email).toContain("@");
+  });
+});
+
+describe("mergeExtraction career preservation", () => {
+  it("does not let empty autosave arrays wipe extracted employment and related sections", () => {
+    const existing = {
+      contact: {
+        fullName: "Jordan Blake",
+        email: "jordan.blake@example.com",
+        linkedIn: "linkedin.com/in/jordanblake",
+      },
+      employment: [{ title: "Platform Engineer", company: "Harbor Systems", bullets: ["Pipelines"] }],
+      projects: [{ name: "Observability Fabric", bullets: ["Collectors"] }],
+      education: [{ institution: "Cascadia University", degree: "B.S. Computer Science" }],
+      certifications: ["AWS Solutions Architect Associate"],
+      certificationEntries: [{ name: "AWS Solutions Architect Associate" }],
+      publications: [{ title: "Reliable Rollouts" }],
+      skills: ["Kubernetes"],
+    };
+
+    const merged = mergeExtraction(existing, {
+      employment: [],
+      projects: [],
+      education: [],
+      certifications: [],
+      publications: [],
+      skills: [],
+      email: "import-pdf@example.com",
+      linkedIn: "",
+      careerProfileMode: "upload",
+      onboardingFlowVersion: 3,
+    });
+
+    expect(merged.employment).toEqual(existing.employment);
+    expect(merged.projects).toEqual(existing.projects);
+    expect(merged.education).toEqual(existing.education);
+    expect(merged.certifications).toEqual(existing.certifications);
+    expect(merged.publications).toEqual(existing.publications);
+    expect(merged.skills).toEqual(["Kubernetes"]);
+    expect((merged.contact as { email?: string }).email).toBe("jordan.blake@example.com");
+    expect((merged.contact as { linkedIn?: string }).linkedIn).toBe("linkedin.com/in/jordanblake");
+    expect(merged.careerProfileMode).toBe("upload");
+  });
+
+  it("still accepts the first non-empty career write onto an empty extraction", () => {
+    const merged = mergeExtraction({}, {
+      employment: [{ title: "Platform Engineer", company: "Harbor Systems", bullets: ["Pipelines"] }],
+      skills: ["Kubernetes", " kubernetes"],
+    });
+    expect(merged.employment).toEqual([
+      { title: "Platform Engineer", company: "Harbor Systems", bullets: ["Pipelines"] },
+    ]);
+    expect(merged.skills).toEqual(["Kubernetes"]);
   });
 });

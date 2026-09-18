@@ -149,7 +149,9 @@ export function mergeExtractionPreservingPreferences(
       id: "",
       fullName: prev.fullName,
       preferredName: "",
-      email: prev.email,
+      // Do not seed the signup/account email into extraction merges — that masked missing
+      // contact.email and made import review look like the account address was extracted.
+      email: "",
       phone: prev.phone,
       location: prev.location,
       linkedIn: prev.linkedIn,
@@ -178,6 +180,9 @@ export function mergeExtractionPreservingPreferences(
   );
   return {
     ...mapped,
+    // If extraction omitted email entirely, keep whatever the candidate already typed —
+    // but never reintroduce the account address over a blank extraction email.
+    email: mapped.email || (prev.email.includes("@example.com") && prev.email.startsWith("import-") ? "" : prev.email),
     careerProfileMode: "upload",
     targetRoles: prev.targetRoles,
     seniority: prev.seniority,

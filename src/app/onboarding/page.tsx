@@ -214,9 +214,12 @@ export default function OnboardingPage() {
     try {
       await flushQueue({ form: formRef.current, step: stepRef.current });
       // Keep confirmed/draft form values visible until the new extraction is ready.
-      // Server stages a new draft; failed upload/parse must not wipe prior profile data.
-      patchForm({
-        careerProfileMode: "upload",
+      // Do not debounce-save here: an empty career autosave can race the Python parse and
+      // clobber employment/projects while contact/certificationEntries still look fine.
+      setForm((prev) => {
+        const next = { ...prev, careerProfileMode: "upload" as const };
+        formRef.current = next;
+        return next;
       });
       const result = await api.uploadResume(file);
       setImportStatus(result.importStatus);
