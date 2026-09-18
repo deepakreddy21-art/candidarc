@@ -33,3 +33,6 @@ services/python-backend/.pytest_cache/
 resume-import-screenshots/
 
 playwright-report-built/
+
+.tmp-import-uat/
+

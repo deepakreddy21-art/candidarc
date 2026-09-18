@@ -50,6 +50,7 @@ export type ResumeExtractionSection = {
     github?: string;
     portfolio?: string;
     otherUrls?: string[];
+    headline?: string;
     provenance?: ExtractionProvenance;
   };
   professionalSummary?: string;
@@ -247,6 +248,32 @@ export function normalizeResumeText(text: string, warnings: string[] = []): Resu
   const urls = joined.match(URL_RE) ?? [];
   const portfolio = urls.find((u) => !/linkedin|github/i.test(u));
 
+  let fullName: string | undefined;
+  let headline: string | undefined;
+  const titleCaseName = (value: string) =>
+    value === value.toUpperCase()
+      ? value.replace(/\w+/g, (w) => w[0]!.toUpperCase() + w.slice(1).toLowerCase())
+      : value;
+  const looksLikePersonName = (value: string) =>
+    /^[A-Za-z][A-Za-z'’.\-]*(?:\s+[A-Za-z][A-Za-z'’.\-]*){0,4}$/.test(value) &&
+    !/\b(engineer|developer|architect|manager|analyst|mechanic|consultant|specialist)\b/i.test(value);
+  for (const line of lines.slice(0, 4)) {
+    if (EMAIL_RE.test(line) || PHONE_RE.test(line) || matchHeader(line)) continue;
+    if (DATE_RANGE_RE.test(line)) continue;
+    if (line.includes("|")) {
+      const [left, right] = line.split("|").map((p) => p.trim());
+      if (left && looksLikePersonName(left) && right) {
+        fullName = titleCaseName(left);
+        headline = right.slice(0, 200);
+        break;
+      }
+    }
+    if (line.length < 80 && looksLikePersonName(line)) {
+      fullName = titleCaseName(line);
+      break;
+    }
+  }
+
   const sections: Record<string, string[]> = { header: [] };
   let current = "header";
   for (const line of lines) {
@@ -297,13 +324,14 @@ export function normalizeResumeText(text: string, warnings: string[] = []): Resu
   return adaptResumeExtractionV1ToV2({
     schemaVersion: 2,
     contact: {
-      fullName: lines.find((line) => !EMAIL_RE.test(line) && !matchHeader(line) && line.length < 80),
+      fullName,
       email: emails[0],
       phone: phones[0],
       location: undefined,
       linkedIn,
       github,
       portfolio,
+      headline,
     },
     professionalSummary: (sections.summary ?? []).join("\n") || undefined,
     employment,
@@ -327,31 +355,100 @@ export function normalizeResumeText(text: string, warnings: string[] = []): Resu
   })!;
 }
 
+function isBulletLine(line: string) {
+  return /^[-•*●▪◦?]/.test(line) || /^\d+[.)]\s+/.test(line);
+}
+
+function looksLikeRoleHeader(line: string) {
+  if (isBulletLine(line) || line.length > 220) return false;
+  const hasPipe = /\s+[|@]\s+/.test(line);
+  const hasDates = DATE_RANGE_RE.test(line);
+  const hasTitle =
+    /\b(engineer|developer|architect|manager|analyst|consultant|specialist|scientist|designer|intern|lead|director|officer|administrator|programmer|founder|owner|researcher|technician|coordinator)\b/i.test(
+      line,
+    );
+  if (hasPipe && (hasDates || hasTitle)) return true;
+  if (hasDates && hasTitle) return true;
+  if (hasTitle && /\s+[-–—]\s+/.test(line) && line.length < 120) return true;
+  return false;
+}
+
+function splitEmployerLocation(rest: string): { company?: string; location?: string } {
+  const cleaned = rest.replace(/^[\s\-–,|/]+|[\s\-–,|/]+$/g, "");
+  const match = cleaned.match(
+    /,\s*([A-Za-z][A-Za-z .'-]+,\s*[A-Z]{2}(?:\s*,\s*[A-Za-z][A-Za-z .'-]+)?|[A-Za-z][A-Za-z .'-]+,\s*[A-Za-z][A-Za-z .'-]+)\s*$/,
+  );
+  if (match && match.index != null) {
+    return {
+      company: cleaned.slice(0, match.index).replace(/^[\s\-–,|/]+|[\s\-–,|/]+$/g, "") || undefined,
+      location: match[1]?.trim(),
+    };
+  }
+  return { company: cleaned || undefined };
+}
+
+function reflowExperienceLines(lines: string[]) {
+  const out: string[] = [];
+  for (const line of lines) {
+    if (!line) continue;
+    if (isBulletLine(line) || looksLikeRoleHeader(line) || out.length === 0) {
+      out.push(line);
+      continue;
+    }
+    const prev = out[out.length - 1]!;
+    const prevIncomplete = !/[.!?]\s*$/.test(prev.trimEnd());
+    const contLower = /^[a-z0-9]/.test(line);
+    const contMidword = /[-–—/]\s*$/.test(prev.trimEnd());
+    if (isBulletLine(prev) || (!looksLikeRoleHeader(prev) && (prevIncomplete || contLower || contMidword))) {
+      out[out.length - 1] = `${prev.trimEnd()} ${line.trimStart()}`;
+      continue;
+    }
+    if (isBulletLine(prev) || prevIncomplete) {
+      out[out.length - 1] = `${prev.trimEnd()} ${line.trimStart()}`;
+      continue;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
 function chunkExperience(lines: string[]) {
   const jobs: ResumeExtractionSection["employment"] = [];
   let current: ResumeExtractionSection["employment"][number] | null = null;
+  const reflowed = reflowExperienceLines(lines);
 
-  for (const line of lines) {
-    const isBullet = /^[-•*●]/.test(line) || /^\d+[.)]/.test(line);
-    const dateMatch = line.match(DATE_RANGE_RE);
-    if (isBullet) {
-      if (!current) current = { bullets: [], technologies: [] };
-      current.bullets.push(line.replace(/^[-•*●\d.)]+\s*/, ""));
-      continue;
-    }
-    if (dateMatch && current && !current.startDate) {
-      current.startDate = dateMatch[1];
-      current.endDate = dateMatch[2];
-      current.isCurrent = /^(present|current)$/i.test(dateMatch[2] ?? "");
-      continue;
-    }
-    if (!isBullet && line.length < 140) {
-      if (current) jobs.push(current);
-      const parts = line.split(/\s+[|@]\s+|\s+[-–—]\s+/);
+  const flush = () => {
+    if (!current) return;
+    jobs.push(current);
+    current = null;
+  };
+
+  for (const line of reflowed) {
+    if (looksLikeRoleHeader(line)) {
+      flush();
+      const dateMatch = line.match(DATE_RANGE_RE);
+      const withoutDates = line.replace(DATE_RANGE_RE, "").replace(/^[\s\-–,|/]+|[\s\-–,|/]+$/g, "");
+      const pipeParts = withoutDates.split(/\s+[|@]\s+/).map((p) => p.trim()).filter(Boolean);
+      let title = pipeParts[0];
+      let company: string | undefined;
+      let location: string | undefined;
+      if (pipeParts.length >= 2) {
+        const split = splitEmployerLocation(pipeParts[1]!);
+        company = split.company;
+        location = split.location ?? pipeParts[2];
+      } else {
+        const dashParts = withoutDates.split(/\s+[-–—]\s+/).map((p) => p.trim()).filter(Boolean);
+        if (dashParts.length >= 2) {
+          title = dashParts[0];
+          const split = splitEmployerLocation(dashParts[1]!);
+          company = split.company;
+          location = split.location;
+        }
+      }
       current = {
-        title: parts[0],
-        company: parts[1],
-        location: parts[2],
+        title,
+        company,
+        location,
         startDate: dateMatch?.[1],
         endDate: dateMatch?.[2],
         isCurrent: dateMatch?.[2] ? /^(present|current)$/i.test(dateMatch[2]) : undefined,
@@ -361,36 +458,58 @@ function chunkExperience(lines: string[]) {
       };
       continue;
     }
-    if (!current) current = { bullets: [], technologies: [] };
+    if (isBulletLine(line)) {
+      if (!current) current = { bullets: [], technologies: [], sourceOrder: jobs.length };
+      current.bullets.push(line.replace(/^[-•*●▪◦?\d.)]+\s*/, ""));
+      continue;
+    }
+    if (!current) current = { bullets: [], technologies: [], sourceOrder: jobs.length };
     current.bullets.push(line);
   }
-  if (current) jobs.push(current);
+  flush();
   return jobs.filter((job) => job.title || job.company || job.bullets.length);
 }
 
 function chunkEducation(lines: string[]) {
-  const yearRe = /\b(19|20)\d{2}\b/;
+  const yearRe = /^(19|20)\d{2}$/;
+  const degreeRe =
+    /\b(B\.?S\.?|B\.?A\.?|B\.?Tech\.?|M\.?S\.?|M\.?A\.?|M\.?Tech\.?|MBA|Ph\.?D\.?|Bachelor'?s?|Master'?s?|Associate'?s?)\b/i;
   return lines.slice(0, 20).map((line) => {
-    const parts = line.split(/\s+[|,—-]\s+/).map((p) => p.trim()).filter(Boolean);
+    let parts = line.split(/\s+[|]\s+/).map((p) => p.trim()).filter(Boolean);
+    if (parts.length < 2) parts = line.split(/\s+[,—-]\s+/).map((p) => p.trim()).filter(Boolean);
     let endDate: string | undefined;
-    if (parts.length && yearRe.test(parts[parts.length - 1]!)) {
-      endDate = parts.pop();
-    }
+    if (parts.length && yearRe.test(parts[parts.length - 1]!)) endDate = parts.pop();
     let degree: string | undefined;
     let institution: string | undefined;
     let field: string | undefined;
-    if (parts.length >= 2 && /B\.?S\.?|B\.?A\.?|M\.?S\.?|Bachelor|Master/i.test(parts[0]!)) {
+    let location: string | undefined;
+    if (parts.length >= 3 && degreeRe.test(parts[0]!)) {
       degree = parts[0];
-      institution = parts[1];
-      field = parts[2];
+      field = parts[1];
+      const split = splitEmployerLocation(parts[2]!);
+      institution = split.company;
+      location = split.location;
+    } else if (parts.length >= 2 && degreeRe.test(parts[0]!)) {
+      const inMatch = parts[0]!.match(/^(.+?)\s+in\s+(.+)$/i);
+      if (inMatch) {
+        degree = inMatch[1];
+        field = inMatch[2];
+      } else {
+        degree = parts[0];
+      }
+      const split = splitEmployerLocation(parts[1]!);
+      institution = split.company;
+      location = split.location;
     } else if (parts.length >= 2) {
-      institution = parts[0];
+      const split = splitEmployerLocation(parts[0]!);
+      institution = split.company;
+      location = split.location;
       degree = parts[1];
       field = parts[2];
     } else {
       institution = parts[0] ?? line;
     }
-    return { institution, degree, field, endDate };
+    return { institution, degree, field, location, endDate };
   });
 }
 
