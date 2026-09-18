@@ -24,6 +24,7 @@ from app.domain.schemas import (
 )
 from app.modules.guardrails.service import INJECTION_MARKERS, KNOWN_TECH_HINTS
 from app.modules.parsing.fields import BULLET_RE
+from app.modules.parsing.links import linked_text, pdf_link_text
 from app.modules.parsing.structure import _normalize_header, structure_resume_text
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024
@@ -310,7 +311,7 @@ def _parse_pdf(raw: bytes) -> ResumeParseResponse:
     if page_count > MAX_PDF_PAGES:
         raise ValueError("PDF_PAGE_LIMIT_EXCEEDED")
     try:
-        pages = [_extract_pdf_page_text(page) for page in reader.pages]
+        pages = [pdf_link_text(page, _extract_pdf_page_text(page)) for page in reader.pages]
     except Exception as exc:
         raise ValueError("CORRUPT_PDF") from exc
     text = "\n".join(pages).strip()
@@ -335,9 +336,16 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
 
     from docx import Document
     from docx.table import Table
+    from docx.text.hyperlink import Hyperlink
     from docx.text.paragraph import Paragraph
 
     document = Document(io.BytesIO(raw))
+
+    def paragraph_text(paragraph: Any) -> str:
+        return "".join(
+            linked_text(part.text, part.url) if isinstance(part, Hyperlink) else part.text
+            for part in paragraph.iter_inner_content()
+        )
 
     def is_list_paragraph(paragraph: Any) -> bool:
         properties = paragraph._p.pPr
@@ -357,7 +365,7 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
         lines: list[str] = []
         for block in container.iter_inner_content():
             if isinstance(block, Paragraph):
-                paragraph_lines = [line for line in block.text.splitlines() if line.strip()]
+                paragraph_lines = [line for line in paragraph_text(block).splitlines() if line.strip()]
                 if paragraph_lines and is_list_paragraph(block) and not BULLET_RE.match(paragraph_lines[0]):
                     paragraph_lines[0] = "- " + paragraph_lines[0]
                 lines.extend(paragraph_lines)
@@ -384,9 +392,10 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
     for section in document.sections:
         for header in (section.header, section.first_page_header):
             for paragraph in header.paragraphs:
-                if paragraph.text.strip() and paragraph.text not in seen_headers:
-                    seen_headers.add(paragraph.text)
-                    header_lines.append(paragraph.text)
+                value = paragraph_text(paragraph)
+                if value.strip() and value not in seen_headers:
+                    seen_headers.add(value)
+                    header_lines.append(value)
     text = "\n".join(header_lines + blocks(document)).strip()
     if not text:
         raise ValueError("EMPTY_DOCUMENT")

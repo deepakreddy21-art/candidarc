@@ -77,3 +77,36 @@ Verification for this correction:
 The newer screenshot template's original PDF/DOCX has not been supplied in this session. Its observed failure is reproduced using synthetic text/layout twins, not claimed as verification of the exact source document. Existing confirmed profiles are not rewritten: replace/re-import, review and confirm to adopt new parsing. Arbitrary ambiguous layouts, unknown headings and image-only PDFs remain limitations; no rule-based or model-based extractor can promise perfect results on every document. A future optional model fallback should use schema-constrained extraction, per-field source verification, bounded time/cost, and explicit uncertainty—not fill missing candidate facts from general knowledge.
 
 References: [pypdf text extraction and layout limitations](https://pypdf.readthedocs.io/en/stable/user/extract-text.html), [python-docx document content ordering](https://python-docx.readthedocs.io/en/latest/api/document.html).
+## Uploaded PDF verification: links and wrapped lists
+
+A second private, two-page résumé was run through the real import route, FastAPI
+parser, confirmation, reload, and production profile-to-form mapper. The original
+file and its private contact details remain outside Git. Synthetic PDF/DOCX
+fixtures preserve the relevant layout for CI.
+
+The uploaded source correctly yields two employers/roles, twelve responsibility
+bullets, one education record spanning the page break, thirty-five skill entries
+in six categories, and two certifications. It contains no projects, publications,
+or education dates; the importer leaves these absent.
+
+This file exposed missing link annotation targets, truncated skill categories,
+parenthetical skill splitting, and unseparated certification issuers. The fix:
+
+- Reads bounded HTTP(S) hyperlink targets at their document anchors in PDF and
+  Word; it never fetches URLs or executes PDF actions.
+- Keeps project/credential URLs out of candidate contact fields.
+- Joins wrapped category lines and preserves parenthetical skill detail and
+  compound names such as CI/CD.
+- Separates explicitly prefixed issuing bodies from certification names.
+- Uses independently delimited employer context to resolve nontechnical titles.
+- Preserves suspicious phone text and ambiguous line-end hyphenation with review
+  flags instead of silently changing source content.
+
+Verification for this pass: 285 Python tests passed with five environment skips;
+14 real-FastAPI import journeys passed, plus one private-file journey including
+the production form mapper. Ruff, mypy, TypeScript, and changed-file ESLint pass.
+No dependency, migration, AI key, or paid provider call was needed. Merge remains
+paused pending review of the source-document ambiguities.
+
+References: [pypdf annotations](https://pypdf.readthedocs.io/en/stable/user/reading-pdf-annotations.html),
+[python-docx hyperlinks](https://python-docx.readthedocs.io/en/latest/api/text.html#hyperlink-objects).

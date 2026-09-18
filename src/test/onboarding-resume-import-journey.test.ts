@@ -5,7 +5,7 @@
  * @vitest-environment node
  */
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, it } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { resolve } from "path";
@@ -395,6 +395,48 @@ describe("onboarding resume import journey (real FastAPI)", () => {
     const saved = await (await GET(new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }))).json();
     expect(saved.status).toBe("confirmed");
     for (const field of ["employment", "education", "projects"] as const) expect(saved.extraction[field]).toEqual(body.extraction[field]);
+  }, 60_000);
+
+  it.each(["pdf", "docx"])("persists %s hyperlink targets, wrapped skill groups and issuing bodies", async (format) => {
+    const fixture = spawnSync(venvPython, ["-c", "import sys; from tests.fixtures.linked_resume import linked_resume_bytes; sys.stdout.buffer.write(linked_resume_bytes(sys.argv[1]))", format], {
+      cwd: backendRoot, timeout: 10_000,
+    });
+    expect(fixture.status, fixture.stderr?.toString()).toBe(0);
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const form = new FormData();
+    const type = format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    form.append("file", new File([Uint8Array.from(fixture.stdout)], `linked.${format}`, { type }));
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    expect((await upload(new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf }, body: form,
+    }))).status).toBe(201);
+    const body = await waitImportReady(cookie);
+    expect(body.status).toBe("ready_for_review");
+    expect(body.extraction.contact).toMatchObject({ linkedIn: "linkedin.com/in/casey-example", portfolio: "https://casey.example.com" });
+    expect(body.extraction.employment).toHaveLength(2);
+    expect(body.extraction.employment[0]).toMatchObject({ company: "Harbor Logistics", title: "Senior Supply Chain Analyst", location: "Bensenville, Illinois" });
+    expect(body.extraction.education).toHaveLength(1);
+    expect(body.extraction.education[0]).toMatchObject({ institution: "Lakeside Institute of Technology", degree: "Master's", field: "Industrial Technology and Operations" });
+    expect(body.extraction.skills).toHaveLength(13);
+    expect(body.extraction.skills).toContain("continuous improvement");
+    expect(body.extraction.skills).toContain("Excel (advanced formulas, pivot tables, Power Query, VLOOKUP)");
+    expect(body.extraction.skillGroups).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: "Forecasting & Planning", skills: ["demand planning", "safety stock modeling", "inventory optimization"] }),
+    ]));
+    expect(body.extraction.certificationEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "Certified Supply Chain Professional", issuer: "ASCM" }),
+    ]));
+    const { POST: confirm } = await import("../../src/app/api/v1/profile/resume/confirm/route");
+    expect((await confirm(new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" }, body: "{}",
+    }))).status).toBe(200);
+    const { GET } = await import("../../src/app/api/v1/profile/resume/import/route");
+    const saved = await (await GET(new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }))).json();
+    expect(saved.status).toBe("confirmed");
+    for (const field of ["contact", "employment", "education", "skills", "skillGroups", "certificationEntries"] as const) {
+      expect(saved.extraction[field]).toEqual(body.extraction[field]);
+    }
   }, 60_000);
 
   it("returns IMAGE_ONLY_PDF_OCR_REQUIRED for scanned PDFs", async () => {

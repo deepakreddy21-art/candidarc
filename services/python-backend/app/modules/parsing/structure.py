@@ -7,6 +7,7 @@ import unicodedata
 from typing import Any
 
 from app.modules.parsing.fields import DATE_RANGE_RE, TITLE_HINT_RE, is_location
+from app.modules.parsing.links import strip_link_targets
 from app.modules.parsing.records import (
     chunk_education as _chunk_education,
 )
@@ -187,10 +188,15 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
         if ":" in line:
             continue
     name_parts = _split_name(full_name)
+    contact_warnings = ["headline_separated"] if headline else []
+    if phones:
+        digits = re.sub(r"\D", "", phones[0])
+        if not 7 <= len(digits) <= 15 or (phones[0].startswith("+1") and len(digits) != 11):
+            contact_warnings.append("phone_needs_review")
     provenance = _provenance(
         name_line or (emails[0] if emails else None),
-        confidence="high" if full_name and emails else "medium",
-        warnings=["headline_separated"] if headline else None,
+        confidence="high" if full_name and emails and not contact_warnings else "medium",
+        warnings=contact_warnings,
     )
     if headline:
         provenance["location_hint"] = f"headline:{headline}"
@@ -225,8 +231,8 @@ def _chunk_certifications(lines: list[str]) -> tuple[list[str], list[dict[str, A
         issue_date = None
         credential_id = None
         credential_url = None
-        name = cleaned
-        parts = [p.strip() for p in re.split(r"\s+[|—-]\s+", cleaned) if p.strip()]
+        name = strip_link_targets(cleaned)
+        parts = [p.strip() for p in re.split(r"\s+[|—-]\s+", name) if p.strip()]
         if len(parts) >= 2:
             name = parts[0]
             # Second token may be issuer or year
@@ -236,6 +242,11 @@ def _chunk_certifications(lines: list[str]) -> tuple[list[str], list[dict[str, A
                 issuer = parts[1]
             if len(parts) >= 3 and re.search(r"(19|20)\d{2}", parts[2]):
                 issue_date = re.search(r"(19|20)\d{2}", parts[2]).group(0)  # type: ignore[union-attr]
+        # Explicit "Issuing body: Certified ..." carries both fields; a generic
+        # "Certification: ..." label does not identify an issuer.
+        prefix = re.match(r"^([^:]{2,120}):\s*((?:Certified|Certification|Certificate|Licensed)\b.+)$", name, re.I)
+        if prefix and not re.search(r"\b(?:certification|certificate|credential|license)\b", prefix[1], re.I):
+            issuer, name = prefix[1].strip(), prefix[2].strip()
         url_match = URL_RE.search(cleaned)
         if url_match:
             credential_url = url_match.group(0)
@@ -299,21 +310,49 @@ def _chunk_publications(lines: list[str]) -> list[dict[str, Any]]:
     return out
 
 
+def _skill_tokens(value: str) -> list[str]:
+    """Split list separators, preserving parenthetical detail and CI/CD-like names."""
+    value = strip_link_targets(value)
+    tokens: list[str] = []
+    start = depth = 0
+    for index, char in enumerate(value):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and (char in ",;•|\n" or (char == "/" and value[index-1:index] == " " and value[index+1:index+2] == " ")):
+            tokens.append(value[start:index].strip())
+            start = index + 1
+    tokens.append(value[start:].strip())
+    normalized = [re.sub(r"\s+", " ", token).strip() for token in tokens]
+    return [token for token in normalized if 1 < len(token) <= 128]
+
+
 def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
     flat: list[str] = []
     groups: list[dict[str, Any]] = []
+    category: str | None = None
+    pending = ""
+
+    def flush() -> None:
+        nonlocal pending
+        skills = _skill_tokens(pending)
+        if category and skills:
+            groups.append({"category": category[:128], "skills": skills[:100]})
+        flat.extend(skills)
+        pending = ""
+
     for line in lines:
-        if ":" in line and len(line.split(":", 1)[0]) < 40:
-            category, rest = line.split(":", 1)
-            skills = [s.strip() for s in re.split(r"[,•|/]", rest) if 1 < len(s.strip()) < 60]
-            if skills:
-                groups.append({"category": category.strip()[:128], "skills": skills[:100]})
-                flat.extend(skills)
+        label = re.match(r"^([^:]{1,80}):\s*(.*)$", line)
+        if label and label[1].casefold() not in {"http", "https"}:
+            flush()
+            category, pending = label[1].strip(), label[2].strip()
             continue
-        for s in re.split(r"[,•|/]", line):
-            token = s.strip()
-            if 1 < len(token) < 60:
-                flat.append(token)
+        # Wrapped lists continue their category. Standalone lines remain separate
+        # items, while a lowercase continuation preserves a wrapped phrase.
+        wraps = pending.endswith((",", ";", "|")) or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
+        pending += (" " if wraps else "\n") + re.sub(r"^[-•*]\s+", "", line)
+    flush()
     # Deduplicate only normalized exact equivalents
     seen: set[str] = set()
     deduped: list[str] = []
@@ -360,7 +399,8 @@ def structure_resume_text(text: str, warnings: list[str] | None = None) -> dict[
     projects = _chunk_projects(sections.get("projects", []))
     certifications_legacy, certification_entries = _chunk_certifications(sections.get("certifications", []))
     publications = _chunk_publications(sections.get("publications", []))
-    contact = _contact_from_text(lines, joined)
+    contact_lines = sections.get("header", [])
+    contact = _contact_from_text(contact_lines, "\n".join(contact_lines))
     professional_summary = "\n".join(sections.get("summary", [])).strip() or None
 
     missing: list[str] = []
@@ -386,6 +426,8 @@ def structure_resume_text(text: str, warnings: list[str] | None = None) -> dict[
         for index, row in enumerate(rows)
         for warning in row.get("provenance", {}).get("warnings", [])
     ]
+    record_warnings.extend(f"contact.{warning}" for warning in contact.get("provenance", {}).get("warnings", [])
+                           if warning != "headline_separated")
     missing.extend(record_warnings)
     quality = "high" if employment and skills and not record_warnings else "medium" if usable else "low"
     if not usable:

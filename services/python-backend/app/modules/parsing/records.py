@@ -25,6 +25,7 @@ from app.modules.parsing.fields import (
     split_cells,
     split_organization_location,
 )
+from app.modules.parsing.links import strip_link_targets
 
 _TECHNOLOGIES = (
     "Python", "TypeScript", "JavaScript", "Node.js", "React", "Kubernetes", "PostgreSQL",
@@ -66,7 +67,7 @@ def _role_header(lines: list[str]) -> dict[str, Any]:
     unknown: list[str] = []
     warnings: list[str] = []
     for line in lines:
-        text, start, end = dates_from(line)
+        text, start, end = dates_from(strip_link_targets(line))
         if start:
             row.update(start_date=start, end_date=end)
         cells = split_cells(text)
@@ -117,6 +118,9 @@ def _role_header(lines: list[str]) -> dict[str, Any]:
             unknown.append(organization)
     if row["title"] and not row["employer"] and len(unknown) == 1:
         row["employer"] = unknown.pop()
+        # An independent employer cell resolves the boundary even for titles
+        # outside the modifier vocabulary (e.g. Senior Supply Chain Analyst).
+        warnings = [warning for warning in warnings if warning != "ambiguous_title_employer_boundary"]
     if unknown:
         warnings.append("unassigned_role_header")
     row["is_current"] = is_current(row["end_date"])
@@ -155,6 +159,9 @@ def chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
             shared_employer = None
         warnings = row.pop("_warnings")
         warnings.extend(f"missing_{key}" for key in ("title", "employer") if not row[key])
+        if any(re.search(r"\w-$", left) and re.match(r"[a-z]", right)
+               for left, right in zip(source, source[1:])):
+            warnings.append("line_break_hyphenation")
         row.update(bullets=bullets, technologies=technologies(bullets), source_order=len(out),
                    provenance=provenance(source, warnings))
         out.append(row)
@@ -175,6 +182,7 @@ def chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
 
 
 def _education_line(line: str) -> dict[str, Any]:
+    line = strip_link_targets(line)
     row: dict[str, Any] = {}
     text, start, end = dates_from(line, single=True)
     if start:
@@ -287,7 +295,7 @@ def chunk_education(lines: list[str]) -> list[dict[str, Any]]:
 def _project_header(line: str) -> dict[str, Any]:
     text, start, end = dates_from(line)
     urls = _URL.findall(text)
-    text = _URL.sub("", text)
+    text = _URL.sub("", strip_link_targets(text))
     cells = split_cells(text)
     row: dict[str, Any] = dict(name=cells[0] if cells else None, role=None, organization=None,
                               start_date=start, end_date=end, description="", bullets=[], technologies=[], url=None, repo_url=None)
@@ -317,7 +325,10 @@ def chunk_projects(lines: list[str]) -> list[dict[str, Any]]:
 
     for line in lines:
         urls = _URL.findall(line)
-        if current is not None and urls and not _URL.sub("", line).strip(" |"):
+        link_label = _URL.sub("", strip_link_targets(line)).strip(" |()")
+        if current is not None and urls and (not link_label or link_label.casefold() in {
+            "github", "repository", "repo", "source code", "demo", "website", "project link", "link",
+        }):
             for url in urls:
                 current["repo_url" if "github.com/" in url.lower() else "url"] = url
             source.append(line)
