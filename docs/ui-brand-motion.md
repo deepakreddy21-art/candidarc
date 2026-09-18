@@ -4,15 +4,17 @@ Starting SHA: `9b766396646fefdc9ab3b8ecc45796d72d66c495` (`origin/master`).
 Branch: `feature/ui-brand-motion`.  
 PR: https://github.com/deepakreddy21-art/candidarc/pull/8  
 
+Corrected brief: approved ChatGPT screenshot (“Get noticed for what you can do.”) supersedes the earlier serif “Your experience. Their team…” treatment.
+
 | Requirement | Implementation | Status |
 | --- | --- | --- |
-| Green/light tokens (white, forest, mint, lime, `#1F6F5B`) | `src/app/globals.css` | Done |
+| Screenshot palette (`#15251E` / `#326647` / `#CAF4C1` / `#EFF8EF`) | `src/app/globals.css` | Done |
 | Light-only; no dark flash / toggle | `providers.tsx` `forcedTheme="light"`; ThemeToggle no-op; preferences copy; command palette theme removed | Done |
-| Logo default + inverse | `src/components/brand/logo.tsx` | Done |
+| Logo default + inverse (compact) | `src/components/brand/logo.tsx` | Done |
 | Signature arc story | `src/components/brand/arc-story.tsx` | Done |
-| Layered résumé marketing depth | `src/components/brand/layered-resume-demo.tsx` | Done |
-| Homepage narrative + copy | `src/app/page.tsx` | Done |
-| Forest panel “The team uses Python…” white text | Homepage forest panel | Done |
+| Tall tilted résumé + mint halo + fresh badge + floating insight strip | `src/components/brand/layered-resume-demo.tsx` | Done |
+| Approved hero copy (sans, pill CTAs) | `src/app/page.tsx` | Done |
+| Forest insight strip “The team uses Python…” white text | Outside paper in layered demo | Done |
 | Demo player + lazy load | Homepage dialog; HEAD-check for MP4 | Done (MP4 optional) |
 | 30–45s / 15s video assets | Storyboard + capture docs; poster/captions shipped | **MP4 incomplete** until local capture |
 | Onboarding calm + 38/62 | `shell.tsx` mint aside, arc, deduped titles; step copy in `types.ts` | Done |

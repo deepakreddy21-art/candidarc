@@ -8,15 +8,19 @@ test.describe("marketing brand motion", () => {
     });
     await page.emulateMedia({ colorScheme: "dark" });
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: /Your experience\. Their team/i })).toBeVisible();
-    const forest = page.getByRole("heading", { name: /The team uses Python\. So have you/i });
+    await expect(page.getByRole("heading", { name: /Get noticed for/i })).toBeVisible();
+    await expect(page.getByText(/what you can do\./i).first()).toBeVisible();
+    const forest = page.getByText(/The team uses Python\. So have you\./i).first();
     await expect(forest).toBeVisible();
     const color = await forest.evaluate((el) => getComputedStyle(el).color);
     // white-ish on forest
     expect(color).toMatch(/rgb\(\s*255,\s*255,\s*255\s*\)|#fff/i);
-    await expect(page.getByRole("link", { name: /Create my account/i }).first()).toHaveAttribute("href", "/sign-up");
-    await expect(page.getByRole("button", { name: /Watch product demo/i })).toBeVisible();
-    await page.getByRole("button", { name: /Watch product demo/i }).click();
+    await expect(page.getByRole("link", { name: /Build my resume|Get started/i }).first()).toHaveAttribute(
+      "href",
+      "/sign-up",
+    );
+    await expect(page.getByRole("button", { name: /See it in action/i })).toBeVisible();
+    await page.getByRole("button", { name: /See it in action/i }).click();
     await expect(page.getByRole("dialog", { name: /Product demo/i })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);

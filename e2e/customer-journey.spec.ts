@@ -10,7 +10,7 @@ test.describe("primary customer journey", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expect(page.locator("body")).not.toContainText(/V0|HR1|EM1|interview readiness/i);
-    await expect(page.locator("body")).toContainText(/Your experience\. Their team|Create my account|team uses Python/i);
+    await expect(page.locator("body")).toContainText(/Get noticed for|Build my resume|team uses Python/i);
 
     await page.goto("/sign-in");
     await page.getByLabel(/email/i).fill("deepak@candidarc.dev");

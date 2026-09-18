@@ -5,9 +5,9 @@
 export const product = {
   name: "CandidArc",
   shortName: "CandidArc",
-  tagline: "Your experience. Their team. A résumé that connects them.",
+  tagline: "Get noticed for what you can do.",
   description:
-    "Discover relevant roles, understand the team behind them, and tailor a résumé around the experience you already have.",
+    "Find the right roles. Understand the team. Build a resume that brings your strongest experience forward.",
   url: "https://candidarc.app",
   supportEmail: "support@candidarc.app",
 } as const;

@@ -21,7 +21,9 @@
   --color-accent-hover: var(--accent-hover);
   --color-forest: var(--forest);
   --color-mint: var(--mint);
-  --color-lime: var(--lime);
+  --color-lime: var(--fresh);
+  --color-headline: var(--headline);
+  --color-fresh: var(--fresh);
   --color-on-forest: var(--on-forest);
   --color-cyan: var(--cyan);
   --color-success: var(--success);
@@ -40,29 +42,30 @@
 }
 
 :root {
-  /* Named brand roles — green/light direction */
+  /* Screenshot-derived brand roles (approved ChatGPT concept) */
   --surface: #ffffff;
-  --canvas: #f6f8f5;
-  --background: #f6f8f5;
-  --surface-2: #eaf5ee;
-  --accent: #1f6f5b;
-  --accent-hover: #185a4a;
-  --forest: #0b3d2e;
-  --mint: #eaf5ee;
-  --lime: #d7f27a;
-  --foreground: #14231b;
+  --canvas: #f7faf7;
+  --background: #ffffff;
+  --surface-2: #eff8ef;
+  --accent: #15251e;
+  --accent-hover: #213b2d;
+  --forest: #15251e;
+  --headline: #326647;
+  --mint: #eff8ef;
+  --fresh: #caf4c1;
+  --foreground: #15251e;
   --foreground-secondary: #596a60;
   --foreground-muted: #596a60;
   --border: #dce6df;
-  --border-strong: color-mix(in oklab, #14231b 18%, transparent);
+  --border-strong: color-mix(in oklab, #15251e 18%, transparent);
   --on-forest: #ffffff;
   --cyan: #2a7a8c;
   --success: #1fad76;
   --warning: #c47f1a;
   --destructive: #c44b54;
-  --ring: #1f6f5b;
-  --shadow-sm: 0 1px 2px rgba(20, 35, 27, 0.04);
-  --shadow-md: 0 4px 16px rgba(20, 35, 27, 0.06);
+  --ring: #326647;
+  --shadow-sm: 0 1px 2px rgba(21, 37, 30, 0.05);
+  --shadow-md: 0 8px 28px rgba(21, 37, 30, 0.08);
 }
 
 /* Force light tokens even if a stale .dark class is present from saved prefs. */
@@ -70,25 +73,26 @@ html.dark,
 html.dark body,
 .dark {
   --surface: #ffffff;
-  --canvas: #f6f8f5;
-  --background: #f6f8f5;
-  --surface-2: #eaf5ee;
-  --accent: #1f6f5b;
-  --accent-hover: #185a4a;
-  --forest: #0b3d2e;
-  --mint: #eaf5ee;
-  --lime: #d7f27a;
-  --foreground: #14231b;
+  --canvas: #f7faf7;
+  --background: #ffffff;
+  --surface-2: #eff8ef;
+  --accent: #15251e;
+  --accent-hover: #213b2d;
+  --forest: #15251e;
+  --headline: #326647;
+  --mint: #eff8ef;
+  --fresh: #caf4c1;
+  --foreground: #15251e;
   --foreground-secondary: #596a60;
   --foreground-muted: #596a60;
   --border: #dce6df;
-  --border-strong: color-mix(in oklab, #14231b 18%, transparent);
+  --border-strong: color-mix(in oklab, #15251e 18%, transparent);
   --on-forest: #ffffff;
   --cyan: #2a7a8c;
   --success: #1fad76;
   --warning: #c47f1a;
   --destructive: #c44b54;
-  --ring: #1f6f5b;
+  --ring: #326647;
   color-scheme: light;
 }
 
@@ -109,7 +113,7 @@ html.dark body,
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--accent) 28%, transparent);
+    background: color-mix(in oklab, var(--headline) 22%, transparent);
   }
 
   :focus-visible {
@@ -119,18 +123,10 @@ html.dark body,
 
 @layer utilities {
   .arc-bg {
-    background-image:
-      radial-gradient(ellipse 80% 50% at 8% -8%, color-mix(in oklab, var(--accent) 10%, transparent), transparent),
-      radial-gradient(ellipse 50% 36% at 100% 0%, color-mix(in oklab, var(--mint) 80%, transparent), transparent);
-  }
-
-  .arc-line {
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in oklab, var(--accent) 45%, transparent),
-      color-mix(in oklab, var(--lime) 55%, transparent),
-      transparent
+    background-image: radial-gradient(
+      ellipse 42% 48% at 78% 42%,
+      color-mix(in oklab, var(--mint) 90%, transparent),
+      transparent 70%
     );
   }
 
@@ -141,6 +137,14 @@ html.dark body,
 
   .panel-mint {
     background: var(--mint);
+  }
+
+  .text-headline {
+    color: var(--headline);
+  }
+
+  .pill {
+    border-radius: 9999px;
   }
 
   .text-balance {
@@ -180,24 +184,5 @@ html.dark body,
   }
   100% {
     background-position: -200% 0;
-  }
-}
-
-@keyframes waveform {
-  0%,
-  100% {
-    transform: scaleY(0.35);
-  }
-  50% {
-    transform: scaleY(1);
-  }
-}
-
-@keyframes arc-marker {
-  0% {
-    offset-distance: 0%;
-  }
-  100% {
-    offset-distance: 100%;
   }
 }
