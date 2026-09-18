@@ -80,7 +80,7 @@ export default function LandingPage() {
                   <X className="h-4 w-4" />
                 </Button>
               </div>
-              <nav className="flex flex-col gap-2" onClick={() => setMobileOpen(false)}>
+              <nav aria-label="Mobile menu" className="flex flex-col gap-2" onClick={() => setMobileOpen(false)}>
                 <a href="#difference" className="rounded-[10px] px-3 py-2.5 text-sm hover:bg-surface-2">
                   See the difference
                 </a>
