@@ -140,7 +140,7 @@ export function adaptResumeExtractionV1ToV2(
       typeof name === "string" ? { name } : { name: String((name as { name?: string })?.name ?? "") },
     );
 
-  return {
+  const normalized: ResumeExtractionSection = {
     ...raw,
     schemaVersion: raw.schemaVersion === 2 ? 2 : 2,
     contact: {
@@ -174,6 +174,18 @@ export function adaptResumeExtractionV1ToV2(
     rawText: raw.rawText ?? "",
     parseWarnings: raw.parseWarnings ?? [],
   };
+
+  if (!normalized.contact.email) {
+    const fromEmails = normalized.contact.emails.find((value) => typeof value === "string" && value.includes("@"));
+    const fromRaw = normalized.rawText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+    const email = fromEmails?.trim() || fromRaw?.trim();
+    if (email) {
+      normalized.contact.email = email;
+      if (!normalized.contact.emails.length) normalized.contact.emails = [email];
+    }
+  }
+
+  return normalized;
 }
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
