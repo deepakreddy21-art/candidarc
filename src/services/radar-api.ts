@@ -17,7 +17,7 @@ import {
   radarJobs,
   radarSourceCoverage,
 } from "@/data/radar-seed";
-import { api, allowDemoFallback, ApiError, isCancelledError, RequestCancelledError } from "@/services/api";
+import { api, allowDemoFallback, ApiError, isCancelledError, isTimeoutError, RequestCancelledError, RequestTimeoutError } from "@/services/api";
 import { clientFetch, jsonHeaders, LONG_WRITE_TIMEOUT_MS } from "@/lib/http-client";
 import { coerceJobSearchQueryInput } from "@server/radar/http";
 
@@ -42,6 +42,7 @@ async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: numb
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isTimeoutError(error)) throw error instanceof RequestTimeoutError ? error : new RequestTimeoutError();
     if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!allowDemoFallback()) {
       if (error instanceof ApiError) throw error;

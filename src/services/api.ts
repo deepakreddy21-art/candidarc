@@ -22,13 +22,21 @@ import {
   clientFetch,
   clearClientRequestCaches,
   isCancelledError,
+  isTimeoutError,
   jsonHeaders,
   RequestCancelledError,
+  RequestTimeoutError,
   UPLOAD_TIMEOUT_MS,
   LONG_WRITE_TIMEOUT_MS,
 } from "@/lib/http-client";
 
-export { isCancelledError, RequestCancelledError, clearClientRequestCaches };
+export {
+  isCancelledError,
+  isTimeoutError,
+  RequestCancelledError,
+  RequestTimeoutError,
+  clearClientRequestCaches,
+};
 
 export { isDemoFallbackAllowed as allowDemoFallback };
 
@@ -178,6 +186,7 @@ async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>>
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isTimeoutError(error)) throw error instanceof RequestTimeoutError ? error : new RequestTimeoutError();
     if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
       if (error instanceof ApiError) throw error;
@@ -202,6 +211,7 @@ async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: numb
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (isTimeoutError(error)) throw error instanceof RequestTimeoutError ? error : new RequestTimeoutError();
     if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
       if (error instanceof ApiError) throw error;
@@ -473,11 +483,15 @@ export const api = {
     status: string | null;
     extraction: ResumeImportExtraction | null;
     file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
+    replacementAttemptStatus?: string | null;
+    confirmedProfileIntact?: boolean;
   }> {
     const res = await apiFetch<{
       status: string | null;
       extraction: ResumeImportExtraction | null;
       file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
+      replacementAttemptStatus?: string | null;
+      confirmedProfileIntact?: boolean;
     }>("/profile/resume/import");
     if (res.ok) return res.data;
     throw new ApiError("Could not load résumé import status", res.status);

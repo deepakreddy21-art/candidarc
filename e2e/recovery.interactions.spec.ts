@@ -207,6 +207,55 @@ test.describe("loading and failure recovery", () => {
     await expect(page.getByRole("heading", { name: /^Resumes$/i })).toBeVisible({ timeout: 15_000 });
   });
 
+  test("Applications recovers from request timeout with Retry", async ({ page }) => {
+    test.setTimeout(90_000);
+    await seedOnboardedUser(page, "apps-timeout");
+    let attempt = 0;
+    await page.route("**/api/v1/applications**", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      attempt += 1;
+      if (attempt === 1) {
+        await new Promise(() => {
+          /* hang until client timeout */
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto("/app/opportunities");
+    await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^retry$/i })).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByText(/timed out|could not load applications/i)).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
+    await page.getByRole("button", { name: /^retry$/i }).click();
+    await expect(page.getByRole("button", { name: /^retry$/i })).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();
+  });
+
+  test("intentional cancel while navigating away does not trap loading", async ({ page }) => {
+    await seedOnboardedUser(page, "nav-cancel");
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/v1/applications**", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      await gate;
+      await route.continue();
+    });
+    await page.goto("/app/opportunities", { waitUntil: "domcontentloaded" });
+    await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Jobs" }).click();
+    release?.();
+    await expect(page.getByRole("heading", { name: /jobs for you/i })).toBeVisible({ timeout: 15_000 });
+    await expect(page).toHaveURL(/\/app\/radar/);
+  });
+
   test("shell stays usable while a resume is generating", async ({ page }) => {
     await seedOnboardedUser(page, "bg-gen");
     const generated = await generateResumeViaApi(page);

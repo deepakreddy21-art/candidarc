@@ -5,10 +5,43 @@ export class RequestCancelledError extends Error {
   }
 }
 
+export class RequestTimeoutError extends Error {
+  constructor(message = "Request timed out") {
+    super(message);
+    this.name = "RequestTimeoutError";
+  }
+}
+
+export type AbortReason = "timeout" | "cancelled";
+
+export function isTimeoutError(error: unknown): boolean {
+  if (error instanceof RequestTimeoutError) return true;
+  if (error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (error instanceof Error && error.name === "RequestTimeoutError") return true;
+  const reason = (error as { reason?: unknown } | null)?.reason;
+  if (reason === "timeout") return true;
+  if (reason && typeof reason === "object" && (reason as { type?: string }).type === "timeout") return true;
+  return false;
+}
+
 export function isCancelledError(error: unknown): boolean {
+  if (isTimeoutError(error)) return false;
   if (error instanceof RequestCancelledError) return true;
-  if (error instanceof DOMException && error.name === "AbortError") return true;
-  return error instanceof Error && (error.name === "AbortError" || /aborted|cancelled/i.test(error.message));
+  if (error instanceof DOMException && error.name === "AbortError") {
+    const reason = (error as DOMException & { reason?: unknown }).reason;
+    if (reason === "timeout" || (reason && typeof reason === "object" && (reason as { type?: string }).type === "timeout")) {
+      return false;
+    }
+    return true;
+  }
+  if (error instanceof Error && error.name === "AbortError") {
+    const reason = (error as Error & { reason?: unknown }).reason;
+    if (reason === "timeout" || (reason && typeof reason === "object" && (reason as { type?: string }).type === "timeout")) {
+      return false;
+    }
+    return true;
+  }
+  return error instanceof Error && /aborted|cancelled/i.test(error.message) && !/timed?\s*out/i.test(error.message);
 }
 
 export const READ_TIMEOUT_MS = 15_000;
@@ -29,24 +62,75 @@ function csrfHeader(): Record<string, string> {
   return raw ? { "x-csrf-token": decodeURIComponent(raw) } : {};
 }
 
-function mergeSignals(user?: AbortSignal | null, timeoutMs?: number): { signal: AbortSignal; cancel: () => void } {
+function mergeSignals(
+  user?: AbortSignal | null,
+  timeoutMs?: number,
+): { signal: AbortSignal; cancel: () => void; wasTimeout: () => boolean } {
   const controller = new AbortController();
+  let timedOut = false;
   const timer =
     typeof timeoutMs === "number" && timeoutMs > 0
-      ? setTimeout(() => controller.abort(), timeoutMs)
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort({ type: "timeout" satisfies AbortReason });
+        }, timeoutMs)
       : undefined;
-  const onUserAbort = () => controller.abort();
+  const onUserAbort = () => {
+    if (!timedOut) controller.abort({ type: "cancelled" satisfies AbortReason });
+  };
   if (user) {
-    if (user.aborted) controller.abort();
+    if (user.aborted) onUserAbort();
     else user.addEventListener("abort", onUserAbort, { once: true });
   }
   return {
     signal: controller.signal,
+    wasTimeout: () => timedOut,
     cancel: () => {
       if (timer) clearTimeout(timer);
       if (user) user.removeEventListener("abort", onUserAbort);
     },
   };
+}
+
+function abortReasonIsTimeout(signal: AbortSignal): boolean {
+  const reason = signal.reason;
+  if (reason === "timeout") return true;
+  if (reason && typeof reason === "object" && (reason as { type?: string }).type === "timeout") return true;
+  return false;
+}
+
+async function readWithDeadline(res: Response, timeoutMs: number, user?: AbortSignal | null): Promise<Response> {
+  // Headers already received; still bound body consumption so stalled bodies cannot hang forever.
+  if (!res.body) return res;
+  const { signal, cancel, wasTimeout } = mergeSignals(user, timeoutMs);
+  try {
+    const buffer = await Promise.race([
+      res.arrayBuffer(),
+      new Promise<never>((_, reject) => {
+        const onAbort = () => {
+          if (wasTimeout() || abortReasonIsTimeout(signal)) reject(new RequestTimeoutError());
+          else reject(new RequestCancelledError());
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+    return new Response(buffer, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
+  } catch (error) {
+    if (wasTimeout() || abortReasonIsTimeout(signal) || isTimeoutError(error)) {
+      throw new RequestTimeoutError();
+    }
+    if (user?.aborted || isCancelledError(error)) {
+      throw new RequestCancelledError();
+    }
+    throw error;
+  } finally {
+    cancel();
+  }
 }
 
 export type ClientRequestInit = RequestInit & {
@@ -63,9 +147,10 @@ export async function clientFetch(input: string, init: ClientRequestInit = {}): 
     method === "GET" && !init.signal ? (init.dedupeKey ?? input) : undefined;
 
   const run = async () => {
-    const { signal, cancel } = mergeSignals(init.signal, timeoutMs);
+    const started = Date.now();
+    const { signal, cancel, wasTimeout } = mergeSignals(init.signal, timeoutMs);
     try {
-      return await fetch(input, {
+      const res = await fetch(input, {
         ...init,
         signal,
         credentials: init.credentials ?? "include",
@@ -74,8 +159,14 @@ export async function clientFetch(input: string, init: ClientRequestInit = {}): 
           ...(init.headers ?? {}),
         },
       });
+      // Remaining budget for body — headers alone must not leave stalled bodies hanging.
+      const remaining = Math.max(1, timeoutMs - (Date.now() - started));
+      return await readWithDeadline(res, remaining, init.signal);
     } catch (error) {
-      if (isCancelledError(error) || signal.aborted) {
+      if (wasTimeout() || abortReasonIsTimeout(signal) || isTimeoutError(error)) {
+        throw new RequestTimeoutError();
+      }
+      if (isCancelledError(error) || signal.aborted || init.signal?.aborted) {
         throw new RequestCancelledError();
       }
       throw error;
