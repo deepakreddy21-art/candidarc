@@ -7,7 +7,7 @@ const sections = [
   { href: "/app/profile", title: "Profile", description: "Canonical career record, re-import, and identity." },
   { href: "/app/settings/preferences", title: "Preferences", description: "Theme, resume defaults, and notification cadence." },
   { href: "/app/settings/integrations", title: "Integrations", description: "Connected accounts and optional job-source credentials." },
-  { href: "/app/settings/privacy", title: "Privacy", description: "Exports, retention, evidence visibility, and account deletion." },
+  { href: "/app/settings/privacy", title: "Privacy", description: "Exports, retention, evidence visibility, and privacy preferences." },
   { href: "/app/settings/billing", title: "Billing", description: "Plan, invoices, and seats for serious candidates." },
 ];
 

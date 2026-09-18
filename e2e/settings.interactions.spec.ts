@@ -82,25 +82,42 @@ test.describe("settings interactions", () => {
     expect(payload).toHaveProperty("profile");
   });
 
-  test("account delete cancel leaves the account signed in", async ({ page }) => {
-    await seedOnboardedUser(page, "delete-cancel");
+  test("account deletion is disabled and explains unavailability", async ({ page }) => {
+    await seedOnboardedUser(page, "delete-unavailable");
     await page.goto("/app/settings/privacy");
-    await page.getByRole("button", { name: /^delete account$/i }).click();
-    await expect(page.getByRole("heading", { name: /delete your account/i })).toBeVisible();
-    await page.getByRole("button", { name: /^cancel$/i }).click();
-    await expect(page.getByRole("heading", { name: /delete your account/i })).toHaveCount(0);
+    const deleteBtn = page.getByRole("button", { name: /^delete account$/i });
+    await expect(deleteBtn).toBeDisabled();
+    await expect(page.getByTestId("account-delete-unavailable")).toContainText(
+      /complete account deletion is not available/i,
+    );
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page).toHaveURL(/\/app\/settings\/privacy/);
-    await expect(page.getByRole("heading", { name: /^Privacy$/i })).toBeVisible();
   });
 
-  test("account delete confirmation signs a disposable user out", async ({ page }) => {
-    await seedOnboardedUser(page, "delete-confirm");
+  test("authenticated DELETE /api/v1/account is unavailable and leaves data intact", async ({ page }) => {
+    const user = await seedOnboardedUser(page, "delete-api");
     await page.goto("/app/settings/privacy");
-    await page.getByRole("button", { name: /^delete account$/i }).click();
-    await page.getByRole("dialog").getByRole("button", { name: /^delete account$/i }).click();
-    await page.waitForURL(/\/sign-in/, { timeout: 30_000 });
-    await page.goto("/app/radar");
-    await expect(page).toHaveURL(/\/sign-in/);
+    await expect(page.getByRole("heading", { name: /^Privacy$/i })).toBeVisible();
+    const result = await page.evaluate(async () => {
+      const csrf =
+        document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ??
+        document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ??
+        "";
+      const res = await fetch("/api/v1/account", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "x-csrf-token": decodeURIComponent(csrf) },
+      });
+      const body = await res.json().catch(() => null);
+      return { status: res.status, body };
+    });
+    expect(result.status).toBe(501);
+    expect(result.body?.error?.code ?? result.body?.code).toMatch(/ACCOUNT_DELETION_UNAVAILABLE/i);
+    await page.goto("/app/settings/privacy");
+    await expect(page.getByRole("heading", { name: /^Privacy$/i })).toBeVisible();
+    await page.goto("/app/profile");
+    await expect(page.getByRole("heading", { name: /^Profile$/i })).toBeVisible();
+    await expect(page.locator("#identity-email")).toHaveValue(user.email);
   });
 
   test("integrations list disabled live connectors instead of fake connect buttons", async ({ page }) => {

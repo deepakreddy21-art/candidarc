@@ -6,38 +6,24 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/tabs";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { product } from "@/config/product";
 import { api, ApiError } from "@/services/api";
 
 const DELETE_DOCS_REASON =
-  "Per-document deletion is not available yet. Export your data, or delete the account to remove all uploads.";
+  "Per-document deletion is not available yet. Export your data to download a copy of what CandidArc stores for your account.";
 const RETENTION_REASON =
-  "Automatic retention windows are not available. CandidArc does not currently delete inactive artifacts on a timer. Export or delete the account to remove data.";
+  "Automatic retention windows are not available. CandidArc does not currently delete inactive artifacts on a timer. Export your data if you need a local copy.";
+const ACCOUNT_DELETE_REASON =
+  "Complete account deletion is not available yet. This release cannot safely remove your account, uploads, and associated data. Export your data below; your account remains active.";
 const EVIDENCE_VISIBILITY_REASON =
   "Workspace evidence visibility is controlled per STAR item, not by a global account switch. This control is unavailable because it would not change server behavior.";
 const MODEL_IMPROVEMENT_COPY =
-  "Stored on your account. CandidArc does not currently train models on your content, regardless of this setting. No training pipeline exists to honor an opt-in.";
-
-function csrfToken() {
-  const raw =
-    document.cookie.split("; ").find((item) => item.startsWith("candidarc_csrf="))?.split("=")[1] ??
-    document.cookie.split("; ").find((item) => item.startsWith("csrf_token="))?.split("=")[1] ??
-    "";
-  return decodeURIComponent(raw);
-}
+  "Stored preference on your account only. CandidArc does not currently train models on your content, regardless of this setting. No training pipeline exists to honor an opt-in.";
 
 export default function PrivacySettingsPage() {
   const [modelImprovement, setModelImprovement] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -70,24 +56,6 @@ export default function PrivacySettingsPage() {
     }
   }
 
-  async function deleteAccount() {
-    setBusy(true);
-    try {
-      const res = await fetch("/api/v1/account", {
-        method: "DELETE",
-        credentials: "include",
-        headers: { "x-csrf-token": csrfToken() },
-      });
-      if (!res.ok) throw new Error("Delete failed");
-      toast.success("Account deleted");
-      window.location.href = "/sign-in";
-    } catch {
-      toast.error("Could not delete account");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function saveModelImprovement() {
     setSaving(true);
     try {
@@ -105,13 +73,13 @@ export default function PrivacySettingsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Privacy"
-        description={`Export, account deletion, and the privacy choices ${product.name} can actually enforce.`}
+        description={`Export and the privacy choices ${product.name} can actually enforce.`}
       />
 
       <Card>
         <CardHeader>
           <CardTitle>Export and deletion</CardTitle>
-          <CardDescription>Downloads and irreversible removals always confirm first.</CardDescription>
+          <CardDescription>Downloads are available now. Complete account deletion is not.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           <div className="flex flex-wrap gap-2">
@@ -184,69 +152,24 @@ export default function PrivacySettingsPage() {
 
       <Card className="border-[color-mix(in_oklab,var(--destructive)_28%,transparent)]">
         <CardHeader>
-          <CardTitle>Delete account</CardTitle>
-          <CardDescription>Removes profile, opportunities, evidence, and application history.</CardDescription>
+          <CardTitle>Account deletion</CardTitle>
+          <CardDescription>Complete account deletion is not available in this release.</CardDescription>
         </CardHeader>
-        <CardContent>
-          <Button type="button" variant="destructive" onClick={() => setDeleteAccountOpen(true)}>
-            Delete account
-          </Button>
-        </CardContent>
-      </Card>
-
-      <ConfirmDialog
-        open={deleteAccountOpen}
-        onOpenChange={setDeleteAccountOpen}
-        title="Delete your account?"
-        description={`This permanently deletes your ${product.name} account and all associated data.`}
-        confirmLabel="Delete account"
-        destructive
-        onConfirm={() => void deleteAccount()}
-      />
-    </div>
-  );
-}
-
-function ConfirmDialog({
-  open,
-  onOpenChange,
-  title,
-  description,
-  confirmLabel,
-  onConfirm,
-  destructive,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
-  description: string;
-  confirmLabel: string;
-  onConfirm: () => void;
-  destructive?: boolean;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
+        <CardContent className="space-y-2">
           <Button
             type="button"
-            variant={destructive ? "destructive" : "default"}
-            onClick={() => {
-              onConfirm();
-              onOpenChange(false);
-            }}
+            variant="destructive"
+            disabled
+            title={ACCOUNT_DELETE_REASON}
+            aria-describedby="account-delete-unavailable"
           >
-            {confirmLabel}
+            Delete account
           </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+          <p id="account-delete-unavailable" className="text-xs text-foreground-muted" data-testid="account-delete-unavailable">
+            {ACCOUNT_DELETE_REASON}
+          </p>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

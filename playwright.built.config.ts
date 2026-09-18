@@ -24,8 +24,14 @@ export default defineConfig({
   projects: [
     {
       name: "built-desktop",
-      testMatch: /navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts/,
+      testMatch:
+        /navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts|import\.interactions\.spec\.ts|resumes\.interactions\.spec\.ts|applications\.interactions\.spec\.ts|settings\.interactions\.spec\.ts|mobile\.interactions\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "built-mobile",
+      testMatch: /mobile\.interactions\.spec\.ts/,
+      use: { ...devices["Pixel 7"] },
     },
   ],
   webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER
