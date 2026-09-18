@@ -75,7 +75,7 @@ export function profileToForm(
     linkedIn: contact.linkedIn?.trim() || profile.linkedIn || "",
     github: contact.github?.trim() || profile.github || "",
     portfolio: contact.portfolio?.trim() || profile.portfolio || "",
-    headline: profile.headline || "",
+    headline: contact.headline?.trim() || profile.headline || "",
     summary: extraction?.professionalSummary?.trim() || profile.summary || "",
     skills: Array.isArray(extraction?.skills) ? extraction!.skills.filter(Boolean) : [],
     employment: (extraction?.employment ?? []).map((row) => ({

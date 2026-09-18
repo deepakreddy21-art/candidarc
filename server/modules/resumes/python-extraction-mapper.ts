@@ -125,6 +125,11 @@ export function mapPythonResumeParseToExtraction(parsed: {
     contact?.emails?.find((value) => typeof value === "string" && value.includes("@"))?.trim() ||
     emailFromRaw ||
     undefined;
+  const headlineFromHint =
+    typeof contact?.provenance?.location_hint === "string" &&
+    contact.provenance.location_hint.startsWith("headline:")
+      ? contact.provenance.location_hint.slice("headline:".length).trim()
+      : undefined;
   const certificationEntries = (parsed.certification_entries ?? []).map((row) => ({
     name: row.name,
     issuer: row.issuer ?? undefined,
@@ -153,6 +158,7 @@ export function mapPythonResumeParseToExtraction(parsed: {
       github: contact?.github ?? undefined,
       portfolio: contact?.portfolio ?? undefined,
       otherUrls: contact?.other_urls ?? [],
+      headline: headlineFromHint,
       provenance: mapProvenance(contact?.provenance),
     },
     professionalSummary: parsed.professional_summary ?? undefined,

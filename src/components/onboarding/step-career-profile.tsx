@@ -230,27 +230,46 @@ export function StepCareerProfile({
                   value={form.email}
                   onChange={(e) => onChange({ email: e.target.value })}
                   data-testid="imported-email"
+                  aria-invalid={Boolean(errors.email)}
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="phone">Phone (optional)</Label>
-                <Input id="phone" value={form.phone} onChange={(e) => onChange({ phone: e.target.value })} />
+              <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.phone.trim())}`}>
+                <Label htmlFor="phone">Phone</Label>
+                <Input
+                  id="phone"
+                  value={form.phone}
+                  onChange={(e) => onChange({ phone: e.target.value })}
+                  data-testid="imported-phone"
+                  aria-invalid={Boolean(errors.phone)}
+                />
               </div>
-              <div className="space-y-1.5 sm:col-span-2">
-                <Label htmlFor="location">Location (optional)</Label>
+              <div className={`space-y-1.5 sm:col-span-2 ${ambiguousClass(uploadReviewMode && !form.location.trim())}`}>
+                <Label htmlFor="location">Current location</Label>
                 <Input
                   id="location"
                   value={form.location}
                   onChange={(e) => onChange({ location: e.target.value })}
+                  placeholder="City, region, country"
+                  data-testid="imported-location"
+                  aria-invalid={Boolean(errors.location)}
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="linkedin">LinkedIn</Label>
+                <Label htmlFor="linkedin">LinkedIn (optional)</Label>
                 <Input id="linkedin" value={form.linkedIn} onChange={(e) => onChange({ linkedIn: e.target.value })} />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="github">GitHub</Label>
+                <Label htmlFor="github">GitHub (optional)</Label>
                 <Input id="github" value={form.github} onChange={(e) => onChange({ github: e.target.value })} />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="portfolio">Portfolio / personal website (optional)</Label>
+                <Input
+                  id="portfolio"
+                  value={form.portfolio}
+                  onChange={(e) => onChange({ portfolio: e.target.value })}
+                  data-testid="imported-portfolio"
+                />
               </div>
             </div>
           </details>
@@ -390,32 +409,71 @@ export function StepCareerProfile({
             <div className="mt-3 space-y-3">
               {form.education.map((row, index) => (
                 <div key={index} className="grid gap-2 sm:grid-cols-2">
-                  <Input
-                    aria-label={`School ${index + 1}`}
-                    value={row.school ?? ""}
-                    data-testid={`imported-education-${index}`}
-                    onChange={(e) => {
-                      const education = [...form.education];
-                      education[index] = { ...row, school: e.target.value };
-                      onChange({ education });
-                    }}
-                  />
-                  <Input
-                    aria-label={`Degree ${index + 1}`}
-                    value={row.degree ?? ""}
-                    onChange={(e) => {
-                      const education = [...form.education];
-                      education[index] = { ...row, degree: e.target.value };
-                      onChange({ education });
-                    }}
-                  />
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`edu-school-${index}`}>Institution</Label>
+                    <Input
+                      id={`edu-school-${index}`}
+                      aria-label={`Institution ${index + 1}`}
+                      value={row.school ?? ""}
+                      data-testid={`imported-education-${index}`}
+                      onChange={(e) => {
+                        const education = [...form.education];
+                        education[index] = { ...row, school: e.target.value };
+                        onChange({ education });
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`edu-degree-${index}`}>Degree</Label>
+                    <Input
+                      id={`edu-degree-${index}`}
+                      aria-label={`Degree ${index + 1}`}
+                      value={row.degree ?? ""}
+                      data-testid={`imported-education-degree-${index}`}
+                      onChange={(e) => {
+                        const education = [...form.education];
+                        education[index] = { ...row, degree: e.target.value };
+                        onChange({ education });
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`edu-field-${index}`}>Field of study</Label>
+                    <Input
+                      id={`edu-field-${index}`}
+                      aria-label={`Field of study ${index + 1}`}
+                      value={row.field ?? ""}
+                      data-testid={`imported-education-field-${index}`}
+                      onChange={(e) => {
+                        const education = [...form.education];
+                        education[index] = { ...row, field: e.target.value };
+                        onChange({ education });
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`edu-location-${index}`}>Location (optional)</Label>
+                    <Input
+                      id={`edu-location-${index}`}
+                      aria-label={`Education location ${index + 1}`}
+                      value={row.location ?? ""}
+                      data-testid={`imported-education-location-${index}`}
+                      onChange={(e) => {
+                        const education = [...form.education];
+                        education[index] = { ...row, location: e.target.value };
+                        onChange({ education });
+                      }}
+                    />
+                  </div>
                 </div>
               ))}
               <Button
                 type="button"
                 size="sm"
                 variant="secondary"
-                onClick={() => onChange({ education: [...form.education, { school: "", degree: "" }] })}
+                onClick={() =>
+                  onChange({ education: [...form.education, { school: "", degree: "", field: "", location: "" }] })
+                }
               >
                 Add education
               </Button>

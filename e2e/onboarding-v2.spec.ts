@@ -33,6 +33,9 @@ async function fillCareerManual(page: import("@playwright/test").Page) {
   await expectStep(page, 2);
   await page.getByRole("button", { name: /enter manually/i }).click();
   await page.locator("#full-name").fill("Onboarding Tester");
+  await page.locator("#email").fill((await page.locator("#email").inputValue()) || "onboarding-tester@example.com");
+  await page.locator("#phone").fill("+1 555 0100");
+  await page.locator("#location").fill("Austin, TX, USA");
   await page.locator("#skills").scrollIntoViewIfNeeded();
   await page.locator("#skills").fill("TypeScript");
   await page.locator("#skills").press("Enter");

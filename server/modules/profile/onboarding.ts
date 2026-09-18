@@ -60,7 +60,7 @@ export const onboardingStepDataSchema = z
     portfolio: z.string().max(200).optional().nullable(),
     headline: z.string().max(200).optional().nullable(),
     summary: z.string().max(4000).optional().nullable(),
-    skills: stringList(60, 80),
+    skills: stringList(200, 80),
     education: z
       .array(
         z.object({

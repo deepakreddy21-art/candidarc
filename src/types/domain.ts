@@ -85,6 +85,16 @@ export type ResumeImportExtraction = {
     github?: string;
     portfolio?: string;
     otherUrls?: string[];
+    /** Optional professional headline separated from the name (e.g. after `|`). */
+    headline?: string;
+    provenance?: {
+      sourceText?: string;
+      pageNumber?: number;
+      locationHint?: string;
+      confidence?: "high" | "medium" | "low";
+      warnings?: string[];
+      extractedOrNormalized?: "extracted" | "normalized";
+    };
   };
   professionalSummary?: string;
   employment: Array<{

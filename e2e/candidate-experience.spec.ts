@@ -204,6 +204,14 @@ Requirements: 5+ years experience, strong ownership.`;
     });
     await expect(page.getByText(/ready — review/i)).toBeVisible({ timeout: 90_000 });
     await expect(page.getByText(/Harbor Systems/i)).toBeVisible();
+    const location = page.locator("#location");
+    if (!(await location.inputValue()).trim()) {
+      await location.fill("Seattle, WA, USA");
+    }
+    const phone = page.locator("#phone");
+    if (!(await phone.inputValue()).trim()) {
+      await phone.fill("+1 555 0100");
+    }
     await page.getByRole("button", { name: /^continue$/i }).click();
     await expect(page.getByTestId("onboarding-step")).toHaveText(/step 3 of 3/i, { timeout: 30_000 });
     await page.getByRole("button", { name: /finish setup/i }).click();
