@@ -251,11 +251,15 @@ export function validateStepClient(
     if (!form.workplaceModes.length) return "Select at least one workplace mode";
   }
   if (step === 1) {
-    if (importStatus === "confirmed" || importStatus === "ready_for_review") return null;
     if (["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "")) {
       return "Wait for résumé import to finish, or choose Enter manually";
     }
     if (!form.fullName.trim()) return "Add your name";
+    if (!form.email.trim()) return "Add your résumé contact email";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) return "Enter a valid email";
+    if (!form.phone.trim()) return "Add your phone number";
+    if (!form.location.trim()) return "Add your current location";
+    if (importStatus === "confirmed" || importStatus === "ready_for_review") return null;
     const hasEmployment = form.employment.some((row) => row.title?.trim() || row.company?.trim());
     const hasSkills = normalizeList(form.skills).length > 0;
     const hasEducation = form.education.some((row) => row.school?.trim() || row.degree?.trim());
