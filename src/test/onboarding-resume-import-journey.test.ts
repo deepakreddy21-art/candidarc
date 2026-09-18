@@ -37,6 +37,7 @@ import {
   twoColumnTextPdf,
 } from "./fixtures/resume-samples";
 import { validateStepClient, emptyOnboardingForm } from "@/components/onboarding/types";
+import { profileToForm } from "@/lib/onboarding-form-map";
 
 const backendRoot = path.resolve(process.cwd(), "services/python-backend");
 const win = process.platform === "win32";
@@ -437,6 +438,59 @@ describe("onboarding resume import journey (real FastAPI)", () => {
     for (const field of ["contact", "employment", "education", "skills", "skillGroups", "certificationEntries"] as const) {
       expect(saved.extraction[field]).toEqual(body.extraction[field]);
     }
+  }, 60_000);
+
+  it.each(["pdf", "docx"])("keeps all compound %s jobs and qualifications through confirm and profile reload", async (format) => {
+    const fixture = spawnSync(venvPython, ["-c", "import sys; from tests.fixtures.finance_resume import finance_resume_bytes; sys.stdout.buffer.write(finance_resume_bytes(sys.argv[1]))", format], {
+      cwd: backendRoot, timeout: 10_000,
+    });
+    expect(fixture.status, fixture.stderr?.toString()).toBe(0);
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const type = format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const form = new FormData();
+    form.append("file", new File([Uint8Array.from(fixture.stdout)], `finance.${format}`, { type }));
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    expect((await upload(new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf }, body: form,
+    }))).status).toBe(201);
+    const body = await waitImportReady(cookie);
+    expect(body.status).toBe("ready_for_review");
+    expect(body.extraction.employment).toHaveLength(3);
+    expect(body.extraction.employment).toMatchObject([
+      { title: "Operations / Financial Analyst (Contract)", company: "Cedar Instruments", location: "Chicago, IL", startDate: "Apr 2024", endDate: "Present" },
+      { title: "Strategic Financial Analyst Intern", company: "Fairway Markets", location: "Chicago, IL", startDate: "Jun 2023", endDate: "Dec 2023" },
+      { title: "Executive – Finance & Operations", company: "Aster Aviation (Regional Air)", location: "Hyderabad, India", startDate: "Aug 2018", endDate: "Nov 2022" },
+    ]);
+    expect(body.extraction.employment.map((job: { bullets: string[] }) => job.bullets.length)).toEqual([7, 4, 5]);
+    expect(body.extraction.education).toHaveLength(2);
+    expect(body.extraction.education).toMatchObject([
+      { institution: "Eastlake University", degree: "Master of Science", field: "Finance", location: "Naperville, IL", startDate: "Sep 2022", endDate: "May 2024" },
+      { institution: "Marina College", degree: "Bachelor of Commerce", location: "Chennai, India", startDate: "Jun 2015", endDate: "Apr 2018" },
+    ]);
+    expect(body.extraction.projects).toHaveLength(3);
+    expect(body.extraction.skills).toHaveLength(17);
+    expect(body.extraction.skillGroups).toHaveLength(6);
+    const { POST: confirm } = await import("../../src/app/api/v1/profile/resume/confirm/route");
+    expect((await confirm(new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" }, body: "{}",
+    }))).status).toBe(200);
+    const { GET: getImport } = await import("../../src/app/api/v1/profile/resume/import/route");
+    const saved = await (await getImport(new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }))).json();
+    expect(saved.status).toBe("confirmed");
+    for (const field of ["employment", "education", "projects", "skills", "skillGroups"] as const) {
+      expect(saved.extraction[field]).toEqual(body.extraction[field]);
+    }
+    const { GET: getProfile } = await import("../../src/app/api/v1/profile/route");
+    const profile = await (await getProfile(new Request("http://localhost:3000/api/v1/profile", { headers: { cookie } }))).json();
+    const reloadedForm = profileToForm(profile.profile, saved.extraction);
+    expect(reloadedForm.employment).toMatchObject(body.extraction.employment.map((job: { title: string; company: string; startDate: string; endDate: string }) => ({
+      title: job.title, company: job.company, startDate: job.startDate, endDate: job.endDate,
+    })));
+    expect(reloadedForm.education).toMatchObject([
+      { school: "Eastlake University", degree: "Master of Science", field: "Finance", location: "Naperville, IL" },
+      { school: "Marina College", degree: "Bachelor of Commerce", location: "Chennai, India" },
+    ]);
   }, 60_000);
 
   it("returns IMAGE_ONLY_PDF_OCR_REQUIRED for scanned PDFs", async () => {

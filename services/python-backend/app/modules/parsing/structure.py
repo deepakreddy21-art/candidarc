@@ -64,7 +64,7 @@ SECTION_ALIASES: dict[str, tuple[str, ...]] = {
                "core competencies", "technical competencies", "skills and technologies", "technical proficiencies"),
     "certifications": ("certifications", "certificates", "licenses", "licenses and certifications", "certifications and licenses",
                        "professional certifications", "certifications and training"),
-    "publications": ("publications", "papers", "research", "selected publications", "research publications"),
+    "publications": ("publications", "papers", "research", "selected publications", "research publications", "featured publications"),
     "summary": ("summary", "professional summary", "profile", "about", "objective", "career summary", "summary of qualifications"),
     "other": ("awards", "honors", "awards and honors", "volunteering", "volunteer experience", "interests", "hobbies",
               "references", "languages", "activities", "leadership activities", "extracurricular activities"),
@@ -79,8 +79,11 @@ def _normalize_header(line: str) -> str | None:
     cleaned = re.sub(r"[\s:—–_-]+", " ", cleaned).strip()
     if not cleaned or len(cleaned) > 64:
         return None
+    compact = cleaned.replace(" ", "")
     for canonical, aliases in SECTION_ALIASES.items():
-        if cleaned in aliases:
+        # PDF tracking may introduce spaces between every glyph. Match only a
+        # complete known heading; never strip spaces from candidate field values.
+        if any(compact == alias.replace(" ", "") for alias in aliases):
             return canonical
     return None
 
@@ -333,6 +336,7 @@ def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
     groups: list[dict[str, Any]] = []
     category: str | None = None
     pending = ""
+    table_category = False
 
     def flush() -> None:
         nonlocal pending
@@ -347,10 +351,21 @@ def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
         if label and label[1].casefold() not in {"http", "https"}:
             flush()
             category, pending = label[1].strip(), label[2].strip()
+            table_category = False
+            continue
+        # Word table cells and PDF columns preserve category/value boundaries.
+        # Do not classify a flat "Python | SQL, Java" list as a category row.
+        cells = re.split(r"\s*\|\s*|\s{2,}", line, maxsplit=1)
+        if len(cells) == 2 and len(cells[0]) <= 80 and re.search(r"[,;]", cells[1]) and (
+            " " in cells[0] or cells[0].casefold() in {"languages", "tools", "skills", "databases", "frameworks", "platforms", "collaboration"}
+        ):
+            flush()
+            category, pending = cells[0].strip(), cells[1].strip()
+            table_category = True
             continue
         # Wrapped lists continue their category. Standalone lines remain separate
         # items, while a lowercase continuation preserves a wrapped phrase.
-        wraps = pending.endswith((",", ";", "|")) or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
+        wraps = table_category or pending.endswith((",", ";", "|", "&")) or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
         pending += (" " if wraps else "\n") + re.sub(r"^[-•*]\s+", "", line)
     flush()
     # Deduplicate only normalized exact equivalents

@@ -16,13 +16,13 @@ DATE_RANGE_RE = re.compile(
 SINGLE_DATE_RE = re.compile(rf"(?<!\d){DATE}(?!\d)", re.I)
 DEGREE_TOKEN_RE = re.compile(
     r"\b(?:"
-    r"(?:Bachelor|Master|Doctor|Associate)(?:['’]s|s)?(?:\s+of\s+(?:Science|Arts|Engineering|Technology|Business Administration|Philosophy|Education|Medicine|Law|Fine Arts))?"
+    r"(?:Bachelor|Master|Doctor|Associate)(?:['’]s|s)?(?:\s+of\s+(?:Science|Arts|Engineering|Technology|Business Administration|Commerce|Philosophy|Education|Medicine|Law|Fine Arts))?"
     r"|Ph\.?\s?D\.?|B\.?\s?(?:Tech|Eng|Sc|E|S|A)\.?|M\.?\s?(?:Tech|Eng|Sc|E|S|A)\.?|MBA|M\.?B\.?A\.?|BBA|MCA|BCA|MFA|MPH|Ed\.?D\.?|J\.?D\.?|Doctorate|Diploma"
-    r")(?!\w)", re.I,
+    r")(?=\W|$|in\b)", re.I,
 )
 TITLE_HINT_RE = re.compile(
     r"\b(?:engineer|developer|architect|manager|analyst|consultant|specialist|scientist|designer|intern|lead|director|officer|administrator|"
-    r"programmer|founder|owner|researcher|technician|coordinator|nurse|teacher|accountant|associate|professor|mechanic|physician|attorney)\b", re.I,
+    r"programmer|founder|owner|researcher|technician|coordinator|nurse|teacher|accountant|associate|professor|mechanic|physician|attorney|executive|assistant)\b", re.I,
 )
 # Restrict modifiers so company words before a title do not become part of it.
 _MODIFIER = (
@@ -35,7 +35,7 @@ _MODIFIER = (
     r"UX|UI|Registered|Clinical|Mechanical|Electrical|Civil"
 )
 TITLE_SPAN_RE = re.compile(
-    rf"\b(?:(?:{_MODIFIER})\s+)*{TITLE_HINT_RE.pattern}(?:\s+(?:I{{1,3}}|IV|[1-5]))?\b", re.I,
+    rf"\b(?:(?:{_MODIFIER})\s+)*{TITLE_HINT_RE.pattern}(?:\s+(?:I{{1,3}}|IV|[1-5]))?(?:\s+(?:Intern|Trainee|Contractor))?\b", re.I,
 )
 INSTITUTION_RE = re.compile(
     r"\b(?:university|universities|institute|institut|college|school|academy|polytechnic|universidad|universidade|université|universität|hochschule|iit|nit)\b", re.I,
@@ -62,15 +62,20 @@ def is_body(line: str) -> bool:
     return bool(BULLET_RE.match(line) or ACTION_RE.match(line))
 
 
-def split_cells(line: str) -> list[str]:
+def split_cells(line: str, *, preserve_title_dashes: bool = False) -> list[str]:
     # Do not split commas here: they belong to places and company names.
-    return [clean(p) for p in re.split(r"\s*[|\t•]\s*|\s{2,}|\s+[@–—]\s+|\s+-\s+|\s+at\s+", line) if clean(p)]
+    # A table/tab/pipe boundary outranks punctuation inside a title or degree.
+    # E.g. "Executive – Finance & Operations | Company" has two cells, not three.
+    strong = r"\s*[|\t•]\s*|\s{2,}"
+    weak = r"\s+@\s+|\s+at\s+" if preserve_title_dashes else r"\s+[@–—]\s+|\s+-\s+|\s+at\s+"
+    separator = strong if re.search(strong, line.strip()) else weak
+    return [clean(p) for p in re.split(separator, line) if clean(p)]
 
 
 def is_location(value: str) -> bool:
     if REMOTE_RE.fullmatch(value):
         return True
-    if TITLE_HINT_RE.search(value) or INSTITUTION_RE.search(value) or len(value) > 100:
+    if TITLE_HINT_RE.search(value) or INSTITUTION_RE.search(value) or DEGREE_TOKEN_RE.match(value) or len(value) > 100:
         return False
     if ORGANIZATION_RE.search(value) or value.count(",") > 2:
         return False
@@ -79,6 +84,9 @@ def is_location(value: str) -> bool:
 
 def split_organization_location(value: str) -> tuple[str, str | None]:
     """Delimited organization, City, Region[, Country]. No city allowlist."""
+    parts = re.split(r"\s+[–—-]\s+", value)
+    if len(parts) > 1 and is_location(parts[-1]):
+        return clean(value[:value.rfind(parts[-1])]).rstrip(" -"), parts[-1]
     comma_parts = [p.strip() for p in value.split(",")]
     if len(comma_parts) >= 3:
         # Region may be written out (Québec) or abbreviated (TX).

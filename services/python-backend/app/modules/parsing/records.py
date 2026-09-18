@@ -66,27 +66,46 @@ def _role_header(lines: list[str]) -> dict[str, Any]:
     row: dict[str, Any] = dict(title=None, employer=None, location=None, start_date=None, end_date=None)
     unknown: list[str] = []
     warnings: list[str] = []
+    cells: list[str] = []
+    header_lines: list[str] = []
     for line in lines:
+        # A right-aligned place may wrap "City," and "Region" onto two lines.
+        previous_cells = split_cells(header_lines[-1]) if header_lines else []
+        if (previous_cells and header_lines[-1].rstrip().endswith(",")
+                and is_location(f"{previous_cells[-1]}, {line.strip()}")):
+            header_lines[-1] += " " + line.strip()
+        else:
+            header_lines.append(line)
+    for line in header_lines:
         text, start, end = dates_from(strip_link_targets(line))
         if start:
             row.update(start_date=start, end_date=end)
-        cells = split_cells(text)
-        combined_employer_cell = len(cells) == 2 and any(TITLE_HINT_RE.search(cell) for cell in cells)
-        for cell in cells:
-            label = re.match(r"^(employer|company|job title|title|role|location)\s*:\s*(.+)$", cell, re.I)
-            if label:
-                field = {"company": "employer", "job title": "title", "role": "title"}.get(label[1].lower(), label[1].lower())
-                row[field] = label[2].strip()
-                continue
-            if combined_employer_cell and not TITLE_HINT_RE.search(cell) and cell.count(",") >= 2:
-                organization, location = split_organization_location(cell)
-                if location:
-                    unknown.append(organization)
-                    row["location"] = location
-                    continue
-            if is_location(cell):
-                row["location"] = cell
-                continue
+        cells.extend(split_cells(text, preserve_title_dashes=True))
+    identity: list[str] = []
+    for cell in cells:
+        label = re.match(r"^(employer|company|job title|title|role|location)\s*:\s*(.+)$", cell, re.I)
+        organization, location = split_organization_location(cell)
+        if label:
+            field = {"company": "employer", "job title": "title", "role": "title"}.get(label[1].lower(), label[1].lower())
+            row[field] = label[2].strip()
+        elif location and not TITLE_HINT_RE.search(cell) and (
+            (len(cells) == 2 and any(TITLE_HINT_RE.search(c) for c in cells)) or re.search(r"\s+[–—-]\s+", cell)
+        ):
+            identity.append(organization)
+            row["location"] = location or row["location"]
+        elif is_location(cell):
+            row["location"] = cell
+        else:
+            identity.append(cell)
+    titles = [cell for cell in identity if TITLE_HINT_RE.search(cell)]
+    row["_independent_identity"] = len(identity) == 2 and len(titles) == 1
+    # Independent cells establish the boundary, even when a compound title is
+    # outside the modifier vocabulary. Never truncate it to a familiar suffix.
+    if row["_independent_identity"]:
+        row["title"] = titles[0]
+        row["employer"] = next(cell for cell in identity if cell != titles[0])
+    else:
+        for cell in identity:
             title = TITLE_SPAN_RE.search(cell)
             if title:
                 before, after = clean(cell[:title.start()]), clean(cell[title.end():])
@@ -133,8 +152,28 @@ def _header_window(lines: list[str], start: int) -> list[str]:
     for line in lines[start:start + 5]:
         if is_body(line) or len(line) > 220 or (line[:1].islower() and not TITLE_HINT_RE.search(line)):
             break
+        previous = _role_header(out)
+        text, date, _ = dates_from(line)
+        # Once a job has its identity, accept only its dates/location. Do not
+        # look through subsection captions or the next job to borrow fields.
+        if previous["title"] and previous["employer"] and (
+            previous["_independent_identity"] or previous["start_date"] or TITLE_HINT_RE.search(line)
+        ):
+            if not (is_location(clean(text)) or (date and not clean(text))):
+                break
+            if date and previous["start_date"]:
+                break
+        elif previous["title"] and previous["start_date"] and TITLE_HINT_RE.search(line):
+            break
         out.append(line)
     return out
+
+
+def _is_subheading(line: str) -> bool:
+    """Short title-case captions above bullets are not new jobs/responsibilities."""
+    words = re.findall(r"[\w’']+", line)
+    return (1 < len(words) <= 10 and len(line) <= 100 and not line.endswith((".", ",", ";"))
+            and all(word[:1].isupper() or word.casefold() in {"and", "of", "for", "the", "to", "in", "with"} for word in words))
 
 
 def chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
@@ -143,9 +182,10 @@ def chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
     bullets: list[str] = []
     source: list[str] = []
     shared_employer: str | None = None
+    header_complete = False
 
     def flush() -> None:
-        nonlocal header, bullets, source, shared_employer
+        nonlocal header, bullets, source, shared_employer, header_complete
         if not (header or bullets):
             return
         row = _role_header(header)
@@ -158,6 +198,7 @@ def chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
         elif row["employer"] and row["employer"] != shared_employer:
             shared_employer = None
         warnings = row.pop("_warnings")
+        row.pop("_independent_identity")
         warnings.extend(f"missing_{key}" for key in ("title", "employer") if not row[key])
         if any(re.search(r"\w-$", left) and re.match(r"[a-z]", right)
                for left, right in zip(source, source[1:])):
@@ -166,17 +207,34 @@ def chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
                    provenance=provenance(source, warnings))
         out.append(row)
         header, bullets, source = [], [], []
+        header_complete = False
 
-    for index, line in enumerate(lines):
-        if bullets and not is_body(line):
-            candidate = _role_header(_header_window(lines, index))
-            if candidate["title"] and (candidate["employer"] or candidate["start_date"]):
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not is_body(line):
+            window = _header_window(lines, index)
+            candidate = _role_header(window)
+            dated_identity = candidate["start_date"] and any(
+                clean(dates_from(part)[0]) and not is_location(clean(dates_from(part)[0])) for part in window
+            )
+            if (candidate["title"] and candidate["employer"]) or dated_identity:
                 flush()
+                header, source = window.copy(), window.copy()
+                header_complete = True
+                index += len(window)
+                continue
         source.append(line)
-        if is_body(line) or bullets:
+        caption = (header_complete and _is_subheading(line) and index + 1 < len(lines)
+                   and bool(BULLET_RE.match(lines[index + 1]))
+                   and (not bullets or bullets[-1].endswith((".", "!", "?", ":"))))
+        if caption:
+            pass  # Retain captions in source provenance, separate from responsibility bullets.
+        elif is_body(line) or bullets or header_complete:
             append_bullet(bullets, line)
         else:
             header.append(line)
+        index += 1
     flush()
     return out[:40]
 
@@ -269,6 +327,13 @@ def chunk_education(lines: list[str]) -> list[dict[str, Any]]:
         current, source, unresolved = {}, [], []
 
     for line in lines:
+        # Education descriptions belong to the current qualification. A thesis
+        # title or coursework list is not an additional institution/degree.
+        if current and (is_body(line) or re.match(
+            r"^(?:thesis|dissertation|capstone|coursework|relevant courses|courses|research focus|advisor|supervisor)\s*[:–—-]", line, re.I,
+        )):
+            source.append(line)
+            continue
         values = _education_line(line)
         unknown = values.pop("_unknown")
         if unknown and not is_body(line):
