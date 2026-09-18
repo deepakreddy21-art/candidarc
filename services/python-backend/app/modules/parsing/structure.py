@@ -29,12 +29,12 @@ LOCATION_HINT_RE = re.compile(
     r"\b([A-Z][a-zA-Z .'-]+,\s*[A-Z]{2}(?:\s*,\s*[A-Z][a-zA-Z .'-]+)?)\b"
 )
 DEGREE_TOKEN_RE = re.compile(
-    r"\b("
+    r"\b(?:"
     r"B\.?S\.?|B\.?A\.?|B\.?Tech\.?|B\.?E\.?|"
     r"M\.?S\.?|M\.?A\.?|M\.?Tech\.?|M\.?Eng\.?|MBA|M\.?B\.?A\.?|"
     r"Ph\.?D\.?|Doctorate|"
     r"Bachelor'?s?|Master'?s?|Associate'?s?|Diploma"
-    r")\b",
+    r")(?!\w)",
     re.I,
 )
 TITLE_HINT_RE = re.compile(

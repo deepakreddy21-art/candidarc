@@ -301,6 +301,33 @@ def test_structure_resume_text_wrapped_layout_unit():
     assert structured["education"][0]["field"] == "Information Systems Management"
 
 
+@pytest.mark.parametrize("degree", ["B.S.", "BS", "B.S", "M.S."])
+@pytest.mark.parametrize("file_format", ["pdf", "docx"])
+def test_import_separates_degree_from_field(
+    client: TestClient, auth_headers: dict[str, str], ctx: RequestContext,
+    degree: str, file_format: str,
+):
+    text = (
+        "Jordan Blake\njordan.blake@example.com\n\n"
+        "EDUCATION\n"
+        f"{degree} Computer Science | Cascadia University | 2018\n\n"
+        "SKILLS\nPython, SQL\n"
+    )
+    if file_format == "pdf":
+        raw, content_type = text_to_simple_pdf(text), "application/pdf"
+    else:
+        raw = text_to_docx(text)
+        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    response = _parse(client, auth_headers, ctx, f"education.{file_format}", content_type, raw)
+    assert response.status_code == 200, response.text
+    education = response.json()["education"]
+    assert len(education) == 1
+    assert education[0]["degree"] == degree
+    assert education[0]["field"] == "Computer Science"
+    assert education[0]["institution"] == "Cascadia University"
+    assert education[0]["end_date"] == "2018"
+
+
 def test_same_employer_keeps_distinct_roles(
     client: TestClient, auth_headers: dict[str, str], ctx: RequestContext
 ):
