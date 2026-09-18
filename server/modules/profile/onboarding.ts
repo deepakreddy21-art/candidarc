@@ -249,7 +249,15 @@ export function mergeExtraction(
       ...((next.contact as Record<string, unknown> | undefined) ?? {}),
     };
     if (data.fullName !== undefined) contact.fullName = data.fullName;
-    if (data.email !== undefined) contact.email = data.email;
+    if (data.email !== undefined) {
+      const prior = typeof contact.email === "string" ? contact.email.trim() : "";
+      const incoming = typeof data.email === "string" ? data.email.trim() : "";
+      // Do not let onboarding autosaves clobber an already-extracted contact email with the
+      // account/signup address (or any other different value) while reviewing an import.
+      if (!prior || prior === incoming) {
+        contact.email = data.email;
+      }
+    }
     if (data.phone !== undefined) contact.phone = data.phone;
     if (data.location !== undefined) contact.location = data.location;
     if (data.linkedIn !== undefined) contact.linkedIn = data.linkedIn;
