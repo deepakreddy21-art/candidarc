@@ -162,7 +162,6 @@ test.describe("navigation performance", () => {
       contentType: "application/json",
     });
 
-    // eslint-disable-next-line no-console -- benchmark report for CI logs
     console.log("[navigation-performance]", JSON.stringify(report.warmedSummary.map((row) => ({
       name: row.name,
       n: row.sampleCount,
@@ -182,7 +181,6 @@ test.describe("navigation performance", () => {
         expect(row.usableP95, `${row.name} warmed usable p95`).toBeLessThan(2_500);
         // Intended local targets (~200ms feedback / ~2s usable) — report misses without loosening.
         if (row.feedbackP50 > 200 || row.usableP50 > 2000) {
-          // eslint-disable-next-line no-console -- benchmark miss reporting
           console.warn(
             `[navigation-performance] ${row.name} missed intended local targets (feedback p50=${row.feedbackP50}, usable p50=${row.usableP50})`,
           );
