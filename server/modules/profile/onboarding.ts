@@ -248,21 +248,21 @@ export function mergeExtraction(
     const contact = {
       ...((next.contact as Record<string, unknown> | undefined) ?? {}),
     };
-    if (data.fullName !== undefined) contact.fullName = data.fullName;
-    if (data.email !== undefined) {
-      const prior = typeof contact.email === "string" ? contact.email.trim() : "";
-      const incoming = typeof data.email === "string" ? data.email.trim() : "";
-      // Do not let onboarding autosaves clobber an already-extracted contact email with the
-      // account/signup address (or any other different value) while reviewing an import.
+    const assignContactField = (key: string, value: unknown) => {
+      const prior = typeof contact[key] === "string" ? String(contact[key]).trim() : "";
+      const incoming = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+      // Keep extracted contact values when an autosave would blank them or replace with a different account value.
       if (!prior || prior === incoming) {
-        contact.email = data.email;
+        contact[key] = value;
       }
-    }
-    if (data.phone !== undefined) contact.phone = data.phone;
-    if (data.location !== undefined) contact.location = data.location;
-    if (data.linkedIn !== undefined) contact.linkedIn = data.linkedIn;
-    if (data.github !== undefined) contact.github = data.github;
-    if (data.portfolio !== undefined) contact.portfolio = data.portfolio;
+    };
+    if (data.fullName !== undefined) assignContactField("fullName", data.fullName);
+    if (data.email !== undefined) assignContactField("email", data.email);
+    if (data.phone !== undefined) assignContactField("phone", data.phone);
+    if (data.location !== undefined) assignContactField("location", data.location);
+    if (data.linkedIn !== undefined) assignContactField("linkedIn", data.linkedIn);
+    if (data.github !== undefined) assignContactField("github", data.github);
+    if (data.portfolio !== undefined) assignContactField("portfolio", data.portfolio);
     next.contact = contact;
   }
   return next;
