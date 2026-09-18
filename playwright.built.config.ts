@@ -26,7 +26,6 @@ export default defineConfig({
       name: "built-desktop",
       testMatch:
         /navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts|import\.interactions\.spec\.ts|resumes\.interactions\.spec\.ts|applications\.interactions\.spec\.ts|settings\.interactions\.spec\.ts/,
-      testIgnore: /refine creates a new version/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
