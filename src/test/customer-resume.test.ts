@@ -256,7 +256,7 @@ describe("customer resume generation", () => {
     expect(source).not.toContain("setTimeout(");
     expect(source).not.toMatch(/You may close this page/i);
     expect(source).not.toMatch(/HR Audit|EM Audit|HR_AUDIT|EM_AUDIT|\bV0\b|token usage|BullMQ|OpenAI|Anthropic/i);
-    expect(source).toContain("Researching the role");
+    expect(source).toContain("Understanding the role");
     expect(source).toContain("Refine this resume");
     expect(source).toContain("Create new version");
   });

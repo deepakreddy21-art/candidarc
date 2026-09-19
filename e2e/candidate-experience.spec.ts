@@ -148,7 +148,7 @@ Requirements: 5+ years experience, strong ownership.`;
     if (await continueWithout.isVisible().catch(() => false)) {
       await continueWithout.click();
     }
-    await expect(page.getByText(/Your tailored resume|Download PDF|Download Word/i).first()).toBeVisible({
+    await expect(page.getByText(/Your tailored resume|Download PDF|Download DOCX/i).first()).toBeVisible({
       timeout: 90_000,
     });
 
@@ -160,7 +160,7 @@ Requirements: 5+ years experience, strong ownership.`;
     ]);
     expect(pdfDownload.suggestedFilename().toLowerCase()).toMatch(/pdf/);
 
-    const wordLink = page.getByRole("link", { name: /download word/i });
+    const wordLink = page.getByRole("link", { name: /download docx/i });
     const [wordDownload] = await Promise.all([
       page.waitForEvent("download", { timeout: 30_000 }),
       wordLink.click(),
@@ -203,7 +203,7 @@ Requirements: 5+ years experience, strong ownership.`;
       buffer: pdf,
     });
     await expect(page.getByText(/ready — review/i)).toBeVisible({ timeout: 90_000 });
-    await expect(page.getByText(/Harbor Systems/i)).toBeVisible();
+    await expect(page.locator(".focus-review-record > summary").filter({ hasText: "Harbor Systems" })).toBeVisible();
     const location = page.locator("#location");
     if (!(await location.inputValue()).trim()) {
       await location.fill("Seattle, WA, USA");

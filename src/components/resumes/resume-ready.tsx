@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Download, FileText } from "lucide-react";
+import { Check, Download, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -109,8 +109,9 @@ export function ResumeReady({
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm text-success">Ready</p>
+          <p className="focus-ready-eyebrow"><Check aria-hidden />Ready for your review</p>
           <h1 className="text-3xl font-semibold">Your tailored resume</h1>
+          <p className="mt-2 text-sm text-foreground-secondary">Review. Download. Make your next move.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild disabled={!data.downloads.pdfReady}>
@@ -122,7 +123,7 @@ export function ResumeReady({
           <Button asChild variant="secondary" disabled={!data.downloads.docxReady}>
             <a href={`/api/v1/resumes/workflows/${data.workflowId}/download?format=docx`}>
               <FileText className="h-4 w-4" />
-              Download Word
+              Download DOCX
             </a>
           </Button>
           {data.documentRetryAvailable && !data.downloads.pdfReady ? (
@@ -144,7 +145,7 @@ export function ResumeReady({
         <CardHeader>
           <CardTitle>{data.resume?.versionLabel ?? "Version 1"}</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="focus-ready-stage">
           {resumeDoc ? (
             <div
               onMouseUp={() => {

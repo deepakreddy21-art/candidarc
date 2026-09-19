@@ -83,7 +83,7 @@ export default function OnboardingPage() {
       isStaleError: (err) => err instanceof ApiError && err.status === 409,
       onStale: handleStale,
       onSavingChange: setSaving,
-      onSaved: () => setSaveStatus("Saved"),
+      onSaved: () => setSaveStatus(formRef.current === baselineRef.current ? "Saved" : "Unsaved changes"),
       onSaveFailed: () => setSaveStatus("Save failed"),
       save: async (job) => {
         if (conflictRef.current) throw new ApiError("Reload the saved profile before saving", 409);
@@ -123,6 +123,7 @@ export default function OnboardingPage() {
   );
 
   function patchForm(patch: Partial<OnboardingFormState>) {
+    setSaveStatus("Unsaved changes");
     setForm((prev) => {
       const next = { ...prev, ...patch };
       formRef.current = next;
@@ -376,6 +377,7 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell
       step={step}
+      reviewingImport={step === 1 && ["ready_for_review", "confirmed"].includes(importStatus ?? "")}
       saving={saving}
       saveStatus={saveStatus}
       onBack={() => void handleBack()}
@@ -398,6 +400,7 @@ export default function OnboardingPage() {
       ) : null}
       {step === 1 ? (
         <StepCareerProfile
+          compactReview
           form={form}
           onChange={patchForm}
           errors={errors}

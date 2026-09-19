@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./approved-visuals.css";
 
 /* Light-only product. Dark custom-variant kept inert so leftover .dark classes never activate. */
 @custom-variant dark (&:where(.never-dark));

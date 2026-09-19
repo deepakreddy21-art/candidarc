@@ -40,7 +40,7 @@ Requirements: 5+ years experience, strong ownership.`);
     await page.waitForURL(/\/app\/resumes\/(?!new(?:\/|$))/, { timeout: 60_000 });
     await waitForResumeReady(page);
     await expect(page.getByRole("link", { name: /download pdf/i })).toBeVisible();
-    await expect(page.getByRole("link", { name: /download word/i })).toBeVisible();
+    await expect(page.getByRole("link", { name: /download docx/i })).toBeVisible();
   });
 
   test("PDF download contains readable resume text", async ({ page }) => {
@@ -69,7 +69,7 @@ Requirements: 5+ years experience, strong ownership.`);
     await page.route("**/api/v1/resumes/generate", async (route) => {
       await route.abort();
     });
-    const word = page.getByRole("link", { name: /download word/i });
+    const word = page.getByRole("link", { name: /download docx/i });
     const [download] = await Promise.all([page.waitForEvent("download"), word.click()]);
     expect(download.suggestedFilename().toLowerCase()).toMatch(/docx|word/);
     const path = await download.path();
@@ -104,7 +104,7 @@ Requirements: 5+ years experience, strong ownership.`);
     await page.reload();
     await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /retry pdf/i })).toBeVisible();
-    const word = page.getByRole("link", { name: /download word/i });
+    const word = page.getByRole("link", { name: /download docx/i });
     const [download] = await Promise.all([page.waitForEvent("download"), word.click()]);
     expect(download.suggestedFilename().toLowerCase()).toMatch(/docx|word/);
     let generates = 0;

@@ -1,14 +1,17 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { Check, ChevronDown, FileText, UserRound } from "lucide-react";
+import { CareerReview } from "./career-review";
 import { CareerSections } from "./career-sections";
 import { ChipInput } from "./chip-input";
 import type { OnboardingFormState } from "./types";
 
 type Props = {
   form: OnboardingFormState;
+  compactReview?: boolean;
   disabled?: boolean;
   onChange: (patch: Partial<OnboardingFormState>) => void;
   errors: Partial<Record<string, string>>;
@@ -62,12 +65,20 @@ function importSummary(form: OnboardingFormState): string {
   return `We imported your résumé: ${parts.join(", ")}.${confidenceNote}`;
 }
 
+function compactImportSummary(form: OnboardingFormState): string {
+  const roles = form.employment.length;
+  const education = form.education.length;
+  const projects = form.projects.length;
+  return `Imported ${roles} role${roles === 1 ? "" : "s"}, ${education} education ${education === 1 ? "entry" : "entries"} and ${projects} project${projects === 1 ? "" : "s"}`;
+}
+
 function ambiguousClass(ambiguous: boolean): string {
   return ambiguous ? "ring-1 ring-amber-500/60 bg-amber-500/5" : "";
 }
 
 export function StepCareerProfile({
   form,
+  compactReview = false,
   disabled = false,
   onChange,
   errors,
@@ -78,6 +89,11 @@ export function StepCareerProfile({
   statusMessage,
   importErrorCode,
 }: Props) {
+  const [filename, setFilename] = useState<string>();
+  const [contactOpen, setContactOpen] = useState<boolean>();
+  useEffect(() => {
+    if (errors.fullName || errors.email || errors.phone || errors.location) setContactOpen(true);
+  }, [errors.fullName, errors.email, errors.phone, errors.location]);
   const fileRef = useRef<HTMLInputElement>(null);
   const analyzing = ["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "");
   const showReview =
@@ -86,11 +102,13 @@ export function StepCareerProfile({
     importStatus === "confirmed";
   const uploadReviewMode = importStatus === "ready_for_review" || importStatus === "confirmed";
 
+  const compact = compactReview && form.careerProfileMode === "upload" && uploadReviewMode;
+  const contactIncomplete = [form.fullName, form.email, form.phone, form.location].some((value) => !value.trim()) || Boolean(errors.fullName || errors.email || errors.phone || errors.location);
   const imageOnly = importErrorCode === "IMAGE_ONLY_PDF_OCR_REQUIRED";
 
   return (
     <fieldset disabled={disabled || analyzing || uploading} className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2">
+      {!compact && <div className="grid gap-3 sm:grid-cols-2">
         <button
           type="button"
           className={
@@ -117,10 +135,10 @@ export function StepCareerProfile({
           <p className="text-sm font-medium">Enter manually</p>
           <p className="mt-1 text-xs text-foreground-muted">Add contact details, roles, and skills yourself.</p>
         </button>
-      </div>
+      </div>}
 
       {form.careerProfileMode === "upload" ? (
-        <div className="space-y-3 rounded-md border border-border bg-surface p-4">
+        <div className={compact ? "focus-import-summary" : "space-y-3 rounded-md border border-border bg-surface p-4"}>
           <input
             ref={fileRef}
             type="file"
@@ -128,11 +146,13 @@ export function StepCareerProfile({
             className="sr-only"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) onUpload(file);
+              if (file) { setFilename(file.name); onUpload(file); }
               e.target.value = "";
             }}
           />
-          <div className="flex flex-wrap gap-2">
+          {compact && <p className="focus-import-success" data-testid="import-summary"><Check size={20} aria-hidden /><span>{compactImportSummary(form)}{form.lowConfidenceCount > 0 && <span className="block text-xs mt-1">{form.lowConfidenceCount} {form.lowConfidenceCount === 1 ? "field needs" : "fields need"} review.</span>}</span></p>}
+          <div className="flex flex-wrap items-center gap-2">
+            {compact && <span className="focus-import-file"><FileText size={18} aria-hidden />{filename ?? "Uploaded résumé"}</span>}
             <Button
               type="button"
               variant="secondary"
@@ -153,7 +173,7 @@ export function StepCareerProfile({
               </Button>
             ) : null}
           </div>
-          <p className="text-sm text-foreground-secondary" aria-live="polite">
+          <p className={compact ? "sr-only" : "text-sm text-foreground-secondary"} aria-live="polite">
             {statusMessage || statusLabel(importStatus)}
           </p>
           {analyzing ? (
@@ -177,7 +197,7 @@ export function StepCareerProfile({
                 : statusMessage || "Try another PDF/DOCX or enter details manually."}
             </p>
           ) : null}
-          {uploadReviewMode ? (
+          {uploadReviewMode && !compact ? (
             <p className="text-sm font-medium text-foreground" data-testid="import-summary">
               {importSummary(form)}
             </p>
@@ -187,8 +207,8 @@ export function StepCareerProfile({
 
       {showReview ? (
         <div className="space-y-4" data-testid="import-review-sections">
-          <details open className="rounded-md border border-border p-3">
-            <summary className="cursor-pointer text-sm font-medium">Contact</summary>
+          <details open={contactOpen ?? (!compact || contactIncomplete)} onToggle={(event) => setContactOpen(event.currentTarget.open)} className={compact ? "focus-review-section" : "rounded-md border border-border p-3"}>
+            <summary className="cursor-pointer text-sm font-medium">{compact && <UserRound size={22} aria-hidden />}<strong>Contact</strong>{compact && <><span>{[form.fullName, form.location].filter(Boolean).join(" · ")}</span><ChevronDown size={19} aria-hidden /></>}</summary>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className={`space-y-1.5 sm:col-span-2 ${ambiguousClass(uploadReviewMode && !form.fullName.trim())}`}>
                 <Label htmlFor="full-name">Full name</Label>
@@ -198,8 +218,10 @@ export function StepCareerProfile({
                   value={form.fullName}
                   onChange={(e) => onChange({ fullName: e.target.value })}
                   aria-invalid={Boolean(errors.fullName)}
+                  aria-describedby={errors.fullName ? "error-fullName" : undefined}
                   data-testid="imported-full-name"
                 />
+                {errors.fullName && <p id="error-fullName" className="text-xs text-destructive" role="alert">{errors.fullName}</p>}
               </div>
               <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.email.trim())}`}>
                 <Label htmlFor="email">Email</Label>
@@ -211,7 +233,9 @@ export function StepCareerProfile({
                   onChange={(e) => onChange({ email: e.target.value })}
                   data-testid="imported-email"
                   aria-invalid={Boolean(errors.email)}
+                  aria-describedby={errors.email ? "error-email" : undefined}
                 />
+                {errors.email && <p id="error-email" className="text-xs text-destructive" role="alert">{errors.email}</p>}
               </div>
               <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.phone.trim())}`}>
                 <Label htmlFor="phone">Phone</Label>
@@ -223,7 +247,9 @@ export function StepCareerProfile({
                   onChange={(e) => onChange({ phone: e.target.value })}
                   data-testid="imported-phone"
                   aria-invalid={Boolean(errors.phone)}
+                  aria-describedby={errors.phone ? "error-phone" : undefined}
                 />
+                {errors.phone && <p id="error-phone" className="text-xs text-destructive" role="alert">{errors.phone}</p>}
               </div>
               <div className={`space-y-1.5 sm:col-span-2 ${ambiguousClass(uploadReviewMode && !form.location.trim())}`}>
                 <Label htmlFor="location">Current location</Label>
@@ -235,7 +261,9 @@ export function StepCareerProfile({
                   placeholder="City, region, country"
                   data-testid="imported-location"
                   aria-invalid={Boolean(errors.location)}
+                  aria-describedby={errors.location ? "error-location" : undefined}
                 />
+                {errors.location && <p id="error-location" className="text-xs text-destructive" role="alert">{errors.location}</p>}
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="linkedin">LinkedIn (optional)</Label>
@@ -257,12 +285,12 @@ export function StepCareerProfile({
             </div>
           </details>
 
-          <details open={Boolean(form.summary.trim()) || form.careerProfileMode === "manual"} className="rounded-md border border-border p-3">
+          {compact ? <CareerReview form={form} onChange={onChange} /> : <CareerSections form={form} onChange={onChange} />}
+          <details open={!compact && (Boolean(form.summary.trim()) || form.careerProfileMode === "manual")} className="rounded-md border border-border p-3">
             <summary className="cursor-pointer text-sm font-medium">Professional summary (optional)</summary>
             <Textarea className="mt-3" aria-label="Professional summary" value={form.summary} onChange={(event) => onChange({ summary: event.target.value })} />
           </details>
-          <CareerSections form={form} onChange={onChange} />
-          <details open={form.skills.length > 0 || form.careerProfileMode === "manual"} className="rounded-md border border-border p-3">
+          <details open={!compact && (form.skills.length > 0 || form.careerProfileMode === "manual")} className="rounded-md border border-border p-3">
             <summary className="cursor-pointer text-sm font-medium">Skills</summary>
             <div className="mt-3">
               <ChipInput id="skills" label="Skills" values={form.skills} onChange={(skills) => onChange({ skills })} placeholder="Add a skill" error={errors.skills} />

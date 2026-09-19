@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import type { OnboardingFormState } from "./types";
 
-type SectionKey = "employment" | "education" | "projects" | "certifications" | "publications";
+export type SectionKey = "employment" | "education" | "projects" | "certifications" | "publications";
 type Field = { key: string; label: string; kind?: "lines" | "list" | "boolean"; testId?: string };
 type Section = { key: SectionKey; title: string; singular: string; empty: Record<string, unknown>; fields: Field[] };
 
@@ -43,12 +43,14 @@ const sections: Section[] = [
   ] },
 ];
 
-export function CareerSections({ form, onChange }: {
+export function CareerSections({ form, onChange, sectionKeys, onlyIndex }: {
   form: OnboardingFormState;
+  sectionKeys?: SectionKey[];
+  onlyIndex?: number;
   onChange: (patch: Partial<OnboardingFormState>) => void;
 }) {
   const prefix = useId();
-  return sections.map((section) => {
+  return sections.filter((section) => !sectionKeys || sectionKeys.includes(section.key)).map((section) => {
     const rows = form[section.key] as Array<Record<string, unknown>>;
     function update(index: number, field: string, value: unknown) {
       onChange({ [section.key]: rows.map((row, i) => i === index ? { ...row, [field]: value } : row) });
@@ -58,7 +60,7 @@ export function CareerSections({ form, onChange }: {
         <summary className="cursor-pointer text-sm font-medium">{section.title} <span className="text-foreground-muted">({rows.length})</span></summary>
         <div className="mt-3 space-y-4">
           {!rows.length ? <p className="text-sm text-foreground-secondary">No {section.title.toLowerCase()} added. Add only what applies to you.</p> : null}
-          {rows.map((row, index) => (
+          {rows.map((row, index) => onlyIndex !== undefined && index !== onlyIndex ? null : (
             <fieldset key={index} className="grid gap-3 border-b border-border pb-4 last:border-0 sm:grid-cols-2">
               <legend className="mb-3 text-sm font-medium" data-testid={section.key === "employment" ? `imported-role-title-${index}` : undefined}>
                 {section.key === "employment" ? [row.title, row.company].filter(Boolean).join(" · ") || `Role ${index + 1}` : `${section.singular} ${index + 1}`}
@@ -92,7 +94,7 @@ export function CareerSections({ form, onChange }: {
               <Button type="button" size="sm" variant="ghost" className="justify-self-start" aria-label={`Remove ${section.singular} ${index + 1}`} onClick={() => onChange({ [section.key]: rows.filter((_, i) => i !== index) })}>Remove {section.singular}</Button>
             </fieldset>
           ))}
-          <Button type="button" size="sm" variant="secondary" onClick={() => onChange({ [section.key]: [...rows, { ...section.empty }] })}>Add {section.singular}</Button>
+          {onlyIndex === undefined && <Button type="button" size="sm" variant="secondary" onClick={() => onChange({ [section.key]: [...rows, { ...section.empty }] })}>Add {section.singular}</Button>}
         </div>
       </details>
     );

@@ -1,0 +1,1118 @@
+/* Approved CandidArc paper + ribbon system. Scope avoids changing unrelated app controls. */
+.focus-marketing-header {
+  position:relative;
+  z-index:30;
+  background:#fff
+}
+.focus-marketing-nav {
+  max-width:1536px;
+  margin:auto;
+  padding:25px 4.5%;
+  display:flex;
+  align-items:center;
+  gap:24px
+}
+.focus-marketing-nav>div:first-child {
+  gap:14px
+}
+.focus-marketing-nav>div:first-child>span:last-child {
+  font-size:clamp(23px,2.5vw,36px);
+  font-weight:750
+}
+.focus-hero {
+  max-width:1536px;
+  margin:auto;
+  position:relative;
+  display:grid;
+  grid-template-columns:47% 53%;
+  align-items:center;
+  min-height:min(880px,calc(100svh - 95px));
+  padding:0 0 55px 4.5%;
+  overflow:hidden;
+  background:#fff
+}
+.focus-hero-copy {
+  position:relative;
+  z-index:2;
+  padding:50px 0 70px
+}
+.focus-eyebrow {
+  font-size:12px;
+  font-weight:650;
+  letter-spacing:.22em;
+  color:#50675d
+}
+.focus-hero h1 {
+  font-size:clamp(42px,5.7vw,88px);
+  font-weight:800;
+  line-height:1.1;
+  letter-spacing:-.055em;
+  margin:23px -38px 32px 0;
+  color:#102d22
+}
+.focus-hero h1 span {
+  color:#236045
+}
+.focus-hero-description {
+  font-size:clamp(17px,1.75vw,26px);
+  line-height:1.5;
+  color:#52636b;
+  margin-right:-15px
+}
+.focus-hero-actions {
+  display:flex;
+  align-items:center;
+  gap:28px;
+  margin-top:40px;
+  flex-wrap:wrap
+}
+.focus-primary-pill {
+  height:auto;
+  min-height:74px;
+  border-radius:100px;
+  padding:19px 35px;
+  background:linear-gradient(110deg,#173e30,#123226);
+  color:#fff;
+  font-size:21px;
+  gap:18px;
+  box-shadow:inset 0 1px 1px #ffffff20
+}
+.focus-demo-trigger {
+  display:flex;
+  align-items:center;
+  gap:14px;
+  font-weight:650;
+  color:#143a2c;
+  font-size:18px;
+  cursor:pointer
+}
+.focus-demo-trigger>span {
+  display:grid;
+  place-items:center;
+  width:52px;
+  height:52px;
+  border-radius:50%;
+  background:#e0f2e9
+}
+.focus-demo-trigger:hover>span {
+  background:#cee9d8
+}
+.focus-hero-footnote {
+  margin-top:28px;
+  color:#52636b;
+  font-size:15px
+}
+.focus-hero-art {
+  position:relative;
+  width:116%;
+  margin-left:-9%;
+  isolation:isolate;
+  animation:focus-arrive 1s ease-out both
+}
+.focus-hero-paper {
+  width:100%;
+  height:auto;
+  mix-blend-mode:multiply
+}
+.focus-hero-badge {
+  position:absolute;
+  top:20%;
+  right:10%;
+  padding:13px 20px;
+  border-radius:15px;
+  background:#e4f2bb;
+  color:#173d2d;
+  display:flex;
+  align-items:center;
+  gap:9px;
+  font-size:clamp(11px,1.15vw,17px);
+  font-weight:550;
+  transform:rotate(5deg);
+  box-shadow:0 10px 20px #2b503010;
+  white-space:nowrap
+}
+.focus-hero-insight {
+  position:absolute;
+  z-index:2;
+  bottom:9%;
+  left:2%;
+  width:79%;
+  display:flex;
+  align-items:center;
+  gap:20px;
+  padding:22px 25px;
+  background:linear-gradient(110deg,#194432,#122f23);
+  border-radius:16px;
+  transform:rotate(8deg);
+  box-shadow:0 22px 30px #17382330,inset 0 1px 2px #ffffff50;
+  color:#fff
+}
+.focus-insight-mark {
+  width:52px;
+  min-width:32px;
+  padding-right:16px;
+  border-right:1px solid #ffffff45;
+  box-sizing:content-box
+}
+.focus-insight-title {
+  color:#fff;
+  font-size:clamp(12px,1.45vw,22px);
+  font-weight:700;
+  line-height:1.4;
+  letter-spacing:-.015em
+}
+.focus-insight-copy {
+  color:#fff;
+  font-size:clamp(10px,1.13vw,17px);
+  line-height:1.5;
+  margin-top:5px
+}
+.focus-sample-note {
+  position:absolute;
+  right:12%;
+  bottom:24%;
+  font-family:cursive;
+  font-size:22px;
+  font-style:italic;
+  color:#687d73;
+  line-height:1.1;
+  transform:rotate(-9deg)
+}
+.focus-sample-note>span {
+  display:block;
+  font-size:45px;
+  line-height:1
+}
+.focus-onboarding {
+  display:grid;
+  grid-template-columns:44% 56%;
+  min-height:100dvh;
+  background:#fff;
+  color:#102b22;
+  max-width:1800px;
+  margin:auto
+}
+.focus-onboarding-aside {
+  background:#f0f8f1;
+  padding:38px 9% 35px;
+  display:flex;
+  flex-direction:column;
+  min-height:100dvh;
+  position:relative;
+  overflow:hidden
+}
+.focus-onboarding-aside>.inline-flex {
+  gap:15px
+}
+.focus-onboarding-aside>.inline-flex>span:last-child {
+  font-size:30px;
+  font-weight:750
+}
+.focus-onboarding-aside>.inline-flex>span:first-child {
+  width:57px!important;
+  height:40px!important
+}
+.focus-onboarding-art {
+  margin:24px -17% 8px;
+  animation:focus-arrive 1s ease-out both
+}
+.focus-onboarding-art img {
+  width:100%;
+  height:auto;
+  mix-blend-mode:multiply;
+  mask-image:linear-gradient(transparent,#000 12%,#000 85%,transparent)
+}
+.focus-onboarding-message h2 {
+  font-size:clamp(32px,3.7vw,61px);
+  font-weight:800;
+  letter-spacing:-.055em;
+  line-height:1.12
+}
+.focus-onboarding-message p {
+  font-size:clamp(16px,1.65vw,24px);
+  line-height:1.5;
+  margin-top:16px;
+  color:#435a50
+}
+.focus-onboarding-signoff {
+  margin-top:auto;
+  padding-top:50px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  color:#527d64
+}
+.focus-onboarding-signoff>span {
+  font-family:cursive;
+  font-size:25px;
+  font-style:italic;
+  line-height:1.2;
+  transform:rotate(-7deg)
+}
+.focus-onboarding-signoff>div {
+  text-align:right;
+  letter-spacing:.28em;
+  font-size:11px;
+  line-height:1.9
+}
+.focus-onboarding-signoff svg {
+  width:36px;
+  margin:0 0 12px auto
+}
+.focus-onboarding-main {
+  display:flex;
+  flex-direction:column;
+  height:100dvh;
+  min-width:0
+}
+.focus-onboarding-header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+  padding:27px 7% 20px;
+  flex-shrink:0
+}
+.focus-onboarding-step {
+  display:flex;
+  align-items:center;
+  gap:26px;
+  flex:1;
+  font-size:14px
+}
+.focus-onboarding-step>p {
+  white-space:nowrap
+}
+.focus-onboarding-step ol {
+  display:flex;
+  gap:5px;
+  width:min(310px,50%)
+}
+.focus-onboarding-step li {
+  height:6px;
+  flex:1;
+  border-radius:8px;
+  background:#e5ebed
+}
+.focus-onboarding-step li[data-complete=true] {
+  background:#1b5843
+}
+.focus-onboarding-scroll {
+  flex:1;
+  overflow-y:auto;
+  min-height:0;
+  scrollbar-gutter:stable
+}
+.focus-onboarding-content {
+  padding:10px 7% 24px
+}
+.focus-onboarding-heading {
+  margin-bottom:20px
+}
+.focus-onboarding-heading h1 {
+  font-size:clamp(28px,3.1vw,47px);
+  font-weight:780;
+  letter-spacing:-.045em;
+  line-height:1.15
+}
+.focus-onboarding-heading p {
+  font-size:clamp(16px,1.4vw,21px);
+  color:#52636b;
+  margin-top:8px;
+  line-height:1.4
+}
+.focus-onboarding-footer {
+  margin:0 7%;
+  padding:17px 0 25px;
+  border-top:1px solid #dbe5df;
+  display:grid;
+  grid-template-columns:1fr 2.4fr 1.3fr;
+  gap:16px;
+  align-items:center;
+  flex-shrink:0
+}
+.focus-onboarding-footer>button {
+  min-height:49px;
+  border-radius:6px
+}
+.focus-onboarding-footer>button:nth-child(2) {
+  background:#1c5543;
+  color:#fff
+}
+.focus-onboarding-footer>p {
+  font-size:11px;
+  color:#5c7170;
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:6px
+}
+.save-confirmed svg {
+  border-radius:50%;
+  background:#b5df8e;
+  color:#fff;
+  padding:2px;
+  flex-shrink:0
+}
+.focus-import-summary {
+  display:flex;
+  flex-direction:column;
+  gap:14px
+}
+.focus-import-success {
+  background:#eef8ef;
+  border-radius:7px;
+  padding:12px 16px;
+  display:flex;
+  gap:11px;
+  align-items:flex-start;
+  font-size:14px;
+  line-height:1.5
+}
+.focus-import-success>svg {
+  background:#3d8b68;
+  color:#fff;
+  border-radius:50%;
+  padding:3px;
+  flex-shrink:0;
+  margin-top:1px
+}
+.focus-import-file {
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  background:#f2f5f6;
+  padding:10px 13px;
+  border-radius:13px;
+  font-size:12px;
+  max-width:100%;
+  overflow-wrap:anywhere
+}
+.focus-import-file svg {
+  flex-shrink:0;
+  color:#627681
+}
+.focus-import-summary button {
+  border:0;
+  box-shadow:none;
+  font-size:12px;
+  color:#18583e;
+  background:transparent
+}
+.focus-review-section {
+  border:1px solid #bfcec7;
+  border-radius:7px;
+  background:#fff
+}
+.focus-review-section>summary {
+  list-style:none;
+  display:flex;
+  align-items:center;
+  gap:15px;
+  padding:14px 18px;
+  cursor:pointer;
+  font-size:16px
+}
+.focus-review-section>summary::-webkit-details-marker,.focus-review-record>summary::-webkit-details-marker {
+  display:none
+}
+.focus-review-section>summary>span {
+  margin-left:auto;
+  text-align:right;
+  font-size:12px;
+  color:#52636b;
+  max-width:56%;
+  overflow-wrap:anywhere
+}
+.focus-review-section>summary>svg {
+  flex-shrink:0
+}
+.focus-review-section[open]>summary>svg:last-child,.focus-review-record[open]>summary>svg {
+  transform:rotate(180deg)
+}
+.focus-review-section>div:not(.focus-review-records) {
+  padding:0 18px 18px
+}
+.focus-review-records {
+  padding:0 24px 12px 55px
+}
+.focus-review-record {
+  border-bottom:1px solid #d4ded9;
+  padding:10px 0 14px;
+  font-size:13px;
+  line-height:1.5
+}
+.focus-review-record:last-of-type {
+  border-bottom:0
+}
+.focus-review-record>summary {
+  list-style:none;
+  cursor:pointer;
+  display:flex;
+  justify-content:space-between;
+  gap:10px
+}
+.focus-review-record>summary strong {
+  font-weight:650;
+  color:#142c24
+}
+.focus-review-record>summary p,.focus-review-record>p {
+  color:#52636b
+}
+.focus-review-record>summary>svg {
+  flex-shrink:0;
+  margin-top:4px
+}
+.focus-review-record>ul {
+  padding-left:16px;
+  list-style:disc;
+  margin-top:6px;
+  color:#52636b
+}
+.career-review-editor>summary {
+  font-size:12px;
+  text-decoration:underline;
+  color:#19593d;
+  cursor:pointer;
+  width:fit-content;
+  margin:8px 0
+}
+.career-review-editor>details {
+  border:0;
+  padding:0
+}
+.career-review-editor>details>summary {
+  display:none
+}
+.focus-add-record {
+  font-size:12px;
+  color:#19593d;
+  text-decoration:underline;
+  cursor:pointer;
+  margin:8px 0
+}
+.focus-creating {
+  max-width:860px;
+  margin:auto;
+  padding-bottom:20px
+}
+.focus-creating>header {
+  text-align:center;
+  margin:20px auto 24px;
+  max-width:750px
+}
+.focus-creating h1 {
+  font-size:clamp(28px,3.4vw,44px);
+  font-weight:760;
+  letter-spacing:-.045em;
+  line-height:1.14;
+  margin:12px 0
+}
+.focus-creating header>p:last-child {
+  color:#52636b;
+  font-size:17px
+}
+.focus-pipeline {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:12px;
+  margin:24px 0 16px
+}
+.focus-pipeline li {
+  border-top:3px solid #e0e8e2;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:12px 5px;
+  font-size:14px;
+  color:#61706a
+}
+.focus-pipeline li>span {
+  font-size:14px;
+  font-weight:700
+}
+.focus-pipeline li[data-state=active] {
+  color:#174c36;
+  border-color:#245d44
+}
+.focus-pipeline li[data-state=complete] {
+  border-color:#b7d796;
+  color:#2c6546
+}
+.resume-motion-scene {
+  position:relative;
+  aspect-ratio:3/2;
+  overflow:hidden;
+  isolation:isolate;
+  border-radius:12px;
+  container-type:inline-size;
+  background:#edf5e9
+}
+.scene-paper {
+  background:linear-gradient(110deg,#fff,#f9f9f6);
+  border:1px solid #e5e6df;
+  box-shadow:8px 14px 15px #24392125,inset 1px 1px 2px #fff;
+  padding:5%;
+  color:#162b24
+}
+.research-papers {
+  position:absolute;
+  inset:32% 18% 13%;
+  display:flex;
+  gap:10%;
+  align-items:flex-end
+}
+.research-paper {
+  width:50%;
+  height:100%;
+  font-size:1.8cqw;
+  transform:rotate(-3deg);
+  animation:paper-approach .9s ease-out both
+}
+.research-paper:nth-child(2) {
+  transform:rotate(3deg) translateY(9%);
+  animation-delay:.12s
+}
+.scene-paper h3 {
+  font-family:Georgia,serif;
+  font-size:3cqw;
+  line-height:1.2;
+  margin-bottom:8%
+}
+.scene-paper p {
+  font-size:1.55cqw;
+  line-height:1.4;
+  margin-bottom:7%
+}
+.paper-rule {
+  height:1px;
+  display:block;
+  background:#c8ccc5;
+  margin:5% 0 9%
+}
+.paper-highlight {
+  background:#dfedbf;
+  border-radius:2px;
+  padding:3% 5%;
+  margin-left:-5%;
+  margin-right:-5%
+}
+.assembly-papers {
+  position:absolute;
+  inset:16% 26% 13%;
+  animation:paper-approach .8s ease-out both
+}
+.assembled-paper {
+  width:100%;
+  height:100%;
+  padding:9%;
+  position:relative
+}
+.paper-subtitle {
+  font-size:1.25cqw!important
+}
+.assembled-paper section {
+  margin:9% 0
+}
+.assembled-paper h4 {
+  font-family:Georgia,serif;
+  font-size:2.1cqw;
+  margin-bottom:5%
+}
+.paper-line {
+  display:block;
+  width:100%;
+  height:5px;
+  background:#cdd1ca;
+  margin:8% 0
+}
+.paper-line.short {
+  width:72%
+}
+.paper-line.paper-highlight {
+  background:#e0efc6;
+  height:10px;
+  width:100%;
+  margin-left:0;
+  padding:0
+}
+.paper-ready-check {
+  position:absolute;
+  right:-5%;
+  top:-4%;
+  background:#d5edaa;
+  border:1px solid #fff;
+  border-radius:50%;
+  padding:9px;
+  color:#17472f
+}
+.assembly-strips {
+  position:absolute;
+  left:-32%;
+  top:25%;
+  width:75%;
+  display:grid;
+  gap:15px
+}
+.assembly-strip {
+  padding:6% 9%;
+  position:relative;
+  font-size:2cqw;
+  line-height:1.25;
+  animation:strip-arrive 1.1s ease-out both
+}
+.assembly-strip:nth-child(2) {
+  animation-delay:.16s
+}
+.assembly-strip:nth-child(3) {
+  animation-delay:.32s
+}
+.assembly-strip strong {
+  font-family:Georgia,serif;
+  font-size:2cqw
+}
+.assembly-strip small {
+  display:block;
+  line-height:1.3;
+  font-size:1.15cqw;
+  margin-top:5%
+}
+.strip-highlight {
+  position:absolute;
+  right:5%;
+  top:45%;
+  width:10%;
+  height:5px;
+  background:#d6e6b7
+}
+.quality-scan {
+  position:absolute;
+  top:10%;
+  left:5%;
+  right:5%;
+  height:30%;
+  border-bottom:2px solid #6a9971;
+  background:linear-gradient(transparent,#cfe7b750);
+  animation:paper-check 2s ease-in-out 2 both
+}
+.focus-creating-status {
+  text-align:center;
+  margin:20px 0 10px
+}
+.focus-creating-status h2 {
+  font-size:18px;
+  font-weight:600
+}
+.focus-creating-status p {
+  font-size:13px;
+  color:#63776e;
+  margin-top:7px
+}
+.focus-storyboard>h3 {
+  font-size:clamp(23px,3vw,36px);
+  line-height:1.15;
+  letter-spacing:-.035em;
+  font-weight:750
+}
+.focus-storyboard>p {
+  color:#52636b;
+  margin-top:9px
+}
+.storyboard-tabs {
+  display:flex;
+  gap:8px;
+  margin:22px 0 14px
+}
+.storyboard-tabs button {
+  flex:1;
+  text-align:left;
+  border-top:3px solid #e3eae5;
+  padding:10px 5px;
+  font-size:12px;
+  color:#53695e;
+  cursor:pointer
+}
+.storyboard-tabs button[aria-pressed=true] {
+  border-color:#205039;
+  color:#153c2a
+}
+.storyboard-tabs button>span {
+  display:block;
+  font-weight:750;
+  font-size:20px;
+  margin-bottom:4px
+}
+.storyboard-caption {
+  text-align:center;
+  padding:10px 0 18px
+}
+.focus-storyboard .resume-motion-scene {
+  max-height:46vh;
+  aspect-ratio:3/2
+}
+.focus-ready-stage {
+  padding:40px 24px!important;
+  background:#f3f8f0 url('/brand/resume-studio.webp') center top/100% auto no-repeat
+}
+.focus-ready-stage>div {
+  position:relative
+}
+.focus-ready-eyebrow {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  color:#2b7650;
+  font-weight:600
+}
+.focus-ready-eyebrow svg {
+  border-radius:50%;
+  background:#d5edaa;
+  padding:3px;
+  width:23px;
+  height:23px
+}
+@keyframes focus-arrive {
+  from {
+    opacity:0;
+    translate:0 12px
+  }
+  to {
+    opacity:1;
+    translate:0 0
+  }
+}
+@keyframes paper-approach {
+  from {
+    opacity:0;
+    translate:0 18px
+  }
+  to {
+    opacity:1;
+    translate:0 0
+  }
+}
+@keyframes strip-arrive {
+  from {
+    opacity:0;
+    translate:-16px 0
+  }
+  to {
+    opacity:1;
+    translate:0 0
+  }
+}
+@keyframes paper-check {
+  from {
+    top:10%
+  }
+  to {
+    top:65%
+  }
+}
+@media(min-width:1537px) {
+  .focus-hero {
+    min-height:900px
+  }
+}
+@media(max-width:1199px) {
+  .focus-hero-actions {
+    gap:18px
+  }
+  .focus-primary-pill {
+    min-height:55px;
+    font-size:16px;
+    padding:14px 24px
+  }
+  .focus-demo-trigger {
+    font-size:15px
+  }
+  .focus-demo-trigger>span {
+    width:42px;
+    height:42px
+  }
+  .focus-hero-insight {
+    gap:10px;
+    padding:17px
+  }
+  .focus-onboarding-aside {
+    padding-left:8%;
+    padding-right:8%
+  }
+  .focus-onboarding-footer {
+    grid-template-columns:1fr 2fr
+  }
+  .focus-onboarding-footer>p {
+    grid-column:1/-1;
+    justify-content:center
+  }
+  .focus-onboarding-art {
+    margin-top:45px
+  }
+}
+@media(max-width:1023px) {
+  .focus-onboarding {
+    display:block
+  }
+  .focus-onboarding-aside {
+    display:none
+  }
+  .focus-onboarding-main {
+    min-height:100dvh;
+    height:auto
+  }
+  .focus-onboarding-header {
+    flex-wrap:wrap;
+    padding:16px 5%;
+    border-bottom:1px solid #e1e9e3
+  }
+  .focus-onboarding-step {
+    order:3;
+    flex-basis:100%;
+    justify-content:space-between
+  }
+  .focus-onboarding-step ol {
+    width:55%
+  }
+  .focus-onboarding-scroll {
+    overflow:visible
+  }
+  .focus-onboarding-content {
+    padding:25px 5%
+  }
+  .focus-onboarding-footer {
+    position:sticky;
+    bottom:0;
+    margin:0;
+    background:#ffffffed;
+    backdrop-filter:blur(12px);
+    padding:14px 5%;
+    z-index:5;
+    grid-template-columns:1fr 2fr
+  }
+  .focus-onboarding-footer>p {
+    grid-column:1/-1;
+    justify-content:center;
+    min-height:15px
+  }
+  .focus-onboarding-heading h1 {
+    font-size:34px
+  }
+  .focus-onboarding-heading p {
+    font-size:17px
+  }
+}
+@media(max-width:767px) {
+  .focus-marketing-nav {
+    padding:20px 6%;
+    gap:10px
+  }
+  .focus-marketing-nav>div:first-child>span:last-child {
+    font-size:23px
+  }
+  .focus-marketing-nav>div:first-child {
+    gap:8px
+  }
+  .focus-hero {
+    display:flex;
+    flex-direction:column;
+    padding:0 0 25px;
+    min-height:0
+  }
+  .focus-hero-copy {
+    padding:48px 6% 5px;
+    width:100%
+  }
+  .focus-eyebrow {
+    font-size:10px;
+    letter-spacing:.19em
+  }
+  .focus-hero h1 {
+    font-size:clamp(38px,9.1vw,66px);
+    margin:20px 0 24px;
+    letter-spacing:-.055em
+  }
+  .focus-hero-description {
+    font-size:18px;
+    margin-right:0;
+    max-width:540px
+  }
+  .focus-hero-actions {
+    margin-top:28px;
+    gap:22px
+  }
+  .focus-primary-pill {
+    min-height:54px;
+    font-size:16px;
+    padding:15px 22px
+  }
+  .focus-demo-trigger {
+    font-size:14px;
+    gap:8px
+  }
+  .focus-demo-trigger>span {
+    width:38px;
+    height:38px
+  }
+  .focus-hero-footnote {
+    font-size:12px;
+    margin-top:21px
+  }
+  .focus-hero-art {
+    width:105%;
+    margin:0 0 0 -3%;
+    max-width:650px
+  }
+  .focus-hero-badge {
+    font-size:11px;
+    padding:8px 12px;
+    right:10%
+  }
+  .focus-hero-insight {
+    left:5%;
+    width:84%;
+    padding:14px;
+    gap:12px;
+    bottom:10%;
+    border-radius:10px
+  }
+  .focus-insight-title {
+    font-size:clamp(12px,3.15vw,20px)
+  }
+  .focus-insight-copy {
+    font-size:clamp(9px,2.45vw,15px)
+  }
+  .focus-insight-mark {
+    width:32px;
+    padding-right:10px
+  }
+  .focus-sample-note {
+    font-size:14px;
+    right:7%;
+    bottom:26%
+  }
+  .focus-sample-note>span {
+    font-size:32px
+  }
+  .focus-review-records {
+    padding:0 17px 12px
+  }
+  .focus-review-section>summary {
+    padding:13px 12px;
+    gap:10px;
+    font-size:14px
+  }
+  .focus-review-section>summary>span {
+    font-size:11px
+  }
+  .focus-onboarding-heading h1 {
+    font-size:30px
+  }
+  .focus-creating h1 {
+    font-size:31px
+  }
+  .focus-creating header>p:last-child {
+    font-size:15px
+  }
+  .focus-pipeline {
+    gap:7px
+  }
+  .focus-pipeline li {
+    display:block;
+    font-size:12px
+  }
+  .focus-pipeline li>span {
+    display:block;
+    margin-bottom:5px
+  }
+  .focus-creating .resume-motion-scene {
+    margin-left:-8px;
+    margin-right:-8px;
+    aspect-ratio:1.2
+  }
+  .research-papers {
+    inset:32% 13% 14%;
+    gap:8%
+  }
+  .scene-paper p {
+    font-size:2cqw
+  }
+  .scene-paper h3 {
+    font-size:3.6cqw
+  }
+  .assembled-paper h4 {
+    font-size:2.8cqw
+  }
+  .assembly-papers {
+    inset:20% 21% 12%
+  }
+  .assembly-strips {
+    left:-25%;
+    width:75%;
+    gap:10px
+  }
+  .assembly-strip strong {
+    font-size:2.7cqw
+  }
+  .assembly-strip small {
+    font-size:1.6cqw
+  }
+  .focus-ready-stage {
+    padding:20px 8px!important
+  }
+  .focus-storyboard .resume-motion-scene {
+    aspect-ratio:1.2
+  }
+  .storyboard-tabs button {
+    font-size:11px
+  }
+}
+@media(prefers-reduced-motion:reduce) {
+  .focus-hero-art,.focus-onboarding-art,.research-paper,.assembly-papers,.assembly-strip,.quality-scan {
+    animation:none!important;
+    transition:none!important
+  }
+  .quality-scan {
+    top:50%
+  }
+}
+.focus-marketing-nav>div:first-child>span:first-child {
+  width:64px!important;
+  height:44px!important
+}
+@media(min-width:1200px) {
+  .focus-marketing-nav a {
+    font-size:19px
+  }
+  .focus-marketing-nav a[href="/sign-up"] {
+    min-height:59px;
+    min-width:200px
+  }
+  .focus-hero-copy {
+    padding-top:0;
+    padding-bottom:80px
+  }
+}
+@media(max-width:767px) {
+  .focus-marketing-nav>div:first-child>span:first-child {
+    width:40px!important;
+    height:29px!important
+  }
+}
+@media(max-width:767px) {
+  .focus-hero-copy {
+    padding-top:32px
+  }
+  .focus-hero-actions {
+    gap:16px
+  }
+  .focus-primary-pill {
+    font-size:15px;
+    padding:14px 18px;
+    gap:10px;
+    min-height:52px
+  }
+  .focus-demo-trigger>span {
+    width:32px;
+    height:32px
+  }
+}

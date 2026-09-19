@@ -52,6 +52,7 @@ test.describe("resume import interactions", () => {
     await expect(page.locator("#github")).toHaveValue(/github\.com\/jordanblake/i);
     const phone = await page.locator("#phone").inputValue();
     if (phone) expect(phone).toMatch(/555/);
+    await page.getByText("Edit role 1", { exact: true }).click();
     await expect(page.getByLabel(/job title 1/i)).toHaveValue(/Platform Engineer/i);
     await expect(page.getByLabel(/employer 1/i)).toHaveValue(/Harbor Systems/i);
     await expect(page.getByRole("textbox", { name: "Bullets 1", exact: true })).toHaveValue(
@@ -65,10 +66,21 @@ test.describe("resume import interactions", () => {
     await expect(page.getByTestId("imported-cert-0")).toHaveValue(/AWS Solutions Architect Associate/i);
     await expect(page.getByTestId("imported-publication-0")).toHaveValue(/Reliable Rollouts/i);
     await expect(page.getByLabel(/job title 2/i)).toHaveCount(0);
+    const contact = page.locator("details").filter({ has: page.locator("#full-name") }).first();
+    if (!(await contact.getAttribute("open"))) {
+      // Native details has an empty open attribute; use DOM state for the review accordion.
+      if (!(await contact.evaluate((node) => (node as HTMLDetailsElement).open))) await contact.locator(":scope > summary").click();
+    }
     await page.getByTestId("imported-full-name").fill("Jordan B. Blake");
     await page.getByTestId("imported-email").fill("reviewed@example.com");
     await page.getByTestId("imported-portfolio").fill("");
+    const education = page.locator(".focus-review-section").filter({ has: page.locator(":scope > summary", { hasText: "Education" }) });
+    await education.locator(":scope > summary").click();
+    await education.getByText("Edit education 1", { exact: true }).click();
     await page.getByTestId("imported-education-0").fill("Reviewed University");
+    const certifications = page.locator(".focus-review-section").filter({ has: page.locator(":scope > summary", { hasText: "Certifications" }) });
+    await certifications.locator(":scope > summary").click();
+    await certifications.getByText("Edit certification 1", { exact: true }).click();
     await page.getByRole("button", { name: "Remove certification 1", exact: true }).click();
     await expect.poll(async () => page.evaluate(async () => {
       const state = await (await fetch("/api/v1/profile/resume/import", { credentials: "include" })).json();
