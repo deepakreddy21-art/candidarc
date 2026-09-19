@@ -2,15 +2,30 @@ import { expect, test } from "@playwright/test";
 import { DEFAULT_PASSWORD, generateResumeViaApi, seedOnboardedUser, uniqueEmail, waitForResumeReady } from "./helpers/session";
 import { importResumePdf } from "./helpers/documents";
 
-for (const width of [1536, 390]) {
-  test(`approved homepage and interactive storyboard at ${width}px`, async ({ page }, testInfo) => {
-    await page.setViewportSize({ width, height: width === 390 ? 844 : 1024 });
+for (const viewport of [
+  { width: 1024, height: 600 },
+  { width: 1280, height: 600 },
+  { width: 1366, height: 650 },
+  { width: 1536, height: 864 },
+  { width: 1920, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`approved homepage and interactive storyboard at ${viewport.width}x${viewport.height}`, async ({ page }, testInfo) => {
+    const { width, height } = viewport;
+    await page.setViewportSize(viewport);
     await page.goto("/");
     await expect(page.getByRole("heading", { name: /Get noticed for what you can do\./ })).toBeVisible();
     await expect(page.getByText("Your experience, in focus.")).toBeVisible();
     await expect(page.locator(".focus-insight-title")).toHaveCSS("color", "rgb(255, 255, 255)");
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await expect(page.locator('.focus-hero-paper')).toBeVisible();
+    if (width >= 768) {
+      // toBeVisible alone passes even when the CTA or artwork is below the fold.
+      await expect.poll(() => page.locator(".focus-hero").evaluate((element) => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(height + 1);
+      for (const selector of ["#hero-title", ".focus-hero-actions", ".focus-hero-footnote", ".focus-hero-art", ".focus-hero-insight"]) {
+        await expect(page.locator(selector)).toBeInViewport({ ratio: 1 });
+      }
+    }
     await page.screenshot({ path: testInfo.outputPath(`homepage-${width}.png`), fullPage: false, animations: "disabled" });
     await page.getByRole("button", { name: "See it in action" }).click();
     const dialog = page.getByRole("dialog", { name: "Product demo" });
