@@ -1,4 +1,8 @@
 /* Approved CandidArc paper + ribbon system. Scope avoids changing unrelated app controls. */
+.focus-marketing-page {
+  --focus-header-height:clamp(76px,11svh,96px);
+  --focus-hero-height:min(800px,calc(100svh - var(--focus-header-height)))
+}
 .focus-marketing-header {
   position:relative;
   z-index:30;
@@ -7,7 +11,8 @@
 .focus-marketing-nav {
   max-width:1536px;
   margin:auto;
-  padding:25px 4.5%;
+  min-height:var(--focus-header-height);
+  padding:12px 4.5%;
   display:flex;
   align-items:center;
   gap:24px
@@ -16,7 +21,7 @@
   gap:14px
 }
 .focus-marketing-nav>div:first-child>span:last-child {
-  font-size:clamp(23px,2.5vw,36px);
+  font-size:clamp(23px,2vw,30px);
   font-weight:750
 }
 .focus-hero {
@@ -26,15 +31,15 @@
   display:grid;
   grid-template-columns:47% 53%;
   align-items:center;
-  min-height:min(880px,calc(100svh - 95px));
-  padding:0 0 55px 4.5%;
+  min-height:var(--focus-hero-height);
+  padding:16px 4.5%;
   overflow:hidden;
   background:#fff
 }
 .focus-hero-copy {
   position:relative;
   z-index:2;
-  padding:50px 0 70px
+  padding:16px 0
 }
 .focus-eyebrow {
   font-size:12px;
@@ -43,38 +48,38 @@
   color:#50675d
 }
 .focus-hero h1 {
-  font-size:clamp(42px,5.7vw,88px);
+  font-size:clamp(40px,min(5.2vw,8svh),76px);
   font-weight:800;
   line-height:1.1;
   letter-spacing:-.055em;
-  margin:23px -38px 32px 0;
+  margin:18px 0 24px;
   color:#102d22
 }
 .focus-hero h1 span {
   color:#236045
 }
 .focus-hero-description {
-  font-size:clamp(17px,1.75vw,26px);
+  font-size:clamp(17px,min(1.65vw,2.7svh),23px);
   line-height:1.5;
   color:#52636b;
-  margin-right:-15px
+  margin-right:0
 }
 .focus-hero-actions {
   display:flex;
   align-items:center;
-  gap:28px;
-  margin-top:40px;
+  gap:22px;
+  margin-top:28px;
   flex-wrap:wrap
 }
 .focus-primary-pill {
   height:auto;
-  min-height:74px;
+  min-height:56px;
   border-radius:100px;
-  padding:19px 35px;
+  padding:15px 26px;
   background:linear-gradient(110deg,#173e30,#123226);
   color:#fff;
-  font-size:21px;
-  gap:18px;
+  font-size:18px;
+  gap:14px;
   box-shadow:inset 0 1px 1px #ffffff20
 }
 .focus-demo-trigger {
@@ -83,14 +88,14 @@
   gap:14px;
   font-weight:650;
   color:#143a2c;
-  font-size:18px;
+  font-size:16px;
   cursor:pointer
 }
 .focus-demo-trigger>span {
   display:grid;
   place-items:center;
-  width:52px;
-  height:52px;
+  width:44px;
+  height:44px;
   border-radius:50%;
   background:#e0f2e9
 }
@@ -98,14 +103,16 @@
   background:#cee9d8
 }
 .focus-hero-footnote {
-  margin-top:28px;
+  margin-top:22px;
   color:#52636b;
   font-size:15px
 }
 .focus-hero-art {
   position:relative;
-  width:116%;
-  margin-left:-9%;
+  /* Bound the square artwork by the available height as well as its column. */
+  width:min(100%,calc(var(--focus-hero-height) - 32px));
+  justify-self:center;
+  margin-left:0;
   isolation:isolate;
   animation:focus-arrive 1s ease-out both
 }
@@ -156,14 +163,14 @@
 }
 .focus-insight-title {
   color:#fff;
-  font-size:clamp(12px,1.45vw,22px);
+  font-size:clamp(13px,min(1.45vw,2.3svh),20px);
   font-weight:700;
   line-height:1.4;
   letter-spacing:-.015em
 }
 .focus-insight-copy {
   color:#fff;
-  font-size:clamp(10px,1.13vw,17px);
+  font-size:clamp(11px,min(1.13vw,1.85svh),16px);
   line-height:1.5;
   margin-top:5px
 }
@@ -809,11 +816,6 @@
     top:65%
   }
 }
-@media(min-width:1537px) {
-  .focus-hero {
-    min-height:900px
-  }
-}
 @media(max-width:1199px) {
   .focus-hero-actions {
     gap:18px
@@ -1076,20 +1078,16 @@
   }
 }
 .focus-marketing-nav>div:first-child>span:first-child {
-  width:64px!important;
-  height:44px!important
+  width:48px!important;
+  height:34px!important
 }
 @media(min-width:1200px) {
   .focus-marketing-nav a {
-    font-size:19px
+    font-size:16px
   }
   .focus-marketing-nav a[href="/sign-up"] {
-    min-height:59px;
-    min-width:200px
-  }
-  .focus-hero-copy {
-    padding-top:0;
-    padding-bottom:80px
+    min-height:48px;
+    min-width:144px
   }
 }
 @media(max-width:767px) {

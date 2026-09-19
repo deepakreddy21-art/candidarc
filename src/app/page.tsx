@@ -22,7 +22,7 @@ export default function LandingPage() {
 
 
   return (
-    <div className="min-h-dvh bg-white text-foreground">
+    <div className="focus-marketing-page min-h-dvh bg-white text-foreground">
       <header className="focus-marketing-header">
         <div className="focus-marketing-nav">
           <Logo size="lg" />
