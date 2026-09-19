@@ -1,3 +1,4 @@
+import { fetchPublicBoard, fetchPublicListing, shouldFetchLiveBoard } from "./public-board";
 import type {
   BoardFetchInput,
   JobSourceListing,
@@ -74,6 +75,7 @@ export class AshbyProvider implements JobSourceProvider {
   });
 
   async fetchBoard(input: BoardFetchInput): Promise<JobSourceResult> {
+    if (shouldFetchLiveBoard("ashby")) return fetchPublicBoard("ashby", input);
     const filtered = FIXTURES.filter(
       (l) =>
         !input.boardToken ||
@@ -89,10 +91,19 @@ export class AshbyProvider implements JobSourceProvider {
   }
 
   async fetchListing(input: ListingFetchInput): Promise<JobSourceListing | null> {
+    if (shouldFetchLiveBoard("ashby")) return fetchPublicListing("ashby", input);
     return FIXTURES.find((l) => l.sourceListingId === input.listingId) ?? null;
   }
 
   async verifyListing(input: ListingVerificationInput): Promise<JobVerificationResult> {
+    if (shouldFetchLiveBoard("ashby")) {
+      try {
+        const listing = await fetchPublicListing("ashby", input);
+        return { listingId: input.listingId, open: Boolean(listing), status: listing ? "open" : "closed", checkedAt: new Date().toISOString() };
+      } catch {
+        return { listingId: input.listingId, open: false, status: "error", checkedAt: new Date().toISOString(), message: "Source verification unavailable" };
+      }
+    }
     const found = FIXTURES.some((l) => l.sourceListingId === input.listingId);
     return {
       listingId: input.listingId,
@@ -103,6 +114,7 @@ export class AshbyProvider implements JobSourceProvider {
   }
 
   async healthCheck(): Promise<ProviderHealth> {
+    if (shouldFetchLiveBoard("ashby")) return { ok: true, enabled: this.enabled, message: "Live public-board adapter configured; connectivity is checked when a board is fetched", checkedAt: new Date().toISOString() };
     return {
       ok: true,
       enabled: this.enabled,

@@ -37,7 +37,8 @@ export function customerResumePath(app: Pick<Application, "workflowId">): string
 
 export function mapResumeProgress(app: Pick<Application, "status" | "resumeScore" | "stage">): ResumeProgress {
   if (app.status === "archived") return "Needs attention";
-  if (app.status === "ready" || app.resumeScore >= 85) return "Ready";
+  if (/FAILED|ERROR|BLOCKED/.test(app.stage)) return "Needs attention";
+  if (app.status === "ready") return "Ready";
   if (app.status === "draft" && app.resumeScore <= 0) return "Not started";
   if (WORKFLOW_HIDDEN.has(app.status) || app.resumeScore > 0) return "Preparing";
   if (app.resumeScore <= 0) return "Not started";
@@ -63,7 +64,7 @@ export function defaultCandidateStatus(
   }
   if (app.archived || app.status === "archived") return "Withdrawn";
   if (app.status === "interviewing" || app.interviewStatus === "completed") return "Interviewing";
-  if (app.status === "ready" || app.resumeScore >= 85) return "Ready to apply";
+  if (app.status === "ready") return "Ready to apply";
   if (app.status === "draft") return "Saved";
   return "Saved";
 }
@@ -88,6 +89,7 @@ export function customerNextAction(
     resumeScore: app.resumeScore,
     stage: app.stage ?? "research",
   });
+  if (resume === "Needs attention") return "Review resume issue";
   if (resume === "Preparing") return "Wait for resume";
   if (resume === "Not started") return "Tailor resume";
   if (status === "Ready to apply" || status === "Saved") return "Apply on company site";

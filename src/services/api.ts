@@ -481,6 +481,8 @@ export const api = {
   },
   async getResumeImportStatus(): Promise<{
     status: string | null;
+    profile: CandidateProfile;
+    version: number;
     extraction: ResumeImportExtraction | null;
     file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
     replacementAttemptStatus?: string | null;
@@ -488,6 +490,8 @@ export const api = {
   }> {
     const res = await apiFetch<{
       status: string | null;
+      profile: CandidateProfile;
+      version: number;
       extraction: ResumeImportExtraction | null;
       file: { id: string; scanStatus: string; mimeType: string; size: number } | null;
       replacementAttemptStatus?: string | null;
@@ -496,10 +500,10 @@ export const api = {
     if (res.ok) return res.data;
     throw new ApiError("Could not load résumé import status", res.status);
   },
-  async confirmResumeImport(): Promise<{ profile: CandidateProfile; extraction: ResumeImportExtraction }> {
+  async confirmResumeImport(expectedVersion?: number): Promise<{ profile: CandidateProfile; extraction: ResumeImportExtraction }> {
     const res = await apiFetch<{ profile: CandidateProfile; extraction: ResumeImportExtraction }>(
       "/profile/resume/confirm",
-      { method: "POST", body: JSON.stringify({}) },
+      { method: "POST", body: JSON.stringify({ expectedVersion }) },
     );
     if (res.ok) return res.data;
     throw new ApiError("Could not confirm resume import", res.status);

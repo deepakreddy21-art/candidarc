@@ -273,7 +273,7 @@ describe("demo user onboarding", () => {
 });
 
 describe("mergeExtraction career preservation", () => {
-  it("does not let empty autosave arrays wipe extracted employment and related sections", () => {
+  it("preserves omitted sections but accepts explicit removals and contact corrections after CAS", () => {
     const existing = {
       contact: {
         fullName: "Jordan Blake",
@@ -289,6 +289,7 @@ describe("mergeExtraction career preservation", () => {
       skills: ["Kubernetes"],
     };
 
+    expect(mergeExtraction(existing, { onboardingFlowVersion: 3 }).employment).toEqual(existing.employment);
     const merged = mergeExtraction(existing, {
       employment: [],
       projects: [],
@@ -302,14 +303,14 @@ describe("mergeExtraction career preservation", () => {
       onboardingFlowVersion: 3,
     });
 
-    expect(merged.employment).toEqual(existing.employment);
-    expect(merged.projects).toEqual(existing.projects);
-    expect(merged.education).toEqual(existing.education);
-    expect(merged.certifications).toEqual(existing.certifications);
-    expect(merged.publications).toEqual(existing.publications);
-    expect(merged.skills).toEqual(["Kubernetes"]);
-    expect((merged.contact as { email?: string }).email).toBe("jordan.blake@example.com");
-    expect((merged.contact as { linkedIn?: string }).linkedIn).toBe("linkedin.com/in/jordanblake");
+    expect(merged.employment).toEqual([]);
+    expect(merged.projects).toEqual([]);
+    expect(merged.education).toEqual([]);
+    expect(merged.certifications).toEqual([]);
+    expect(merged.publications).toEqual([]);
+    expect(merged.skills).toEqual([]);
+    expect((merged.contact as { email?: string }).email).toBe("import-pdf@example.com");
+    expect((merged.contact as { linkedIn?: string }).linkedIn).toBe("");
     expect(merged.careerProfileMode).toBe("upload");
   });
 

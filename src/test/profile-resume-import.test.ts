@@ -14,6 +14,7 @@ import {
   MAX_RESUME_BYTES,
   ResumeImportService,
 } from "../../server/modules/resumes/import-service";
+import * as pythonClient from "../../server/intelligence/python-client";
 import { normalizeResumeText } from "../../server/modules/resumes/text-extractor";
 import { LocalFilesystemStorage } from "../../server/storage/local";
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
@@ -234,6 +235,39 @@ describe("profile and resume import", () => {
     await expect(service.runExtraction(tenantId, uploaded.file.id)).rejects.toThrow(/malware scan/i);
   });
 
+  it("resumes queueing after a persisted scan without resetting a reviewed draft", async () => {
+    const { repos, userId, tenantId } = await ensureDemoUser(createEmptyMemoryStore());
+    const queue = new InProcessQueueAdapter();
+    const service = importService(repos, new LocalFilesystemStorage(resolve(".data/test-scan-retry"), "scan-retry"), queue);
+    const pdf = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
+    const uploaded = await service.upload(context(userId, tenantId, repos), { filename: "scan.pdf", mimeType: "application/pdf", size: pdf.length, buffer: pdf });
+    const enqueue = vi.spyOn(queue, "enqueue").mockRejectedValueOnce(new Error("queue temporarily unavailable"));
+    await expect(service.runMalwareScan(tenantId, uploaded.file.id)).rejects.toThrow("queue temporarily unavailable");
+    await service.runMalwareScan(tenantId, uploaded.file.id);
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    await repos.candidateProfiles.update(tenantId, userId, { resumeImportStatus: "ready_for_review", resumeImportExtraction: { rawText: "reviewed" } });
+    await service.runMalwareScan(tenantId, uploaded.file.id);
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect((await repos.candidateProfiles.getByUser(tenantId, userId))?.resumeImportStatus).toBe("ready_for_review");
+  });
+
+  it("a late parser failure and exhausted retry cannot erase another worker's reviewed result", async () => {
+    const { repos, userId, tenantId } = await ensureDemoUser(createEmptyMemoryStore());
+    const service = importService(repos, new LocalFilesystemStorage(resolve(".data/test-late-extraction"), "late-extraction"), new InProcessQueueAdapter());
+    const pdf = textToSimplePdf(PROFESSIONAL_EXPERIENCE_RESUME);
+    const uploaded = await service.upload(context(userId, tenantId, repos), { filename: "resume.pdf", mimeType: "application/pdf", size: pdf.length, buffer: pdf });
+    await repos.files.update(tenantId, uploaded.file.id, { scanStatus: "clean" });
+    vi.spyOn(pythonClient, "getPythonIntelligenceClient").mockReturnValue({ parseResume: async () => {
+      await repos.candidateProfiles.update(tenantId, userId, { resumeImportStatus: "ready_for_review", resumeImportExtraction: { rawText: "candidate correction" } });
+      throw new Error("late duplicate failure");
+    } } as never);
+    await service.runExtraction(tenantId, uploaded.file.id);
+    await service.markImportFailed(tenantId, uploaded.file.id, "PARSE_FAILED", "late failure");
+    const profile = await repos.candidateProfiles.getByUser(tenantId, userId);
+    expect(profile?.resumeImportStatus).toBe("ready_for_review");
+    expect(profile?.resumeImportExtraction?.rawText).toBe("candidate correction");
+  });
+
   it("marks import failed when retries are exhausted", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
@@ -257,6 +291,23 @@ describe("profile and resume import", () => {
     const status = await service.getImportStatus(ctx);
     expect(status.status).toBe("failed");
     expect(status.extraction?.errorCode).toBe("PARSE_FAILED");
+  });
+
+  it("rejects stale confirmation and preserves the immutable parse while reviewing corrections", async () => {
+    const { repos, userId, tenantId } = await ensureDemoUser(createEmptyMemoryStore());
+    const ctx = context(userId, tenantId, repos);
+    const service = importService(repos, new LocalFilesystemStorage(resolve(".data/test-review-cas"), "review-secret"), new InProcessQueueAdapter());
+    const source = normalizeResumeText(PROFESSIONAL_EXPERIENCE_RESUME);
+    const profile = await repos.candidateProfiles.update(tenantId, userId, { resumeImportStatus: "ready_for_review", sourceResumeFilePublicId: "original-file", resumeImportExtraction: { ...source, sourceExtraction: source } });
+    const reviewed = { ...source, contact: { ...source.contact, fullName: "Corrected Candidate", portfolio: "" } };
+    await service.updateExtraction(ctx, reviewed, profile.version);
+    await expect(service.confirmImport(ctx, profile.version)).rejects.toMatchObject({ code: "ONBOARDING_STALE" });
+    const current = (await repos.candidateProfiles.getByUser(tenantId, userId))!;
+    expect(current.resumeImportExtraction?.sourceExtraction).toEqual(source);
+    const confirmed = await service.confirmImport(ctx, current.version);
+    expect(confirmed.profile.fullName).toBe("Corrected Candidate");
+    expect(confirmed.profile.portfolio).toBe("");
+    expect(confirmed.profile.resumeImportStatus).toBe("confirmed");
   });
 
   it("does not overwrite confirmed profiles on parse failure", async () => {

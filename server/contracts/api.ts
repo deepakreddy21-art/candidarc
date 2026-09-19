@@ -293,6 +293,7 @@ export const profileResponseSchema = z.object({
 });
 
 export const updateProfileRequestSchema = z.object({
+  version: z.number().int().min(1).optional(),
   fullName: z.string().min(1).max(160).optional(),
   preferredName: z.string().max(80).optional(),
   email: z.string().email().max(160).optional(),

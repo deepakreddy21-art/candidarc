@@ -56,13 +56,13 @@ export function JobDetailPanel({
       signals.slice(0, 8).map((signal) =>
         decideTechnologyClaim({
           technology: signal.name,
-          hasExactEvidence: Boolean(brief?.skillsAlignment?.some((s) => s.toLowerCase().includes(signal.name.toLowerCase()))),
-          hasTransferableEvidence: (job.matchBreakdown?.skills ?? 0) >= 40,
+          hasExactEvidence: Boolean(brief?.skillsAlignment?.some((s) => s.trim().toLowerCase() === signal.name.trim().toLowerCase())),
+          hasTransferableEvidence: false, // Overall fit is not evidence for a specific technology.
           publicOrOpenSource: !signal.inferred || signal.confidence !== "low",
           proprietary: /internal|proprietary/i.test(signal.name),
         }),
       ),
-    [brief?.skillsAlignment, job.matchBreakdown?.skills, signals],
+    [brief?.skillsAlignment, signals],
   );
   const gaps = [
     ...(brief?.concerns ?? []),
@@ -330,7 +330,7 @@ function TeamSignalRow({ signal }: { signal: TeamSignal }) {
             {signal.inferred ? <Badge tone="warning">Inferred</Badge> : <Badge tone="success">Confirmed</Badge>}
             {signal.sourceTitle ? <span>{signal.sourceTitle}</span> : null}
             {signal.sourceDomain ? <span>{signal.sourceDomain}</span> : null}
-            {signal.publishedAt ? <span>{formatRelative(signal.publishedAt)}</span> : null}
+            {signal.observedAt ? <span>Observed {formatRelative(signal.observedAt)}</span> : null}
           </div>
         </div>
         {signal.sourceUrl ? (

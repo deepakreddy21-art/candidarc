@@ -32,6 +32,7 @@ type WorkflowData = {
     remainingSkillGaps?: string[];
   };
   enhancementAvailable?: boolean;
+  refinementNotice?: string;
   error?: string;
 };
 
@@ -40,29 +41,44 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
   const [data, setData] = useState<WorkflowData>();
   const [error, setError] = useState<string>();
   const [retrying, setRetrying] = useState(false);
+  const requestRef = useRef<AbortController | null>(null);
   const statusRef = useRef<WorkflowData["status"] | undefined>(undefined);
 
   const load = useCallback(async () => {
+    if (requestRef.current) return;
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
     try {
-      const response = await fetch(`/api/v1/resumes/workflows/${workflowId}`, { credentials: "include", cache: "no-store" });
+      const response = await fetch(`/api/v1/resumes/workflows/${workflowId}`, { credentials: "include", cache: "no-store", signal });
       const body = await response.json();
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(body?.error?.message ?? "Could not load your resume");
       statusRef.current = body.status;
       setData(body);
       setError(undefined);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not load your resume");
+      if (controller.signal.aborted) return;
+      setError(signal.aborted ? "The connection timed out. Your saved resume is safe; retry to check progress." : loadError instanceof Error ? loadError.message : "Could not load your resume");
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
     }
   }, [workflowId]);
 
   useEffect(() => {
+    statusRef.current = undefined;
+    setData(undefined);
+    setError(undefined);
     void load();
     const interval = window.setInterval(() => {
+      if (document.hidden) return;
       if (statusRef.current === "queued" || statusRef.current === "creating" || statusRef.current === "needs_input" || !statusRef.current) {
         void load();
       }
     }, 2000);
-    return () => window.clearInterval(interval);
+    const onVisible = () => { if (!document.hidden) void load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { window.clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); requestRef.current?.abort(); requestRef.current = null; };
   }, [load]);
 
   async function retry() {
@@ -85,8 +101,8 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
     }
   }
 
-  if (error && !data) return <ErrorState description={error} onRetry={() => void load()} />;
-  if (!data || data.status === "queued" || data.status === "creating" || data.status === "needs_input") {
+  if (error) return <ErrorState description={error} onRetry={() => void load()} />;
+  if (!data || (data.workflowId !== workflowId && data.applicationId !== workflowId) || data.status === "queued" || data.status === "creating" || data.status === "needs_input") {
     return (
       <CreatingState
         pipelineStage={data?.pipelineStage}

@@ -555,6 +555,8 @@ export interface WorkflowRepository {
   listIncomplete(limit?: number): Promise<WorkflowRunRecord[]>;
   /** Tenant-scoped compare-and-swap stage claim; returns null when stage mismatch or lease is active. */
   claimStage(tenantId: string, runId: string, expectedStage: WorkflowStage): Promise<WorkflowRunRecord | null>;
+  /** Remove only the caller's matching lease; never replace the rest of the workflow payload. */
+  releaseStageClaim(tenantId: string, runId: string, expectedStage: WorkflowStage, claim: unknown): Promise<boolean>;
 }
 
 export interface UsageRepository {
@@ -1016,6 +1018,9 @@ export class MemoryRepositories implements Repositories {
         return null;
       },
       async create(item) {
+        if ([...store.evidence.values()].some((entry) => entry.publicId === item.publicId)) {
+          throw new AppError("EVIDENCE_CONFLICT", "Evidence already exists", 409);
+        }
         const record: EvidenceRecord = {
           ...item,
           excludedFromApplicationIds: item.excludedFromApplicationIds ?? [],
@@ -1468,11 +1473,26 @@ export class MemoryRepositories implements Repositories {
             ...existing,
             stage: nextStage,
             status: "running",
-            payload: { ...existing.payload, [claimKey]: buildStageClaimLease(existing.attempt ?? 1) },
+            payload: { ...existing.payload, [claimKey]: { ...buildStageClaimLease(existing.attempt ?? 1), token: newId("claim") } },
             updatedAt: nowIso(),
           };
           store.workflowRuns.set(runId, updated);
           return updated;
+        });
+      },
+      async releaseStageClaim(tenantId, runId, expectedStage, claim) {
+        if (claim == null) return false;
+        return withMemoryClaimLock(`${tenantId}:${runId}:${expectedStage}`, () => {
+          const existing = store.workflowRuns.get(runId);
+          const running = expectedStage.endsWith("_QUEUED") ? expectedStage.replace(/_QUEUED$/, "_RUNNING") : null;
+          const claimKey = `claimed:${expectedStage}`;
+          if (!existing || existing.tenantId !== tenantId ||
+              (existing.stage !== expectedStage && existing.stage !== running) ||
+              JSON.stringify(existing.payload[claimKey]) !== JSON.stringify(claim)) return false;
+          const payload = { ...existing.payload };
+          delete payload[claimKey];
+          store.workflowRuns.set(runId, { ...existing, payload, updatedAt: nowIso() });
+          return true;
         });
       },
     };

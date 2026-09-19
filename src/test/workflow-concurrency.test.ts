@@ -11,7 +11,7 @@ import { handleWorkflowJobExhausted } from "../../server/workflows/failure-handl
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
 import { ResumePipeline } from "../../server/workflows/resume-pipeline";
 import { queueForStage, stageMatchesJobClaim } from "../../server/workflows/stages";
-import type { WorkflowStage } from "../../server/domain/types";
+import { AppError, type WorkflowStage } from "../../server/domain/types";
 import * as pythonClient from "../../server/intelligence/python-client";
 import { resetEnvCache } from "../../server/config/env";
 
@@ -314,6 +314,72 @@ describe("workflow concurrency", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     resetEnvCache();
+  });
+
+  it("releases the stage lease after a provider error so the queued retry can execute", async () => {
+    const { repos, engine, pipeline, userId, tenantId } = await setupWorkflowRuntime(false);
+    const service = new CustomerGenerateService(repos, engine, getStorage());
+    const created = await service.generate(context(userId, tenantId, repos), {
+      jobDescription: "Platform engineer working with TypeScript and Kubernetes APIs.", idempotencyKey: "release-lease-on-error",
+    });
+    let run = (await repos.workflows.getByPublicId(tenantId, created.workflowId))!;
+    await pipeline.handleStage(run);
+    run = (await repos.workflows.getById(run.id))!;
+    await pipeline.handleStage(run);
+    run = (await repos.workflows.getById(run.id))!;
+    expect(run.stage).toBe("V0_GENERATING");
+    const client = pythonClient.getPythonIntelligenceClient();
+    vi.mocked(client.generateResume).mockRejectedValueOnce(new AppError("TEMPORARY_PROVIDER_FAILURE", "Unavailable", 503, undefined, true));
+    await expect(pipeline.handleStage(run)).rejects.toBeDefined();
+    expect((await repos.workflows.getById(run.id))?.payload["claimed:V0_GENERATING"]).toBeUndefined();
+    await pipeline.handleStage((await repos.workflows.getById(run.id))!);
+    expect((await repos.workflows.getById(run.id))?.stage).toBe("HR_AUDIT_1_RUNNING");
+  });
+
+  it("a no-change refinement releases usage and restores the prior checked documents", async () => {
+    const { repos, engine, userId, tenantId } = await setupWorkflowRuntime(false);
+    const service = new CustomerGenerateService(repos, engine, getStorage());
+    const created = await service.generate(context(userId, tenantId, repos), {
+      jobDescription: "Platform engineer working with TypeScript and Kubernetes APIs.", idempotencyKey: "no-change-restoration",
+    });
+    const run = (await repos.workflows.getByPublicId(tenantId, created.workflowId))!;
+    const priorFiles = { pdfStorageKey: "checked.pdf", docxStorageKey: "checked.docx" };
+    await repos.workflows.updateRun(run.id, { payload: { ...run.payload, previousCustomerFiles: priorFiles } });
+    await repos.usage.append({ tenantId, workflowRunId: run.id, kind: "resume_generation", units: "1", costCents: "0", status: "reserved", metadata: {}, idempotencyKey: "no-change-reserved" });
+    await handleWorkflowJobExhausted(repos, engine, { id: "no-change", queue: "resume-generation", name: "generate", attempt: 1, maxAttempts: 1, availableAt: 0, createdAt: 0, payload: { workflowRunId: run.id, stage: run.stage } }, new AppError("REFINEMENT_NOT_APPLICABLE", "No safe change", 422));
+    const app = (await repos.applications.getByPublicId(tenantId, created.applicationId))!;
+    expect(app.workflowStage).toBe("FINAL_READY");
+    expect(app.metadata?.customerFiles).toEqual(priorFiles);
+    expect(app.metadata?.refinementNotice).toContain("unchanged");
+    expect((await repos.workflows.getById(run.id))?.status).toBe("failed");
+    expect((await repos.usage.findByIdempotency(tenantId, "no-change-reserved"))?.status).toBe("released");
+  });
+
+  it("an old worker cannot release a successor's lease or erase a saved checkpoint", async () => {
+    const { repos, engine, userId, tenantId } = await setupWorkflowRuntime(false);
+    const service = new CustomerGenerateService(repos, engine, getStorage());
+    const created = await service.generate(context(userId, tenantId, repos), {
+      jobDescription: "Platform engineer working with TypeScript and Kubernetes APIs.", idempotencyKey: "owned-lease-release",
+    });
+    const run = (await repos.workflows.getByPublicId(tenantId, created.workflowId))!;
+    const stage = run.stage;
+    const key = `claimed:${stage}`;
+    const first = (await repos.workflows.claimStage(tenantId, run.id, stage))!;
+    const oldLease = first.payload[key] as Record<string, unknown>;
+    await repos.workflows.updateRun(run.id, { payload: {
+      ...first.payload, [key]: { ...oldLease, expiresAt: "1970-01-01T00:00:00.000Z" },
+      checkpoint: { completed: true },
+    } });
+    const next = (await repos.workflows.claimStage(tenantId, run.id, stage))!;
+    expect(await repos.workflows.releaseStageClaim(tenantId, run.id, stage, oldLease)).toBe(false);
+    expect(await repos.workflows.releaseStageClaim("other-tenant", run.id, stage, next.payload[key])).toBe(false);
+    const released = await Promise.all(Array.from({ length: 8 }, () =>
+      repos.workflows.releaseStageClaim(tenantId, run.id, stage, next.payload[key])));
+    expect(released.filter(Boolean)).toHaveLength(1);
+    const stored = (await repos.workflows.getById(run.id))!;
+    expect(stored.payload[key]).toBeUndefined();
+    expect(stored.payload.checkpoint).toEqual({ completed: true });
+    expect(await repos.workflows.claimStage(tenantId, run.id, stage)).not.toBeNull();
   });
 
   it("queueForStage returns null for completed research and evidence stages", () => {

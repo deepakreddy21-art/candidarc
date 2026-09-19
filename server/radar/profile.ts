@@ -1,3 +1,4 @@
+import { careerFingerprint, reviewedCareerProfile, selectCareerEvidence } from "../modules/profile/career-evidence";
 /**
  * CandidArc Radar — Candidate Profile Loading for Matching (Release A.2)
  *
@@ -52,10 +53,10 @@ export async function loadCandidateProfileForMatch(
   requireTenantMembership(ctx, tenantId);
 
   const candidateProfile = await repos.candidateProfiles.getByUser(tenantId, user.id);
-  const evidenceItems = await repos.evidence.list(tenantId);
+  const evidenceItems = await repos.evidence.list(tenantId, { ownerUserId: user.id });
 
   const skillsFromEvidence = new Set<string>();
-  for (const item of evidenceItems) {
+  for (const item of selectCareerEvidence(evidenceItems, candidateProfile ? careerFingerprint(candidateProfile) : undefined)) {
     for (const tech of item.technologies ?? []) {
       if (typeof tech === "string" && tech.trim()) {
         skillsFromEvidence.add(tech.trim());
@@ -63,7 +64,7 @@ export async function loadCandidateProfileForMatch(
     }
   }
 
-  const extractionSkills = candidateProfile?.resumeImportExtraction?.skills;
+  const extractionSkills = candidateProfile ? reviewedCareerProfile(candidateProfile).resumeImportExtraction?.skills : undefined;
   if (Array.isArray(extractionSkills)) {
     for (const skill of extractionSkills) {
       if (typeof skill === "string" && skill.trim()) {
@@ -108,9 +109,6 @@ export async function loadCandidateProfileForMatch(
   const seniority = seniorityMap[seniorityKey] ?? candidateProfile?.seniority ?? candidateProfile?.experienceLevel ?? undefined;
 
   const preferredLocations = [...(candidateProfile?.preferredLocations ?? [])];
-  if (candidateProfile?.location && !preferredLocations.includes(candidateProfile.location)) {
-    preferredLocations.push(candidateProfile.location);
-  }
 
   const careerGoals: string[] = [];
   if (candidateProfile?.careerGoal) {
@@ -131,15 +129,22 @@ export async function loadCandidateProfileForMatch(
     careerGoals,
     visaNeeded: candidateProfile?.requiresSponsorship ?? undefined,
     targetCompensationMin: parseSalaryMin(candidateProfile?.salaryPreference),
+    compensationCurrency: candidateProfile?.salaryPreference?.match(/\b(USD|CAD|EUR|GBP|INR)\b/i)?.[1]?.toUpperCase(),
+    jobTypes: candidateProfile?.jobTypes ?? [],
+    workplaceModes: candidateProfile?.workplaceModes ?? [],
+    targetCompanies: candidateProfile?.targetCompanies ?? [],
+    targetIndustries: candidateProfile?.targetIndustries ?? [],
+    willingToRelocate: candidateProfile?.willingToRelocate ?? undefined,
   };
 }
 
-function parseSalaryMin(value: string | null | undefined): number | undefined {
-  if (!value) return undefined;
-  const digits = value.replace(/[^0-9]/g, "");
-  if (!digits) return undefined;
-  const n = Number(digits);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+export function parseSalaryMin(value: string | null | undefined): number | undefined {
+  if (!value?.trim() || /hour|week|month|negotiable/i.test(value)) return undefined;
+  const normalized = value.replace(/,/g, "");
+  const match = normalized.match(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s*(k)?/i);
+  if (!match) return undefined;
+  const amount = Number(match[1]) * (match[2] ? 1000 : 1);
+  return Number.isFinite(amount) && amount >= 1000 ? amount : undefined;
 }
 
 /**

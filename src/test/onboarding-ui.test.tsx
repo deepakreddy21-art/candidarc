@@ -45,8 +45,13 @@ describe("onboarding helpers", () => {
 
   it("allows confirmed upload path without manual employment", () => {
     const form = emptyOnboardingForm();
-    form.fullName = "";
+    form.fullName = "Candidate";
+    form.email = "candidate@example.com";
+    form.phone = "+1 555 0100";
+    form.location = "Austin, USA";
     expect(validateStepClient(1, form, "confirmed")).toBeNull();
+    form.phone = "";
+    expect(validateStepClient(1, form, "confirmed")).toMatch(/phone/i);
   });
 
   it("maps form payload for persistence", () => {

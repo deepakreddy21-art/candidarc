@@ -123,7 +123,7 @@ describe("tech confirmation", () => {
     await service.submitTechAnswers(ctx, created.workflowId, answers);
 
     const evidence = await repos.evidence.list(tenantId, { ownerUserId: userId });
-    const attestation = evidence.find((item) => item.technologies.includes(target.technology));
+    const attestation = evidence.find((item) => item.sourceType === "user_confirmation" && item.technologies.includes(target.technology));
     expect(attestation).toMatchObject({
       tenantId,
       ownerUserId: userId,

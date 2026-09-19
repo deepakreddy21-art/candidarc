@@ -16,7 +16,7 @@ test.describe("landing interactions", () => {
 
   test("marketing anchors reveal the matching sections", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("link", { name: /see the difference/i }).first().click();
-    await expect(page.locator("#difference")).toBeVisible();
+    await page.getByRole("link", { name: /how it works/i }).first().click();
+    await expect(page.locator("#how-it-works")).toBeVisible();
   });
 });

@@ -1,0 +1,426 @@
+"""Group résumé lines into records before assigning typed fields.
+
+Unknown text remains in provenance. Missing identity fields lower confidence;
+prose is never promoted to an employer, institution, or degree just to fill a slot.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from app.modules.parsing.fields import (
+    ACTION_RE,
+    BULLET_RE,
+    DEGREE_TOKEN_RE,
+    INSTITUTION_RE,
+    TITLE_HINT_RE,
+    TITLE_SPAN_RE,
+    clean,
+    dates_from,
+    degree_parts,
+    is_body,
+    is_current,
+    is_location,
+    split_cells,
+    split_organization_location,
+)
+from app.modules.parsing.links import strip_link_targets
+
+_TECHNOLOGIES = (
+    "Python", "TypeScript", "JavaScript", "Node.js", "React", "Kubernetes", "PostgreSQL",
+    "AWS", "GCP", "Azure", "Docker", "FastAPI", "Next.js", "Redis", "GraphQL", "Java",
+    "Go", "Rust", "SQL", "Spark", "TensorFlow", "PyTorch", "Spring Boot", "Kafka",
+    "Angular", "Hibernate", "Oracle", "DynamoDB",
+)
+_GPA = re.compile(r"\bGPA\s*:?\s*([0-9]+(?:\.\d+)?(?:\s*/\s*[0-9]+(?:\.\d+)?)?)", re.I)
+_HONORS = re.compile(r"\b(?:summa cum laude|magna cum laude|cum laude|dean['’]?s list|with honors|honors)\b", re.I)
+_URL = re.compile(r"(?:https?://|www\.)[^\s|)]+", re.I)
+
+
+def technologies(lines: list[str]) -> list[str]:
+    blob = " ".join(lines)
+    return [tech for tech in _TECHNOLOGIES if re.search(rf"\b{re.escape(tech)}\b", blob, re.I)]
+
+
+def provenance(lines: list[str], warnings: list[str]) -> dict[str, Any]:
+    return {
+        "source_text": "\n".join(lines)[:4000],
+        "confidence": "low" if warnings else "high",
+        "warnings": list(dict.fromkeys(warnings))[:20],
+        "extracted_or_normalized": "extracted",
+    }
+
+
+def append_bullet(bullets: list[str], line: str) -> None:
+    if BULLET_RE.match(line):
+        bullets.append(BULLET_RE.sub("", line).strip())
+    elif bullets:
+        # Preserve a wrapped sentence as one bullet; do not lose its continuation.
+        bullets[-1] = f"{bullets[-1]} {line.strip()}"
+    else:
+        bullets.append(line.strip())
+
+
+def _role_header(lines: list[str]) -> dict[str, Any]:
+    row: dict[str, Any] = dict(title=None, employer=None, location=None, start_date=None, end_date=None)
+    unknown: list[str] = []
+    warnings: list[str] = []
+    cells: list[str] = []
+    header_lines: list[str] = []
+    for line in lines:
+        # A right-aligned place may wrap "City," and "Region" onto two lines.
+        previous_cells = split_cells(header_lines[-1]) if header_lines else []
+        if (previous_cells and header_lines[-1].rstrip().endswith(",")
+                and is_location(f"{previous_cells[-1]}, {line.strip()}")):
+            header_lines[-1] += " " + line.strip()
+        else:
+            header_lines.append(line)
+    for line in header_lines:
+        text, start, end = dates_from(strip_link_targets(line))
+        if start:
+            row.update(start_date=start, end_date=end)
+        cells.extend(split_cells(text, preserve_title_dashes=True))
+    identity: list[str] = []
+    for cell in cells:
+        label = re.match(r"^(employer|company|job title|title|role|location)\s*:\s*(.+)$", cell, re.I)
+        organization, location = split_organization_location(cell)
+        if label:
+            field = {"company": "employer", "job title": "title", "role": "title"}.get(label[1].lower(), label[1].lower())
+            row[field] = label[2].strip()
+        elif location and not TITLE_HINT_RE.search(cell) and (
+            (len(cells) == 2 and any(TITLE_HINT_RE.search(c) for c in cells)) or re.search(r"\s+[–—-]\s+", cell)
+        ):
+            identity.append(organization)
+            row["location"] = location or row["location"]
+        elif is_location(cell):
+            row["location"] = cell
+        else:
+            identity.append(cell)
+    titles = [cell for cell in identity if TITLE_HINT_RE.search(cell)]
+    row["_independent_identity"] = len(identity) == 2 and len(titles) == 1
+    # Independent cells establish the boundary, even when a compound title is
+    # outside the modifier vocabulary. Never truncate it to a familiar suffix.
+    if row["_independent_identity"]:
+        row["title"] = titles[0]
+        row["employer"] = next(cell for cell in identity if cell != titles[0])
+    else:
+        for cell in identity:
+            title = TITLE_SPAN_RE.search(cell)
+            if title:
+                before, after = clean(cell[:title.start()]), clean(cell[title.end():])
+                if after and is_location(after):
+                    row["location"] = after
+                    after = ""
+                if not before and not after:
+                    row["title"] = cell
+                elif before and not after:
+                    # "Example Labs Software Engineer". A recognized multiword title
+                    # gives an independent boundary; a bare "Engineer" does not.
+                    if " " in title.group():
+                        row["title"], row["employer"] = title.group(), before
+                    else:
+                        row["title"] = cell
+                        warnings.append("ambiguous_title_employer_boundary")
+                elif not before and after:
+                    # "Software Engineer Example Labs, City, Country".
+                    company, location = split_organization_location(after)
+                    row["title"], row["employer"] = title.group(), company
+                    row["location"] = location or row["location"]
+                else:
+                    unknown.append(cell)
+                    warnings.append("ambiguous_role_header")
+                continue
+            organization, location = split_organization_location(cell)
+            if location:
+                row["location"] = location
+            unknown.append(organization)
+    if row["title"] and not row["employer"] and len(unknown) == 1:
+        row["employer"] = unknown.pop()
+        # An independent employer cell resolves the boundary even for titles
+        # outside the modifier vocabulary (e.g. Senior Supply Chain Analyst).
+        warnings = [warning for warning in warnings if warning != "ambiguous_title_employer_boundary"]
+    if unknown:
+        warnings.append("unassigned_role_header")
+    row["is_current"] = is_current(row["end_date"])
+    row["_warnings"] = warnings
+    return row
+
+
+def _header_window(lines: list[str], start: int) -> list[str]:
+    out: list[str] = []
+    for line in lines[start:start + 5]:
+        if is_body(line) or len(line) > 220 or (line[:1].islower() and not TITLE_HINT_RE.search(line)):
+            break
+        previous = _role_header(out)
+        text, date, _ = dates_from(line)
+        # Once a job has its identity, accept only its dates/location. Do not
+        # look through subsection captions or the next job to borrow fields.
+        if previous["title"] and previous["employer"] and (
+            previous["_independent_identity"] or previous["start_date"] or TITLE_HINT_RE.search(line)
+        ):
+            if not (is_location(clean(text)) or (date and not clean(text))):
+                break
+            if date and previous["start_date"]:
+                break
+        elif previous["title"] and previous["start_date"] and TITLE_HINT_RE.search(line):
+            break
+        out.append(line)
+    return out
+
+
+def _is_subheading(line: str) -> bool:
+    """Short title-case captions above bullets are not new jobs/responsibilities."""
+    words = re.findall(r"[\w’']+", line)
+    return (1 < len(words) <= 10 and len(line) <= 100 and not line.endswith((".", ",", ";"))
+            and all(word[:1].isupper() or word.casefold() in {"and", "of", "for", "the", "to", "in", "with"} for word in words))
+
+
+def chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    header: list[str] = []
+    bullets: list[str] = []
+    source: list[str] = []
+    shared_employer: str | None = None
+    header_complete = False
+
+    def flush() -> None:
+        nonlocal header, bullets, source, shared_employer, header_complete
+        if not (header or bullets):
+            return
+        row = _role_header(header)
+        # Only inherit when an employer was explicitly declared on a separate
+        # group header, never from an unrelated previous job's combined header.
+        if len(header) >= 2 and row["employer"] == clean(header[0]):
+            shared_employer = row["employer"]
+        if not row["employer"] and row["title"] and shared_employer:
+            row["employer"] = shared_employer
+        elif row["employer"] and row["employer"] != shared_employer:
+            shared_employer = None
+        warnings = row.pop("_warnings")
+        row.pop("_independent_identity")
+        warnings.extend(f"missing_{key}" for key in ("title", "employer") if not row[key])
+        if any(re.search(r"\w-$", left) and re.match(r"[a-z]", right)
+               for left, right in zip(source, source[1:])):
+            warnings.append("line_break_hyphenation")
+        row.update(bullets=bullets, technologies=technologies(bullets), source_order=len(out),
+                   provenance=provenance(source, warnings))
+        out.append(row)
+        header, bullets, source = [], [], []
+        header_complete = False
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not is_body(line):
+            window = _header_window(lines, index)
+            candidate = _role_header(window)
+            dated_identity = candidate["start_date"] and any(
+                clean(dates_from(part)[0]) and not is_location(clean(dates_from(part)[0])) for part in window
+            )
+            if (candidate["title"] and candidate["employer"]) or dated_identity:
+                flush()
+                header, source = window.copy(), window.copy()
+                header_complete = True
+                index += len(window)
+                continue
+        source.append(line)
+        caption = (header_complete and _is_subheading(line) and index + 1 < len(lines)
+                   and bool(BULLET_RE.match(lines[index + 1]))
+                   and (not bullets or bullets[-1].endswith((".", "!", "?", ":"))))
+        if caption:
+            pass  # Retain captions in source provenance, separate from responsibility bullets.
+        elif is_body(line) or bullets or header_complete:
+            append_bullet(bullets, line)
+        else:
+            header.append(line)
+        index += 1
+    flush()
+    return out[:40]
+
+
+def _education_line(line: str) -> dict[str, Any]:
+    line = strip_link_targets(line)
+    row: dict[str, Any] = {}
+    text, start, end = dates_from(line, single=True)
+    if start:
+        row["start_date"] = start
+    if end:
+        row["end_date"] = end
+    gpa, honors = _GPA.search(text), _HONORS.search(text)
+    if gpa:
+        row["gpa"] = gpa[1]
+        text = text[:gpa.start()] + text[gpa.end():]
+    if honors:
+        row["honors"] = honors.group()
+        text = _HONORS.sub("", text)
+    cells = split_cells(text)
+    unknown: list[str] = []
+    for cell in cells:
+        label = re.match(r"^(institution|university|school|degree|field of study|major|location)\s*:\s*(.+)$", cell, re.I)
+        if label:
+            field = {"school": "institution", "university": "institution", "major": "field", "field of study": "field"}.get(label[1].lower(), label[1].lower())
+            row[field] = label[2]
+            continue
+        # Degree | Major | School, City, Country (including acronym schools).
+        if row.get("degree") and not row.get("institution") and cell.count(",") >= 2:
+            institution, location = split_organization_location(cell)
+            if location and (not unknown or not row.get("field")):
+                row["institution"], row["location"] = institution, location
+                if unknown and not row.get("field"):
+                    row["field"] = unknown.pop(0)
+                continue
+        if is_location(cell):
+            row["location"] = cell
+            continue
+        degree, field = degree_parts(cell)
+        if degree:
+            row["degree"] = degree
+            if field:
+                row["field"] = field
+            continue
+        # Institution then degree on one line, with no delimiter.
+        degree_match = DEGREE_TOKEN_RE.search(cell)
+        if degree_match and degree_match.start() > 0:
+            row["institution"] = clean(cell[:degree_match.start()])
+            degree, field = degree_parts(cell[degree_match.start():])
+            row["degree"] = degree
+            if field:
+                row["field"] = field
+            continue
+        institution, location = split_organization_location(cell)
+        if location:
+            row["location"] = location
+        if INSTITUTION_RE.search(institution):
+            row["institution"] = institution
+        elif institution:
+            unknown.append(institution)
+    # Degree | Field | School also works for an acronym-only institution (MIT).
+    if row.get("degree") and unknown:
+        if not row.get("field") and len(unknown) >= 2:
+            row["field"] = unknown.pop(0)
+        if not row.get("institution"):
+            row["institution"] = unknown.pop()
+        if not row.get("field") and unknown:
+            row["field"] = unknown.pop(0)
+    row["_unknown"] = unknown
+    return row
+
+
+def chunk_education(lines: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+    source: list[str] = []
+    unresolved: list[str] = []
+
+    def flush() -> None:
+        nonlocal current, source, unresolved
+        if not source:
+            return
+        # A standalone school is useful; a responsibility sentence is not a school.
+        warnings = [f"missing_{key}" for key in ("institution", "degree") if not current.get(key)]
+        if unresolved:
+            warnings.append("unassigned_education_text")
+        row = {key: current.get(key) for key in ("institution", "degree", "field", "location", "start_date", "end_date", "gpa", "honors")}
+        row["provenance"] = provenance(source, warnings)
+        out.append(row)
+        current, source, unresolved = {}, [], []
+
+    for line in lines:
+        # Education descriptions belong to the current qualification. A thesis
+        # title or coursework list is not an additional institution/degree.
+        if current and (is_body(line) or re.match(
+            r"^(?:thesis|dissertation|capstone|coursework|relevant courses|courses|research focus|advisor|supervisor)\s*[:–—-]", line, re.I,
+        )):
+            source.append(line)
+            continue
+        values = _education_line(line)
+        unknown = values.pop("_unknown")
+        if unknown and not is_body(line):
+            # Context, not an institute allowlist: standalone "MIT" or "Stanford".
+            candidate = unknown[0]
+            if len(unknown) == 1 and len(candidate) < 150:
+                if current.get("degree") and not current.get("field") and not current.get("institution"):
+                    # No source boundary proves whether this is school or major.
+                    unresolved.append(candidate)
+                else:
+                    values["institution"] = candidate
+                    unknown = []
+        starts_new_school = bool(values.get("institution") and current.get("institution"))
+        starts_new_degree = bool(values.get("degree") and current.get("degree"))
+        if starts_new_school or starts_new_degree:
+            flush()
+        source.append(line)
+        current.update({k: v for k, v in values.items() if v})
+        unresolved.extend(unknown)
+    flush()
+    return out[:20]
+
+
+def _project_header(line: str) -> dict[str, Any]:
+    text, start, end = dates_from(line)
+    urls = _URL.findall(text)
+    text = _URL.sub("", strip_link_targets(text))
+    cells = split_cells(text)
+    row: dict[str, Any] = dict(name=cells[0] if cells else None, role=None, organization=None,
+                              start_date=start, end_date=end, description="", bullets=[], technologies=[], url=None, repo_url=None)
+    for cell in cells[1:]:
+        if TITLE_HINT_RE.search(cell) and not row["role"]:
+            row["role"] = cell
+        elif not row["organization"]:
+            row["organization"] = cell
+    for url in urls:
+        row["repo_url" if "github.com/" in url.lower() else "url"] = url
+    return row
+
+
+def chunk_projects(lines: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    source: list[str] = []
+
+    def flush() -> None:
+        nonlocal current, source
+        if current is not None:
+            current["description"] = " ".join(current["bullets"])
+            current["technologies"] = list(dict.fromkeys(current["technologies"] + technologies(current["bullets"])))
+            current["provenance"] = provenance(source, [] if current["name"] else ["missing_project_name"])
+            out.append(current)
+        current, source = None, []
+
+    for line in lines:
+        urls = _URL.findall(line)
+        link_label = _URL.sub("", strip_link_targets(line)).strip(" |()")
+        if current is not None and urls and (not link_label or link_label.casefold() in {
+            "github", "repository", "repo", "source code", "demo", "website", "project link", "link",
+        }):
+            for url in urls:
+                current["repo_url" if "github.com/" in url.lower() else "url"] = url
+            source.append(line)
+            continue
+        text, start, end = dates_from(line)
+        if current is not None and start and not clean(text):
+            current.update(start_date=start, end_date=end)
+            source.append(line)
+            continue
+        meta = re.match(r"^(Role|Organization|Client|Stack|Technologies)\s*:\s*(.+)$", line, re.I)
+        if current is not None and meta:
+            if meta[1].lower() in ("stack", "technologies"):
+                current["technologies"].extend([s.strip() for s in re.split(r"[,|]", meta[2]) if s.strip()])
+            else:
+                current["role" if meta[1].lower() == "role" else "organization"] = meta[2]
+            source.append(line)
+            continue
+        continuation = current is not None and bool(current["bullets"]) and (
+            line[:1].islower() or len(line) > 120 or ACTION_RE.match(line)
+        )
+        if is_body(line) or continuation:
+            if current is None:
+                current = _project_header("")
+            append_bullet(current["bullets"], line)
+        else:
+            flush()
+            current = _project_header(line)
+        source.append(line)
+    flush()
+    return out[:20]

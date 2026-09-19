@@ -137,12 +137,13 @@ async function restoreConfirmedOrFail(
   extraction: Record<string, unknown> | null | undefined,
   errorCode: string,
   message: string,
+  expectedVersion: number,
 ) {
   const baseline = readConfirmedBaseline(extraction);
   if (baseline) {
     const confirmedSource = readConfirmedSourceFilePublicId(extraction);
     // Keep confirmed career fields usable while recording the failed replacement attempt.
-    await repos.candidateProfiles.update(tenantId, userId, {
+    await repos.candidateProfiles.updateOnboarding(tenantId, userId, expectedVersion, {
       resumeImportStatus: "failed",
       ...(confirmedSource ? { sourceResumeFilePublicId: confirmedSource } : {}),
       resumeImportExtraction: {
@@ -159,7 +160,7 @@ async function restoreConfirmedOrFail(
   }
   const draft = readDraftBaseline(extraction);
   if (draft && hasCareerContent(draft)) {
-    await repos.candidateProfiles.update(tenantId, userId, {
+    await repos.candidateProfiles.updateOnboarding(tenantId, userId, expectedVersion, {
       resumeImportStatus: "failed",
       resumeImportExtraction: {
         ...draft,
@@ -170,7 +171,7 @@ async function restoreConfirmedOrFail(
     });
     return;
   }
-  await repos.candidateProfiles.update(tenantId, userId, {
+  await repos.candidateProfiles.updateOnboarding(tenantId, userId, expectedVersion, {
     resumeImportStatus: "failed",
     resumeImportExtraction: {
       error: message,
@@ -424,7 +425,7 @@ export class ResumeImportService {
 
     });
 
-    await this.repos.candidateProfiles.update(tenantId, user.id, {
+    await this.repos.candidateProfiles.updateOnboarding(tenantId, user.id, existing.version, {
 
       sourceResumeFilePublicId: file.publicId,
 
@@ -502,7 +503,8 @@ export class ResumeImportService {
     return {
 
       status: profile.resumeImportStatus,
-
+      profile,
+      version: profile.version,
       extraction: adaptResumeExtractionV1ToV2(
         (() => {
           const raw = profile.resumeImportExtraction as Record<string, unknown> | null;
@@ -533,7 +535,7 @@ export class ResumeImportService {
 
   }
 
-  async updateExtraction(ctx: AuthContext, extraction: ResumeExtractionSection) {
+  async updateExtraction(ctx: AuthContext, extraction: ResumeExtractionSection, expectedVersion?: number) {
 
     const user = requireUser(ctx);
 
@@ -555,13 +557,20 @@ export class ResumeImportService {
 
     }
 
-    await this.repos.candidateProfiles.update(tenantId, user.id, {
-
-      resumeImportExtraction: extraction as unknown as Record<string, unknown>,
-
+    const current = profile.resumeImportExtraction ?? {};
+    const reviewed = {
+      ...extraction,
+      sourceExtraction: current.sourceExtraction,
+      sourceFilePublicId: current.sourceFilePublicId,
+      onboardingFlowVersion: current.onboardingFlowVersion,
+      careerProfileMode: current.careerProfileMode,
+      ...(current[CONFIRMED_BASELINE_KEY] ? { [CONFIRMED_BASELINE_KEY]: current[CONFIRMED_BASELINE_KEY] } : {}),
+      ...(current[CONFIRMED_SOURCE_FILE_KEY] ? { [CONFIRMED_SOURCE_FILE_KEY]: current[CONFIRMED_SOURCE_FILE_KEY] } : {}),
+    };
+    const updated = await this.repos.candidateProfiles.updateOnboarding(tenantId, user.id, expectedVersion ?? profile.version, {
+      resumeImportExtraction: reviewed as unknown as Record<string, unknown>,
     });
-
-    return { extraction };
+    return { extraction: reviewed, version: updated.version };
 
   }
 
@@ -900,7 +909,7 @@ export class ResumeImportService {
 
   }
 
-  async confirmImport(ctx: AuthContext) {
+  async confirmImport(ctx: AuthContext, expectedVersion?: number) {
 
     const user = requireUser(ctx);
 
@@ -909,6 +918,10 @@ export class ResumeImportService {
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
 
     const profile = await this.profiles.get(ctx);
+
+    if (expectedVersion !== undefined && expectedVersion !== profile.version) {
+      throw new AppError("ONBOARDING_STALE", "Profile changed elsewhere. Reload and review before confirming.", 409, { currentVersion: profile.version });
+    }
 
     const extraction = adaptResumeExtractionV1ToV2(
       profile.resumeImportExtraction as ResumeExtractionSection | null,
@@ -969,21 +982,21 @@ export class ResumeImportService {
 
     };
 
-    if (contact.fullName) patch.fullName = contact.fullName;
+    if (Object.hasOwn(contact, "fullName")) patch.fullName = contact.fullName ?? "";
 
-    if (contact.email) patch.email = contact.email;
+    if (Object.hasOwn(contact, "email")) patch.email = contact.email ?? "";
 
-    if (contact.phone) patch.phone = contact.phone;
+    if (Object.hasOwn(contact, "phone")) patch.phone = contact.phone ?? "";
 
-    if (contact.location) patch.location = contact.location;
+    if (Object.hasOwn(contact, "location")) patch.location = contact.location ?? "";
 
-    if (contact.linkedIn) patch.linkedIn = contact.linkedIn;
+    if (Object.hasOwn(contact, "linkedIn")) patch.linkedIn = contact.linkedIn ?? "";
 
-    if (contact.github) patch.github = contact.github;
+    if (Object.hasOwn(contact, "github")) patch.github = contact.github ?? "";
 
-    if (contact.portfolio) patch.portfolio = contact.portfolio;
+    if (Object.hasOwn(contact, "portfolio")) patch.portfolio = contact.portfolio ?? "";
 
-    if (extraction.professionalSummary) patch.summary = extraction.professionalSummary;
+    if (Object.hasOwn(extraction, "professionalSummary")) patch.summary = extraction.professionalSummary ?? "";
 
     if (extraction.skills.length && !profile.headline && extraction.employment[0]?.title) {
 
@@ -994,7 +1007,7 @@ export class ResumeImportService {
     const confirmedExtractionSection =
       adaptResumeExtractionV1ToV2(confirmedExtraction as ResumeExtractionSection) ?? extraction;
 
-    const updated = await this.repos.candidateProfiles.update(tenantId, user.id, patch);
+    const updated = await this.repos.candidateProfiles.updateOnboarding(tenantId, user.id, profile.version, patch);
 
     await this.createImportEvidence(
       tenantId,
@@ -1011,36 +1024,32 @@ export class ResumeImportService {
   async runMalwareScan(tenantId: string, filePublicId: string) {
     const file = await this.repos.files.getByPublicId(tenantId, filePublicId);
     if (!file || file.deletedAt) return;
-    if (file.scanStatus !== "pending") return;
-
-    const object = await this.storage.getObject(tenantId, file.storageKey);
-    if (!object) {
-      await this.repos.files.update(tenantId, filePublicId, { scanStatus: "failed" });
-      return;
-    }
-
-    const scan = await getMalwareScanner().scan(object.body);
-    if (!scan.clean) {
-      await this.repos.files.update(tenantId, filePublicId, { scanStatus: "infected" });
-      const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
-      if (profile?.userId) {
-        await restoreConfirmedOrFail(
-          this.repos,
-          tenantId,
-          profile.userId,
-          profile.resumeImportExtraction as Record<string, unknown> | null,
-          "MALWARE_DETECTED",
-          scan.detail ?? "Malware detected in uploaded file",
-        );
+    if (file.scanStatus !== "pending" && file.scanStatus !== "clean") return;
+    if (file.scanStatus === "pending") {
+      const object = await this.storage.getObject(tenantId, file.storageKey);
+      if (!object) {
+        await this.repos.files.update(tenantId, filePublicId, { scanStatus: "failed" });
+        return;
       }
-      return;
+      const scan = await getMalwareScanner().scan(object.body);
+      if (!scan.clean) {
+        await this.repos.files.update(tenantId, filePublicId, { scanStatus: "infected" });
+        const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
+        if (profile?.userId) {
+          await restoreConfirmedOrFail(this.repos, tenantId, profile.userId,
+            profile.resumeImportExtraction as Record<string, unknown> | null,
+            "MALWARE_DETECTED", scan.detail ?? "Malware detected in uploaded file", profile.version);
+        }
+        return;
+      }
+      await this.repos.files.update(tenantId, filePublicId, { scanStatus: "clean" });
     }
-
-    await this.repos.files.update(tenantId, filePublicId, { scanStatus: "clean" });
-
+    // A retry after the scan was persisted must still enqueue extraction, without
+    // rolling a reviewed draft backwards to scan_clean.
     const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
-    if (profile?.userId) {
-      await this.repos.candidateProfiles.update(tenantId, profile.userId, {
+    if (!profile?.userId || profile.resumeImportStatus === "ready_for_review" || profile.resumeImportStatus === "confirmed") return;
+    if (profile.resumeImportStatus === "pending_scan") {
+      await this.repos.candidateProfiles.updateOnboarding(tenantId, profile.userId, profile.version, {
         resumeImportStatus: "scan_clean",
       });
     }
@@ -1069,13 +1078,13 @@ export class ResumeImportService {
       return;
     }
 
-    // Replacements always run; confirmed data is preserved via baseline wrapping on upload.
-    if (profile.resumeImportStatus === "confirmed" && profile.sourceResumeFilePublicId !== filePublicId) {
+    // A duplicate job must never overwrite a reviewed or already-confirmed draft.
+    if (profile.resumeImportStatus === "confirmed" || profile.resumeImportStatus === "ready_for_review") {
       logger.info({ tenantId, filePublicId }, "skipping extraction for already-confirmed import");
       return;
     }
 
-    await this.repos.candidateProfiles.update(tenantId, profile.userId, {
+    await this.repos.candidateProfiles.updateOnboarding(tenantId, profile.userId, profile.version, {
       resumeImportStatus: "extracting",
     });
 
@@ -1114,6 +1123,7 @@ export class ResumeImportService {
         return;
       }
 
+      if (latest.resumeImportStatus === "ready_for_review" || latest.resumeImportStatus === "confirmed") return;
       const priorBaseline = readConfirmedBaseline(
         latest.resumeImportExtraction as Record<string, unknown> | null,
       );
@@ -1122,20 +1132,28 @@ export class ResumeImportService {
       );
       const nextExtraction = {
         ...(extraction as unknown as Record<string, unknown>),
+        // Immutable parse output, retained separately from the candidate's editable review.
+        sourceExtraction: extraction,
+        sourceFilePublicId: filePublicId,
+        onboardingFlowVersion: latest.resumeImportExtraction?.onboardingFlowVersion,
+        careerProfileMode: "upload",
         ...(priorBaseline ? { [CONFIRMED_BASELINE_KEY]: priorBaseline } : {}),
         ...(priorSource ? { [CONFIRMED_SOURCE_FILE_KEY]: priorSource } : {}),
       };
 
-      await this.repos.candidateProfiles.update(tenantId, profile.userId, {
+      await this.repos.candidateProfiles.updateOnboarding(tenantId, profile.userId, latest.version, {
         resumeImportStatus: "ready_for_review",
         resumeImportExtraction: nextExtraction,
       });
     } catch (err) {
+      // Let the queue retry a concurrent write; never restore a baseline over newer edits.
+      if (err instanceof AppError && err.code === "ONBOARDING_STALE") throw err;
       const latest = await this.repos.candidateProfiles.getByUser(tenantId, profile.userId);
       if (!latest || latest.sourceResumeFilePublicId !== filePublicId) {
         logger.info({ tenantId, filePublicId }, "skipping stale extraction failure after newer upload");
         throw err;
       }
+      if (latest.resumeImportStatus === "ready_for_review" || latest.resumeImportStatus === "confirmed") return;
       const code = err instanceof AppError ? err.code : "PARSE_FAILED";
       const message =
         err instanceof AppError
@@ -1148,6 +1166,7 @@ export class ResumeImportService {
         latest.resumeImportExtraction as Record<string, unknown> | null,
         code,
         message,
+        latest.version,
       );
       throw err;
     }
@@ -1157,7 +1176,7 @@ export class ResumeImportService {
   async markImportFailed(tenantId: string, filePublicId: string, errorCode: string, message: string) {
     const profile = await this.repos.candidateProfiles.findBySourceResumeFile(tenantId, filePublicId);
     if (!profile?.userId) return;
-    if (profile.resumeImportStatus === "confirmed") return;
+    if (profile.resumeImportStatus === "confirmed" || profile.resumeImportStatus === "ready_for_review") return;
     await restoreConfirmedOrFail(
       this.repos,
       tenantId,
@@ -1165,6 +1184,7 @@ export class ResumeImportService {
       profile.resumeImportExtraction as Record<string, unknown> | null,
       errorCode,
       message,
+      profile.version,
     );
   }
 }

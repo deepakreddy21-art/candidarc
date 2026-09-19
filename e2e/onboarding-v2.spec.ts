@@ -101,8 +101,9 @@ test.describe("onboarding v2", () => {
     await expectStep(page, 2);
     const sessionCookie = (await page.context().cookies()).find((c) => c.name === "candidarc_session");
     expect(sessionCookie?.value).toBeTruthy();
-    const probe = await page.request.get("/api/v1/profile/onboarding");
-    expect(probe.status()).toBe(200);
+    // Probe with the signed-in document's cookies, just like the application.
+    const probeStatus = await page.evaluate(async () => (await fetch("/api/v1/profile/onboarding", { credentials: "include" })).status);
+    expect(probeStatus).toBe(200);
     await page.goto("/app");
     await expect(page).toHaveURL(/\/onboarding/, { timeout: 60_000 });
     await expectStep(page, 2);

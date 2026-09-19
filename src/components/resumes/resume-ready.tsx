@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Download, FileText } from "lucide-react";
+import { Check, Download, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import type { ResumeDocument } from "@/types/resume-document";
 import { buildResumeDocument } from "@/lib/resume-document";
 import { ResumePreview } from "./resume-preview";
 import { RefinePanel } from "./refine-panel";
+import { ResumeComparison } from "./resume-comparison";
 import { VersionHistory } from "./version-history";
 import { QualityReport } from "./quality-report";
 import { AskPanel } from "@/components/assistant/ask-panel";
@@ -20,6 +21,7 @@ type ReadyData = {
   applicationId: string;
   resume?: {
     versionLabel: string;
+    versionId?: string;
     previewHtml?: string;
     /** Canonical document including contact — preferred over reconstructing from sections. */
     document?: ResumeDocument;
@@ -41,6 +43,7 @@ type ReadyData = {
   downloads: { pdfReady: boolean; docxReady: boolean };
   documentRetryAvailable?: boolean;
   enhancementAvailable?: boolean;
+  refinementNotice?: string;
 };
 
 export function ResumeReady({
@@ -55,7 +58,7 @@ export function ResumeReady({
   const router = useRouter();
   const [enhancing, setEnhancing] = useState(false);
   const [selectedText, setSelectedText] = useState("");
-  const [compareId, setCompareId] = useState<string | undefined>(data.versions?.[1]?.id);
+  const [compareId, setCompareId] = useState<string | undefined>();
 
   const resumeDoc = useMemo(() => {
     if (data.resume?.document) return data.resume.document;
@@ -93,6 +96,7 @@ export function ResumeReady({
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
+      {data.refinementNotice ? <p role="status" className="rounded-lg border border-border bg-mint p-3 text-sm">{data.refinementNotice}</p> : null}
       {data.enhancementAvailable ? (
         <Card>
           <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
@@ -105,8 +109,9 @@ export function ResumeReady({
       ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm text-success">Ready</p>
+          <p className="focus-ready-eyebrow"><Check aria-hidden />Ready for your review</p>
           <h1 className="text-3xl font-semibold">Your tailored resume</h1>
+          <p className="mt-2 text-sm text-foreground-secondary">Review. Download. Make your next move.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild disabled={!data.downloads.pdfReady}>
@@ -118,7 +123,7 @@ export function ResumeReady({
           <Button asChild variant="secondary" disabled={!data.downloads.docxReady}>
             <a href={`/api/v1/resumes/workflows/${data.workflowId}/download?format=docx`}>
               <FileText className="h-4 w-4" />
-              Download Word
+              Download DOCX
             </a>
           </Button>
           {data.documentRetryAvailable && !data.downloads.pdfReady ? (
@@ -140,7 +145,7 @@ export function ResumeReady({
         <CardHeader>
           <CardTitle>{data.resume?.versionLabel ?? "Version 1"}</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="focus-ready-stage">
           {resumeDoc ? (
             <div
               onMouseUp={() => {
@@ -154,6 +159,7 @@ export function ResumeReady({
             <iframe
               title="Resume preview"
               className="mx-auto min-h-[700px] w-full max-w-[760px] rounded-sm border border-border bg-white shadow-sm"
+              sandbox=""
               srcDoc={data.resume.previewHtml}
             />
           ) : (
@@ -165,18 +171,12 @@ export function ResumeReady({
         <RefinePanel workflowId={data.workflowId} selectedText={selectedText} />
         <VersionHistory
           versions={data.versions ?? []}
-          currentId={data.versions?.[0]?.id}
-          onRestore={(id) => {
-            const label = data.versions?.find((v) => v.id === id)?.label ?? "prior version";
-            toast.message(`Prior versions stay immutable. Comparing against ${label}. Create a new version if you want that snapshot again.`);
-            setCompareId(id);
-          }}
+          currentId={data.resume?.versionId ?? data.versions?.[0]?.id}
+          onCompare={setCompareId}
         />
       </div>
-      {compareId && data.versions?.length ? (
-        <p className="text-xs text-foreground-muted">
-          Comparing against {data.versions.find((v) => v.id === compareId)?.label ?? "a prior version"}. Downloads always use the latest checked document.
-        </p>
+      {compareId && resumeDoc ? (
+        <ResumeComparison workflowId={data.workflowId} versionId={compareId} current={resumeDoc} onClose={() => setCompareId(undefined)} />
       ) : null}
       <AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />
       <QualityReport report={data.qualityReport} />

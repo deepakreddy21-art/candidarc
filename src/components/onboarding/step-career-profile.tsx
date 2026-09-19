@@ -1,13 +1,18 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
+import { Check, ChevronDown, FileText, UserRound } from "lucide-react";
+import { CareerReview } from "./career-review";
+import { CareerSections } from "./career-sections";
 import { ChipInput } from "./chip-input";
 import type { OnboardingFormState } from "./types";
 
 type Props = {
   form: OnboardingFormState;
+  compactReview?: boolean;
+  disabled?: boolean;
   onChange: (patch: Partial<OnboardingFormState>) => void;
   errors: Partial<Record<string, string>>;
   importStatus: string | null;
@@ -60,12 +65,21 @@ function importSummary(form: OnboardingFormState): string {
   return `We imported your résumé: ${parts.join(", ")}.${confidenceNote}`;
 }
 
+function compactImportSummary(form: OnboardingFormState): string {
+  const roles = form.employment.length;
+  const education = form.education.length;
+  const projects = form.projects.length;
+  return `Imported ${roles} role${roles === 1 ? "" : "s"}, ${education} education ${education === 1 ? "entry" : "entries"} and ${projects} project${projects === 1 ? "" : "s"}`;
+}
+
 function ambiguousClass(ambiguous: boolean): string {
   return ambiguous ? "ring-1 ring-amber-500/60 bg-amber-500/5" : "";
 }
 
 export function StepCareerProfile({
   form,
+  compactReview = false,
+  disabled = false,
   onChange,
   errors,
   importStatus,
@@ -75,6 +89,11 @@ export function StepCareerProfile({
   statusMessage,
   importErrorCode,
 }: Props) {
+  const [filename, setFilename] = useState<string>();
+  const [contactOpen, setContactOpen] = useState<boolean>();
+  useEffect(() => {
+    if (errors.fullName || errors.email || errors.phone || errors.location) setContactOpen(true);
+  }, [errors.fullName, errors.email, errors.phone, errors.location]);
   const fileRef = useRef<HTMLInputElement>(null);
   const analyzing = ["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "");
   const showReview =
@@ -83,11 +102,13 @@ export function StepCareerProfile({
     importStatus === "confirmed";
   const uploadReviewMode = importStatus === "ready_for_review" || importStatus === "confirmed";
 
+  const compact = compactReview && form.careerProfileMode === "upload" && uploadReviewMode;
+  const contactIncomplete = [form.fullName, form.email, form.phone, form.location].some((value) => !value.trim()) || Boolean(errors.fullName || errors.email || errors.phone || errors.location);
   const imageOnly = importErrorCode === "IMAGE_ONLY_PDF_OCR_REQUIRED";
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2">
+    <fieldset disabled={disabled || analyzing || uploading} className="space-y-6">
+      {!compact && <div className="grid gap-3 sm:grid-cols-2">
         <button
           type="button"
           className={
@@ -114,10 +135,10 @@ export function StepCareerProfile({
           <p className="text-sm font-medium">Enter manually</p>
           <p className="mt-1 text-xs text-foreground-muted">Add contact details, roles, and skills yourself.</p>
         </button>
-      </div>
+      </div>}
 
       {form.careerProfileMode === "upload" ? (
-        <div className="space-y-3 rounded-md border border-border bg-surface p-4">
+        <div className={compact ? "focus-import-summary" : "space-y-3 rounded-md border border-border bg-surface p-4"}>
           <input
             ref={fileRef}
             type="file"
@@ -125,11 +146,13 @@ export function StepCareerProfile({
             className="sr-only"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) onUpload(file);
+              if (file) { setFilename(file.name); onUpload(file); }
               e.target.value = "";
             }}
           />
-          <div className="flex flex-wrap gap-2">
+          {compact && <p className="focus-import-success" data-testid="import-summary"><Check size={20} aria-hidden /><span>{compactImportSummary(form)}{form.lowConfidenceCount > 0 && <span className="block text-xs mt-1">{form.lowConfidenceCount} {form.lowConfidenceCount === 1 ? "field needs" : "fields need"} review.</span>}</span></p>}
+          <div className="flex flex-wrap items-center gap-2">
+            {compact && <span className="focus-import-file"><FileText size={18} aria-hidden />{filename ?? "Uploaded résumé"}</span>}
             <Button
               type="button"
               variant="secondary"
@@ -150,7 +173,7 @@ export function StepCareerProfile({
               </Button>
             ) : null}
           </div>
-          <p className="text-sm text-foreground-secondary" aria-live="polite">
+          <p className={compact ? "sr-only" : "text-sm text-foreground-secondary"} aria-live="polite">
             {statusMessage || statusLabel(importStatus)}
           </p>
           {analyzing ? (
@@ -174,7 +197,7 @@ export function StepCareerProfile({
                 : statusMessage || "Try another PDF/DOCX or enter details manually."}
             </p>
           ) : null}
-          {uploadReviewMode ? (
+          {uploadReviewMode && !compact ? (
             <p className="text-sm font-medium text-foreground" data-testid="import-summary">
               {importSummary(form)}
             </p>
@@ -184,75 +207,63 @@ export function StepCareerProfile({
 
       {showReview ? (
         <div className="space-y-4" data-testid="import-review-sections">
-          {uploadReviewMode && form.employment.length > 0 ? (
-            <div className="space-y-2" data-testid="imported-employment-cards">
-              <p className="text-sm font-medium">Imported roles</p>
-              {form.employment.map((job, index) => (
-                <div key={index} className="rounded-md border border-border px-3 py-2 text-sm">
-                  <p className="font-medium" data-testid={`imported-role-title-${index}`}>
-                    {[job.title, job.company].filter(Boolean).join(" · ") || `Role ${index + 1}`}
-                  </p>
-                  {(job.startDate || job.endDate) && (
-                    <p className="text-xs text-foreground-muted">
-                      {[job.startDate, job.endDate].filter(Boolean).join(" – ")}
-                    </p>
-                  )}
-                  {job.bullets?.length ? (
-                    <ul className="mt-1 list-disc pl-4 text-xs text-foreground-secondary">
-                      {job.bullets.map((bullet) => (
-                        <li key={bullet}>{bullet}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          <details open className="rounded-md border border-border p-3">
-            <summary className="cursor-pointer text-sm font-medium">Contact</summary>
+          <details open={contactOpen ?? (!compact || contactIncomplete)} onToggle={(event) => setContactOpen(event.currentTarget.open)} className={compact ? "focus-review-section" : "rounded-md border border-border p-3"}>
+            <summary className="cursor-pointer text-sm font-medium">{compact && <UserRound size={22} aria-hidden />}<strong>Contact</strong>{compact && <><span>{[form.fullName, form.location].filter(Boolean).join(" · ")}</span><ChevronDown size={19} aria-hidden /></>}</summary>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div className={`space-y-1.5 sm:col-span-2 ${ambiguousClass(uploadReviewMode && !form.fullName.trim())}`}>
                 <Label htmlFor="full-name">Full name</Label>
                 <Input
                   id="full-name"
+                  required
                   value={form.fullName}
                   onChange={(e) => onChange({ fullName: e.target.value })}
                   aria-invalid={Boolean(errors.fullName)}
+                  aria-describedby={errors.fullName ? "error-fullName" : undefined}
                   data-testid="imported-full-name"
                 />
+                {errors.fullName && <p id="error-fullName" className="text-xs text-destructive" role="alert">{errors.fullName}</p>}
               </div>
               <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.email.trim())}`}>
                 <Label htmlFor="email">Email</Label>
                 <Input
                   id="email"
+                  required
                   type="email"
                   value={form.email}
                   onChange={(e) => onChange({ email: e.target.value })}
                   data-testid="imported-email"
                   aria-invalid={Boolean(errors.email)}
+                  aria-describedby={errors.email ? "error-email" : undefined}
                 />
+                {errors.email && <p id="error-email" className="text-xs text-destructive" role="alert">{errors.email}</p>}
               </div>
               <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.phone.trim())}`}>
                 <Label htmlFor="phone">Phone</Label>
                 <Input
                   id="phone"
+                  type="tel"
+                  required
                   value={form.phone}
                   onChange={(e) => onChange({ phone: e.target.value })}
                   data-testid="imported-phone"
                   aria-invalid={Boolean(errors.phone)}
+                  aria-describedby={errors.phone ? "error-phone" : undefined}
                 />
+                {errors.phone && <p id="error-phone" className="text-xs text-destructive" role="alert">{errors.phone}</p>}
               </div>
               <div className={`space-y-1.5 sm:col-span-2 ${ambiguousClass(uploadReviewMode && !form.location.trim())}`}>
                 <Label htmlFor="location">Current location</Label>
                 <Input
                   id="location"
+                  required
                   value={form.location}
                   onChange={(e) => onChange({ location: e.target.value })}
                   placeholder="City, region, country"
                   data-testid="imported-location"
                   aria-invalid={Boolean(errors.location)}
+                  aria-describedby={errors.location ? "error-location" : undefined}
                 />
+                {errors.location && <p id="error-location" className="text-xs text-destructive" role="alert">{errors.location}</p>}
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="linkedin">LinkedIn (optional)</Label>
@@ -274,307 +285,17 @@ export function StepCareerProfile({
             </div>
           </details>
 
-          {(form.summary.trim() || form.careerProfileMode === "manual") ? (
-            <details open={Boolean(form.summary.trim())} className="rounded-md border border-border p-3">
-              <summary className="cursor-pointer text-sm font-medium">Summary</summary>
-              <Textarea
-                className="mt-3"
-                aria-label="Professional summary"
-                value={form.summary}
-                onChange={(e) => onChange({ summary: e.target.value })}
-              />
-            </details>
-          ) : (
-            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
-              <p className="text-sm text-foreground-muted">No summary imported</p>
-              <Button type="button" size="sm" variant="secondary" onClick={() => onChange({ summary: " " })}>
-                Add
-              </Button>
-            </div>
-          )}
-
-          <details open={form.employment.length > 0 || form.careerProfileMode === "manual"} className="rounded-md border border-border p-3">
-            <summary className="cursor-pointer text-sm font-medium">Professional experience</summary>
-            <div className="mt-3 space-y-3">
-              {form.employment.length === 0 ? (
-                <p className="text-sm text-foreground-muted" data-testid="no-employment-imported">
-                  No employment history was found. You can continue with projects, education, and skills.
-                </p>
-              ) : null}
-              {form.employment.map((job, index) => (
-                <div
-                  key={index}
-                  className={`space-y-2 border-b border-border pb-3 last:border-0 ${ambiguousClass(!job.title || !job.company)}`}
-                >
-                  <Input
-                    aria-label={`Job title ${index + 1}`}
-                    value={job.title ?? ""}
-                    onChange={(e) => {
-                      const employment = [...form.employment];
-                      employment[index] = { ...job, title: e.target.value };
-                      onChange({ employment });
-                    }}
-                  />
-                  <Input
-                    aria-label={`Employer ${index + 1}`}
-                    value={job.company ?? ""}
-                    onChange={(e) => {
-                      const employment = [...form.employment];
-                      employment[index] = { ...job, company: e.target.value };
-                      onChange({ employment });
-                    }}
-                  />
-                  <Textarea
-                    aria-label={`Bullets ${index + 1}`}
-                    value={(job.bullets ?? []).join("\n")}
-                    onChange={(e) => {
-                      const employment = [...form.employment];
-                      employment[index] = {
-                        ...job,
-                        bullets: e.target.value.split("\n"),
-                      };
-                      onChange({ employment });
-                    }}
-                  />
-                </div>
-              ))}
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={() =>
-                  onChange({
-                    employment: [...form.employment, { title: "", company: "", bullets: [""] }],
-                  })
-                }
-              >
-                Add role
-              </Button>
-            </div>
+          {compact ? <CareerReview form={form} onChange={onChange} /> : <CareerSections form={form} onChange={onChange} />}
+          <details open={!compact && (Boolean(form.summary.trim()) || form.careerProfileMode === "manual")} className="rounded-md border border-border p-3">
+            <summary className="cursor-pointer text-sm font-medium">Professional summary (optional)</summary>
+            <Textarea className="mt-3" aria-label="Professional summary" value={form.summary} onChange={(event) => onChange({ summary: event.target.value })} />
           </details>
-
-          {(form.projects.length > 0 || form.careerProfileMode === "manual") ? (
-            <details open={form.projects.length > 0} className="rounded-md border border-border p-3">
-              <summary className="cursor-pointer text-sm font-medium">Projects</summary>
-              <div className="mt-3 space-y-3">
-                {form.projects.map((project, index) => (
-                  <div key={index} className="space-y-2 border-b border-border pb-3 last:border-0">
-                    <Input
-                      aria-label={`Project name ${index + 1}`}
-                      value={project.name ?? ""}
-                      data-testid={`imported-project-${index}`}
-                      onChange={(e) => {
-                        const projects = [...form.projects];
-                        projects[index] = { ...project, name: e.target.value };
-                        onChange({ projects });
-                      }}
-                    />
-                    <Textarea
-                      aria-label={`Project bullets ${index + 1}`}
-                      value={(project.bullets ?? []).join("\n")}
-                      onChange={(e) => {
-                        const projects = [...form.projects];
-                        projects[index] = { ...project, bullets: e.target.value.split("\n") };
-                        onChange({ projects });
-                      }}
-                    />
-                  </div>
-                ))}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => onChange({ projects: [...form.projects, { name: "", bullets: [], technologies: [] }] })}
-                >
-                  Add project
-                </Button>
-              </div>
-            </details>
-          ) : (
-            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
-              <p className="text-sm text-foreground-muted">No projects imported</p>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={() => onChange({ projects: [{ name: "", bullets: [], technologies: [] }] })}
-              >
-                Add
-              </Button>
-            </div>
-          )}
-
-          <details open={form.education.length > 0} className="rounded-md border border-border p-3">
-            <summary className="cursor-pointer text-sm font-medium">Education</summary>
-            <div className="mt-3 space-y-3">
-              {form.education.map((row, index) => (
-                <div key={index} className="grid gap-2 sm:grid-cols-2">
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`edu-school-${index}`}>Institution</Label>
-                    <Input
-                      id={`edu-school-${index}`}
-                      aria-label={`Institution ${index + 1}`}
-                      value={row.school ?? ""}
-                      data-testid={`imported-education-${index}`}
-                      onChange={(e) => {
-                        const education = [...form.education];
-                        education[index] = { ...row, school: e.target.value };
-                        onChange({ education });
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`edu-degree-${index}`}>Degree</Label>
-                    <Input
-                      id={`edu-degree-${index}`}
-                      aria-label={`Degree ${index + 1}`}
-                      value={row.degree ?? ""}
-                      data-testid={`imported-education-degree-${index}`}
-                      onChange={(e) => {
-                        const education = [...form.education];
-                        education[index] = { ...row, degree: e.target.value };
-                        onChange({ education });
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`edu-field-${index}`}>Field of study</Label>
-                    <Input
-                      id={`edu-field-${index}`}
-                      aria-label={`Field of study ${index + 1}`}
-                      value={row.field ?? ""}
-                      data-testid={`imported-education-field-${index}`}
-                      onChange={(e) => {
-                        const education = [...form.education];
-                        education[index] = { ...row, field: e.target.value };
-                        onChange({ education });
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor={`edu-location-${index}`}>Location (optional)</Label>
-                    <Input
-                      id={`edu-location-${index}`}
-                      aria-label={`Education location ${index + 1}`}
-                      value={row.location ?? ""}
-                      data-testid={`imported-education-location-${index}`}
-                      onChange={(e) => {
-                        const education = [...form.education];
-                        education[index] = { ...row, location: e.target.value };
-                        onChange({ education });
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={() =>
-                  onChange({ education: [...form.education, { school: "", degree: "", field: "", location: "" }] })
-                }
-              >
-                Add education
-              </Button>
-            </div>
-          </details>
-
-          <details open={form.skills.length > 0 || form.careerProfileMode === "manual"} className="rounded-md border border-border p-3">
+          <details open={!compact && (form.skills.length > 0 || form.careerProfileMode === "manual")} className="rounded-md border border-border p-3">
             <summary className="cursor-pointer text-sm font-medium">Skills</summary>
             <div className="mt-3">
-              <ChipInput
-                id="skills"
-                label="Skills"
-                values={form.skills}
-                onChange={(skills) => onChange({ skills })}
-                placeholder="Add a skill"
-                error={errors.skills}
-              />
+              <ChipInput id="skills" label="Skills" values={form.skills} onChange={(skills) => onChange({ skills })} placeholder="Add a skill" error={errors.skills} />
             </div>
           </details>
-
-          {(form.certifications.length > 0 || form.careerProfileMode === "manual") ? (
-            <details open={form.certifications.length > 0} className="rounded-md border border-border p-3">
-              <summary className="cursor-pointer text-sm font-medium">Certifications</summary>
-              <div className="mt-3 space-y-2">
-                {form.certifications.map((cert, index) => (
-                  <Input
-                    key={index}
-                    aria-label={`Certification ${index + 1}`}
-                    value={cert.name}
-                    data-testid={`imported-cert-${index}`}
-                    onChange={(e) => {
-                      const certifications = [...form.certifications];
-                      certifications[index] = { ...cert, name: e.target.value };
-                      onChange({ certifications });
-                    }}
-                  />
-                ))}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => onChange({ certifications: [...form.certifications, { name: "" }] })}
-                >
-                  Add certification
-                </Button>
-              </div>
-            </details>
-          ) : (
-            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
-              <p className="text-sm text-foreground-muted">No certifications imported</p>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={() => onChange({ certifications: [{ name: "" }] })}
-              >
-                Add
-              </Button>
-            </div>
-          )}
-
-          {(form.publications.length > 0 || form.careerProfileMode === "manual") ? (
-            <details open={form.publications.length > 0} className="rounded-md border border-border p-3">
-              <summary className="cursor-pointer text-sm font-medium">Publications</summary>
-              <div className="mt-3 space-y-2">
-                {form.publications.map((pub, index) => (
-                  <Input
-                    key={index}
-                    aria-label={`Publication ${index + 1}`}
-                    value={pub.title ?? ""}
-                    data-testid={`imported-publication-${index}`}
-                    onChange={(e) => {
-                      const publications = [...form.publications];
-                      publications[index] = { ...pub, title: e.target.value };
-                      onChange({ publications });
-                    }}
-                  />
-                ))}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => onChange({ publications: [...form.publications, { title: "" }] })}
-                >
-                  Add publication
-                </Button>
-              </div>
-            </details>
-          ) : (
-            <div className="flex items-center justify-between rounded-md border border-dashed border-border px-3 py-2">
-              <p className="text-sm text-foreground-muted">No publications imported</p>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={() => onChange({ publications: [{ title: "" }] })}
-              >
-                Add
-              </Button>
-            </div>
-          )}
 
           {errors.career ? (
             <p className="text-sm text-destructive" role="alert">
@@ -583,6 +304,6 @@ export function StepCareerProfile({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </fieldset>
   );
 }

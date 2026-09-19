@@ -200,10 +200,28 @@ describe("customer resume generation", () => {
     const app = await repos.applications.getByPublicId(tenantId, generated.applicationId);
     const resume = await repos.resumes.createResume({ id: newId("res"), publicId: newId("resp"), tenantId, applicationId: app!.id, applicationPublicId: app!.publicId, title: "Resume", templateId: "clean", length: "one-page", currentVersionPublicId: null });
     const old = await repos.resumes.appendVersion({ id: newId("rv"), publicId: newId("rvp"), tenantId, resumeId: resume.id, versionNumber: 4, versionLabel: "V4", score: 80, scoreBreakdown: {}, notes: "", triggeredBy: "initial", sections: [], idempotencyKey: "old" });
+    await expect(service.refine(ctx, generated.workflowId, { instruction: "Emphasize leadership" })).rejects.toMatchObject({ code: "RESUME_NOT_READY" });
+    await repos.applications.update(tenantId, generated.applicationId, { workflowStage: "FINAL_READY" });
     const refined = await service.refine(ctx, generated.workflowId, { instruction: "Emphasize leadership" });
     expect((await repos.resumes.getVersion(tenantId, old.publicId))?.publicId).toBe(old.publicId);
     const run = await repos.workflows.getByPublicId(tenantId, refined.workflowId);
     expect(run?.payload.cycleBase).toBe(5);
+  });
+
+  it("compares only checked versions owned by the requesting candidate", async () => {
+    const { repos, userId, tenantId } = await ensureDemoUser(createEmptyMemoryStore());
+    const service = makeService(repos);
+    const ctx = context(userId, tenantId, repos);
+    const generated = await service.generate(ctx, { jobDescription: "A platform engineer position working on reliable TypeScript APIs.", idempotencyKey: "compare-owned" });
+    const app = (await repos.applications.getByPublicId(tenantId, generated.applicationId))!;
+    const resume = await repos.resumes.createResume({ id: newId("res"), publicId: newId("resp"), tenantId, applicationId: app.id, applicationPublicId: app.publicId, title: "Resume", templateId: "clean", length: "one-page", currentVersionPublicId: null });
+    const version = await repos.resumes.appendVersion({ id: newId("rv"), publicId: newId("rvp"), tenantId, resumeId: resume.id, versionNumber: 4, versionLabel: "V4", score: 80, scoreBreakdown: {}, notes: "", triggeredBy: "initial", sections: [{ id: "summary", title: "Summary", bullets: [{ id: "b1", text: "Built reviewed APIs", evidenceIds: [], matchedRequirements: [], technologies: [], confidence: "high", claimRisk: "low" }] }], idempotencyKey: "compare-v1" });
+    await expect(service.getCustomerVersion(ctx, generated.workflowId, version.publicId)).rejects.toMatchObject({ status: 404 });
+    await repos.applications.update(tenantId, app.publicId, { metadata: { ...app.metadata, customerFinalVersions: [version.publicId] } });
+    const compared = await service.getCustomerVersion(ctx, generated.workflowId, version.publicId);
+    expect(JSON.stringify(compared.document)).toContain("Built reviewed APIs");
+    expect(compared.label).toBe("Version 1");
+    await expect(service.getCustomerVersion(context("another-user", tenantId, repos), generated.workflowId, version.publicId)).rejects.toMatchObject({ status: 404 });
   });
 
   it("worker restart re-enqueues unfinished workflows safely", async () => {
@@ -238,7 +256,7 @@ describe("customer resume generation", () => {
     expect(source).not.toContain("setTimeout(");
     expect(source).not.toMatch(/You may close this page/i);
     expect(source).not.toMatch(/HR Audit|EM Audit|HR_AUDIT|EM_AUDIT|\bV0\b|token usage|BullMQ|OpenAI|Anthropic/i);
-    expect(source).toContain("Researching the role");
+    expect(source).toContain("Understanding the role");
     expect(source).toContain("Refine this resume");
     expect(source).toContain("Create new version");
   });

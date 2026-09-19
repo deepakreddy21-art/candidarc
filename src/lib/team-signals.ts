@@ -9,7 +9,7 @@ export type TeamSignal = {
   sourceTitle?: string;
   sourceDomain?: string;
   sourceUrl?: string;
-  publishedAt?: string;
+  observedAt?: string;
 };
 
 function domainFromUrl(url?: string) {
@@ -32,22 +32,19 @@ export function buildTeamSignals(job: RadarJob): TeamSignal[] {
     job.companyCareersUrl ||
     job.sightings?.find((s) => s.url)?.url;
   const sourceDomain = domainFromUrl(sourceUrl);
-  const publishedAt = job.lastVerifiedAt || job.firstSeenAt;
+  const observedAt = job.lastVerifiedAt || job.firstSeenAt;
 
   const fromTech = (job.technologies ?? []).slice(0, 10).map((name, index) => {
-    const confirmed = Boolean(job.companyDirect && job.verificationState === "VERIFIED_OPEN");
     return {
       id: `tech-${index}-${name}`,
       name,
-      explanation: confirmed
-        ? `${name} appears in the company-direct posting or verified role requirements.`
-        : `${name} is associated with this listing from available role text; treat as a team signal, not a guaranteed stack confirmation.`,
-      confidence: (confirmed ? "high" : job.companyDirect ? "medium" : "low") as TeamSignal["confidence"],
-      inferred: !confirmed,
+      explanation: `${name} is associated with this listing's role text. This does not independently confirm the team's production stack.`,
+      confidence: (job.companyDirect ? "medium" : "low") as TeamSignal["confidence"],
+      inferred: true,
       sourceTitle,
       sourceDomain,
       sourceUrl,
-      publishedAt,
+      observedAt,
     };
   });
 
@@ -60,7 +57,7 @@ export function buildTeamSignals(job: RadarJob): TeamSignal[] {
     sourceTitle,
     sourceDomain,
     sourceUrl,
-    publishedAt,
+    observedAt,
   }));
 
   return [...fromTech, ...fromHiring];

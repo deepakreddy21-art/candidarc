@@ -6,6 +6,7 @@ import { AppError } from "../../domain/types";
 import { syncCareerEvidenceFromProfile } from "./career-evidence";
 import {
   assertCanComplete,
+  assertReviewContact,
   assertStepPayload,
   hasCareerProfileReady,
   mergeExtraction,
@@ -133,17 +134,25 @@ export class ProfileService {
         | "salaryPreference"
         | "seniority"
       >
-    >,
+    > & { version?: number },
   ) {
     const user = requireUser(ctx);
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
-    await this.getOrCreate(ctx);
+    const current = await this.getOrCreate(ctx);
     const next: Partial<CandidateProfileRecord> = { ...patch };
+    const review = Object.fromEntries(
+      ["fullName", "email", "phone", "location", "linkedIn", "github", "portfolio", "headline", "summary"]
+        .filter((key) => Object.hasOwn(patch, key))
+        .map((key) => [key, patch[key as keyof typeof patch]]),
+    ) as OnboardingStepData;
+    if (Object.keys(review).length) next.resumeImportExtraction = mergeExtraction(current.resumeImportExtraction, review);
     if (patch.fullName) {
       next.avatarInitials = initialsFromName(patch.fullName);
     }
-    return this.profiles.update(tenantId, user.id, next);
+    const expectedVersion = patch.version ?? current.version;
+    delete next.version;
+    return this.profiles.updateOnboarding(tenantId, user.id, expectedVersion, next);
   }
 
   private async upsertCareerNotesEvidence(
@@ -201,13 +210,10 @@ export class ProfileService {
     if (data.jobTypes) patch.jobTypes = [...data.jobTypes];
     if (data.workplaceModes) {
       patch.workplaceModes = [...data.workplaceModes];
-      patch.remoteOk = data.workplaceModes.includes("remote") || data.workplaceModes.includes("hybrid");
+      patch.remoteOk = data.workplaceModes.includes("remote");
     }
     if (data.preferredLocations) {
       patch.preferredLocations = normalizeTitleList(data.preferredLocations);
-      if (patch.preferredLocations[0] && data.location === undefined) {
-        patch.location = patch.preferredLocations[0]!;
-      }
     }
     if (data.willingToRelocate !== undefined) patch.willingToRelocate = data.willingToRelocate;
     if (data.workAuthorization !== undefined) patch.workAuthorization = data.workAuthorization;
@@ -222,9 +228,6 @@ export class ProfileService {
     if (data.phone !== undefined) patch.phone = data.phone;
     if (data.location !== undefined) {
       patch.location = data.location;
-      if (data.location && !data.preferredLocations) {
-        patch.preferredLocations = [data.location];
-      }
     }
     if (data.linkedIn !== undefined) patch.linkedIn = data.linkedIn;
     if (data.github !== undefined) patch.github = data.github;
@@ -248,7 +251,9 @@ export class ProfileService {
       data.careerProfileMode !== undefined ||
       data.onboardingFlowVersion !== undefined ||
       data.fullName !== undefined ||
-      data.email !== undefined;
+      data.email !== undefined || data.phone !== undefined || data.location !== undefined ||
+      data.linkedIn !== undefined || data.github !== undefined || data.portfolio !== undefined ||
+      data.headline !== undefined || data.summary !== undefined;
 
     if (touchesCareerDraft) {
       patch.resumeImportExtraction = mergeExtraction(current.resumeImportExtraction, data);
@@ -310,11 +315,18 @@ export class ProfileService {
           (current.resumeImportExtraction as { onboardingFlowVersion?: number } | null)?.onboardingFlowVersion === 3,
       );
       if (v3) {
-        if (leaving === 0) assertStepPayload(0, patch.data);
+        if (leaving === 0) assertStepPayload(0, {
+          targetRoles: current.targetRoleFamilies,
+          seniority: current.seniority as OnboardingStepData["seniority"],
+          jobTypes: current.jobTypes as OnboardingStepData["jobTypes"],
+          workplaceModes: current.workplaceModes as OnboardingStepData["workplaceModes"],
+          ...patch.data,
+        });
         if (leaving === 1) {
           const probe = patch.data
             ? ({ ...current, ...this.applyStepData(patch.data, current) } as CandidateProfileRecord)
             : current;
+          assertReviewContact(probe);
           if (!hasCareerProfileReady(probe) && !hasManualCareerReady(probe)) {
             throw new AppError(
               "ONBOARDING_VALIDATION",

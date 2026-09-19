@@ -1,3 +1,7 @@
+import { z } from "zod";
+import { AppError } from "../domain/types";
+import { getProvider } from "./providers/registry";
+import type { JobSourceListing } from "./providers/types";
 /**
  * Radar worker queues.
  *
@@ -48,37 +52,33 @@ export function registerRadarQueueHandlers(
   queue: QueueAdapter,
   catalog: CanonicalJobCatalog,
   index: RadarSearchIndex,
+  ingest: (listing: JobSourceListing, sourceId: string) => Promise<unknown> = async (listing, sourceId) => catalog.ingestListing(listing, sourceId),
 ): void {
+  const boardSchema = z.object({
+    providerId: z.enum(["greenhouse", "lever", "ashby"]),
+    boardToken: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
+    companyName: z.string().max(160).optional(),
+  });
   queue.registerHandler("source-discovery", async (job) => {
-    const payload = job.payload as { providerId?: string };
-    const providerId = payload.providerId;
-
-    // IMPORTANT: LinkedIn and Indeed are disabled without proper credentials
-    if (providerId === "linkedin-licensed" || providerId === "indeed-partner") {
-      logger.warn(
-        { jobId: job.id, providerId },
-        "radar source-discovery: provider disabled without license",
-      );
-      return;
+    const { boards } = z.object({ boards: z.array(boardSchema).min(1).max(50) }).parse(job.payload);
+    for (const board of boards) {
+      await queue.enqueue("ats-ingestion", "radar-ingest-board", board, {
+        idempotencyKey: `board:${board.providerId}:${board.boardToken}:${job.id}`,
+      });
     }
-
-    logger.info({ jobId: job.id, payload: job.payload }, "radar source-discovery");
   });
 
   queue.registerHandler("ats-ingestion", async (job) => {
-    const payload = job.payload as { sourceId?: string; jobCount?: number };
-
-    // Update checkpoint on successful ingestion
-    if (payload.sourceId) {
-      await setCheckpoint(
-        createCheckpoint(payload.sourceId, {
-          lastJobCount: payload.jobCount,
-          metadata: { queueJobId: job.id },
-        }),
-      );
-    }
-
-    logger.info({ jobId: job.id, sourceId: payload.sourceId }, "radar ats-ingestion acknowledged");
+    const payload = boardSchema.parse(job.payload);
+    const provider = getProvider(payload.providerId);
+    if (!provider?.enabled || !provider.policy.enabled) throw new AppError("PROVIDER_DISABLED", "Job source unavailable", 409);
+    const result = await provider.fetchBoard(payload);
+    for (const listing of result.listings) await ingest(listing, provider.id);
+    index.reindexAll();
+    await setCheckpoint(createCheckpoint(`${provider.id}:${payload.boardToken}`, {
+      lastJobCount: result.listings.length, metadata: { queueJobId: job.id },
+    }));
+    logger.info({ providerId: provider.id, count: result.listings.length }, "radar board ingestion persisted");
   });
 
   queue.registerHandler("job-normalization", async (job) => {

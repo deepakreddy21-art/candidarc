@@ -24,5 +24,6 @@ test.describe("marketing brand motion", () => {
     await expect(page.getByRole("dialog", { name: /Product demo/i })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /See it in action/i })).toBeFocused();
   });
 });

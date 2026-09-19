@@ -36,3 +36,5 @@ playwright-report-built/
 
 .tmp-import-uat/
 
+# Python development environment (directory or local symlink)
+/services/python-backend/.venv

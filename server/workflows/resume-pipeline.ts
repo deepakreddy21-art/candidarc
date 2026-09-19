@@ -1,4 +1,5 @@
-﻿import { createHash } from "crypto";
+import { selectCareerEvidence } from "../modules/profile/career-evidence";
+import { createHash } from "crypto";
 import {
   auditSchema,
   evidenceMatchSchema,
@@ -203,7 +204,8 @@ export class ResumePipeline {
       ownerUserId: application.ownerUserId,
       applicationPublicId: run.applicationPublicId,
     });
-    return { application, evidence };
+    const fingerprint = application.metadata?.candidateEvidenceFingerprint;
+    return { application, evidence: selectCareerEvidence(evidence, typeof fingerprint === "string" ? fingerprint : undefined) };
   }
 
   async handleStage(run: WorkflowRunRecord, claimedStage?: WorkflowStage): Promise<void> {
@@ -224,47 +226,53 @@ export class ResumePipeline {
       return;
     }
 
-    switch (claimed.stage) {
-      case "RESEARCH_QUEUED":
-      case "RESEARCH_RUNNING":
-        await this.runResearch(claimed);
-        break;
-      case "EVIDENCE_MATCHING_RUNNING":
-        await this.runEvidenceMatching(claimed);
-        break;
-      case "V0_GENERATING":
-        await this.runResumeGeneration(claimed, 0, "Initial generation");
-        break;
-      case "HR_AUDIT_1_RUNNING":
-        await this.runAudit(claimed, "hr-audit-1", 0, 1);
-        break;
-      case "V1_GENERATING":
-        await this.runResumeGeneration(claimed, 1, "HR Audit 1");
-        break;
-      case "EM_AUDIT_1_RUNNING":
-        await this.runAudit(claimed, "em-audit-1", 1, 2);
-        break;
-      case "V2_GENERATING":
-        await this.runResumeGeneration(claimed, 2, "EM Audit 1");
-        break;
-      case "HR_AUDIT_2_RUNNING":
-        await this.runAudit(claimed, "hr-audit-2", 2, 3);
-        break;
-      case "V3_GENERATING":
-        await this.runResumeGeneration(claimed, 3, "HR Audit 2");
-        break;
-      case "EM_AUDIT_2_RUNNING":
-        await this.runAudit(claimed, "em-audit-2", 3, 4);
-        break;
-      case "V4_GENERATING":
-        assertAuditOrder({ stage: "V4_GENERATING", reviewsVersion: 3, producesVersion: 4 });
-        await this.runResumeGeneration(claimed, 4, "EM Audit 2");
-        break;
-      case "FINAL_QA_RUNNING":
-        await this.runFinalQa(claimed);
-        break;
-      default:
-        logger.debug({ stage: claimed.stage }, "pipeline no-op stage");
+    try {
+      switch (claimed.stage) {
+        case "RESEARCH_QUEUED":
+        case "RESEARCH_RUNNING":
+          await this.runResearch(claimed);
+          break;
+        case "EVIDENCE_MATCHING_RUNNING":
+          await this.runEvidenceMatching(claimed);
+          break;
+        case "V0_GENERATING":
+          await this.runResumeGeneration(claimed, 0, "Initial generation");
+          break;
+        case "HR_AUDIT_1_RUNNING":
+          await this.runAudit(claimed, "hr-audit-1", 0, 1);
+          break;
+        case "V1_GENERATING":
+          await this.runResumeGeneration(claimed, 1, "HR Audit 1");
+          break;
+        case "EM_AUDIT_1_RUNNING":
+          await this.runAudit(claimed, "em-audit-1", 1, 2);
+          break;
+        case "V2_GENERATING":
+          await this.runResumeGeneration(claimed, 2, "EM Audit 1");
+          break;
+        case "HR_AUDIT_2_RUNNING":
+          await this.runAudit(claimed, "hr-audit-2", 2, 3);
+          break;
+        case "V3_GENERATING":
+          await this.runResumeGeneration(claimed, 3, "HR Audit 2");
+          break;
+        case "EM_AUDIT_2_RUNNING":
+          await this.runAudit(claimed, "em-audit-2", 3, 4);
+          break;
+        case "V4_GENERATING":
+          assertAuditOrder({ stage: "V4_GENERATING", reviewsVersion: 3, producesVersion: 4 });
+          await this.runResumeGeneration(claimed, 4, "EM Audit 2");
+          break;
+        case "FINAL_QA_RUNNING":
+          await this.runFinalQa(claimed);
+          break;
+        default:
+          logger.debug({ stage: claimed.stage }, "pipeline no-op stage");
+      }
+    } catch (error) {
+      const claimKey = `claimed:${expectedStage}`;
+      await this.deps.workflows.releaseStageClaim(run.tenantId, run.id, expectedStage, claimed.payload[claimKey]);
+      throw error;
     }
   }
 
@@ -593,7 +601,7 @@ export class ResumePipeline {
           accessed_at: source.accessedAt,
           supporting_text: source.excerpt,
           confidence: source.confidence,
-          classification: "explicit",
+          classification: source.type === "public-reference" ? "inferred" : "explicit",
         })),
       });
       const mapped = mapPythonResearchToTs(py);
@@ -1082,8 +1090,8 @@ export class ResumePipeline {
     // Metadata refinements apply on V0 and the final V4 lifecycle step so audit rewrites
     // cannot permanently erase the visible emphasis. Explicit payload refinements always apply.
     const resolvedRefinementInstruction =
-      payloadRefinement ??
-      ((versionNumber === 0 || versionNumber === 4) && !isFinalQaRepair ? metadataRefinement : null);
+      (versionNumber === 0 || versionNumber === 4) && !isFinalQaRepair
+        ? payloadRefinement ?? metadataRefinement : null;
     const hasRefinementInstruction = Boolean(resolvedRefinementInstruction) || isFinalQaRepair;
     if (!evidence.length && versionNumber === 0 && !isFinalQaRepair) {
       throw new AppError(
@@ -1280,8 +1288,7 @@ export class ResumePipeline {
           // satisfies the instruction, continue without inventing further changes.
           const metadataOnlyRetry =
             mapped.code === "REFINEMENT_NOT_APPLICABLE" &&
-            !payloadRefinement &&
-            Boolean(metadataRefinement) &&
+            Boolean(payloadRefinement || metadataRefinement) &&
             !isFinalQaRepair &&
             versionNumber > 0;
           if (!metadataOnlyRetry) {

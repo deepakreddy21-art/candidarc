@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { DEFAULT_PASSWORD, seedOnboardedUser, uniqueEmail } from "./helpers/session";
 import { imageOnlyPdf, importResumeDocx, importResumePdf } from "./helpers/documents";
+import { LAYOUT_IMPORT_RESUME, textToSimplePdf } from "../src/test/fixtures/resume-samples";
 
 async function completePreferences(page: import("@playwright/test").Page) {
   await page.locator("#target-roles").click();
@@ -51,12 +52,13 @@ test.describe("resume import interactions", () => {
     await expect(page.locator("#github")).toHaveValue(/github\.com\/jordanblake/i);
     const phone = await page.locator("#phone").inputValue();
     if (phone) expect(phone).toMatch(/555/);
+    await page.getByText("Edit role 1", { exact: true }).click();
     await expect(page.getByLabel(/job title 1/i)).toHaveValue(/Platform Engineer/i);
     await expect(page.getByLabel(/employer 1/i)).toHaveValue(/Harbor Systems/i);
     await expect(page.getByRole("textbox", { name: "Bullets 1", exact: true })).toHaveValue(
       /Kubernetes-based deployment pipelines/i,
     );
-    await expect(page.getByText(/Jan 2021/i)).toBeVisible();
+    await expect(page.getByLabel("Employment start date 1", { exact: true })).toHaveValue(/Jan 2021|2021-01/i);
     await expect(page.getByTestId("imported-project-0")).toHaveValue(/Observability Fabric/i);
     await expect(page.getByTestId("imported-education-0")).toHaveValue(/Cascadia University/i);
     await expect(page.getByTestId("imported-education-degree-0")).toHaveValue(/B\.?S\.?/i);
@@ -64,6 +66,33 @@ test.describe("resume import interactions", () => {
     await expect(page.getByTestId("imported-cert-0")).toHaveValue(/AWS Solutions Architect Associate/i);
     await expect(page.getByTestId("imported-publication-0")).toHaveValue(/Reliable Rollouts/i);
     await expect(page.getByLabel(/job title 2/i)).toHaveCount(0);
+    const contact = page.locator("details").filter({ has: page.locator("#full-name") }).first();
+    if (!(await contact.getAttribute("open"))) {
+      // Native details has an empty open attribute; use DOM state for the review accordion.
+      if (!(await contact.evaluate((node) => (node as HTMLDetailsElement).open))) await contact.locator(":scope > summary").click();
+    }
+    await page.getByTestId("imported-full-name").fill("Jordan B. Blake");
+    await page.getByTestId("imported-email").fill("reviewed@example.com");
+    await page.getByTestId("imported-portfolio").fill("");
+    const education = page.locator(".focus-review-section").filter({ has: page.locator(":scope > summary", { hasText: "Education" }) });
+    await education.locator(":scope > summary").click();
+    await education.getByText("Edit education 1", { exact: true }).click();
+    await page.getByTestId("imported-education-0").fill("Reviewed University");
+    const certifications = page.locator(".focus-review-section").filter({ has: page.locator(":scope > summary", { hasText: "Certifications" }) });
+    await certifications.locator(":scope > summary").click();
+    await certifications.getByText("Edit certification 1", { exact: true }).click();
+    await page.getByRole("button", { name: "Remove certification 1", exact: true }).click();
+    await expect.poll(async () => page.evaluate(async () => {
+      const state = await (await fetch("/api/v1/profile/resume/import", { credentials: "include" })).json();
+      return [state.extraction?.contact?.fullName, state.extraction?.contact?.email,
+        state.extraction?.education?.[0]?.institution, state.extraction?.certificationEntries?.length];
+    })).toEqual(["Jordan B. Blake", "reviewed@example.com", "Reviewed University", 0]);
+    await page.reload();
+    await expect(page.getByTestId("imported-full-name")).toHaveValue("Jordan B. Blake");
+    await expect(page.getByTestId("imported-email")).toHaveValue("reviewed@example.com");
+    await expect(page.getByTestId("imported-portfolio")).toHaveValue("");
+    await expect(page.getByTestId("imported-education-0")).toHaveValue("Reviewed University");
+    await expect(page.getByTestId("imported-cert-0")).toHaveCount(0);
   });
 
   test("DOCX upload on Profile confirms imported employment after reload", async ({ page }) => {
@@ -96,6 +125,37 @@ test.describe("resume import interactions", () => {
     await expect(page.getByLabel(/job title 1/i)).toHaveValue(/Platform Engineer/i);
     await expect(page.getByLabel(/job title 2/i)).toHaveCount(0);
     await expect(page.locator("#identity-portfolio")).toHaveValue(/jordanblake\.dev/i);
+  });
+
+  test("mixed layout import separates job and education fields and keeps them after confirmation", async ({ page }) => {
+    await seedOnboardedUser(page, "import-layout");
+    await page.goto("/app/profile");
+    await page.getByRole("button", { name: /upload a resume/i }).click();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "layout.pdf", mimeType: "application/pdf", buffer: textToSimplePdf(LAYOUT_IMPORT_RESUME),
+    });
+    await expect(page.getByText(/ready — review|resume ready/i)).toBeVisible({ timeout: 90_000 });
+    async function expectCareerFields() {
+      await expect(page.getByLabel("Job title 1", { exact: true })).toHaveValue("Software Engineer");
+      await expect(page.getByLabel("Employer 1", { exact: true })).toHaveValue("Harbor Mutual");
+      await expect(page.getByLabel("Employment location 1", { exact: true })).toHaveValue("San Antonio, TX");
+      await expect(page.getByLabel("Employment start date 1", { exact: true })).toHaveValue("Jan 2024");
+      await expect(page.getByLabel("Job title 2", { exact: true })).toHaveCount(0);
+      await expect(page.getByTestId("imported-education-0")).toHaveValue("Lakeside Institute of Technology");
+      await expect(page.getByTestId("imported-education-degree-0")).toHaveValue("Master of Science");
+      await expect(page.getByTestId("imported-education-field-0")).toHaveValue("Information Technology");
+      await expect(page.getByTestId("imported-education-location-0")).toHaveValue("Chicago, IL");
+      await expect(page.getByLabel("Education start date 1", { exact: true })).toHaveValue("Jan 2023");
+      await expect(page.getByLabel("Graduation date 1", { exact: true })).toHaveValue("May 2024");
+      await expect(page.getByTestId("imported-education-1")).toHaveCount(0);
+      await expect(page.getByTestId("imported-project-0")).toHaveValue("Atlas Scheduler");
+      await expect(page.getByLabel("Project role 1", { exact: true })).toHaveValue("Lead Developer");
+    }
+    await expectCareerFields();
+    await page.getByRole("button", { name: /confirm import/i }).click();
+    await expect(page.getByText(/imported career details confirmed/i)).toBeVisible();
+    await page.reload();
+    await expectCareerFields();
   });
 
   test("image-only PDF stays failed with an OCR-unsupported message", async ({ page }) => {

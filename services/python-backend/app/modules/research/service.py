@@ -16,6 +16,14 @@ def synthesize_from_sources(*, company: str, sources: list[ResearchSource]) -> R
 
     Research output must never be treated as candidate career evidence.
     """
+    # Legacy collectors placed operational failures in supporting_text. Never promote
+    # these markers into employer findings, including on retries of persisted jobs.
+    failure_markers = (
+        "fetch failed:", "configured search would query", "live search is not enabled",
+        "returned no readable text", "no live search credentials configured",
+    )
+    sources = [source for source in sources if source.supporting_text.strip()
+               and not any(marker in source.supporting_text.lower() for marker in failure_markers)]
     if is_fictional_or_unsourced(company, sources):
         return ResearchSynthesizeResponse(
             findings=[
@@ -42,7 +50,7 @@ def synthesize_from_sources(*, company: str, sources: list[ResearchSource]) -> R
             title=source.title,
             summary=source.supporting_text[:400],
             confidence=source.confidence,
-            status="supported",
+            status="supported" if source.classification == "explicit" else "inferred",
             source_ids=[source.id],
         )
         for source in sources[:5]

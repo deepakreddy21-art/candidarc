@@ -1,147 +1,80 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { ArrowRight, ArrowUpRight, Menu, Pause, Play, X } from "lucide-react";
+import { useRef, useState } from "react";
+import { ArrowRight, Menu, Play } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Logo } from "@/components/brand/logo";
 import { ArcStory } from "@/components/brand/arc-story";
+import { ResumeStoryboard } from "@/components/brand/resume-storyboard";
 import { LayeredResumeDemo } from "@/components/brand/layered-resume-demo";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { product } from "@/config/product";
 import { cn } from "@/lib/utils";
 
 export default function LandingPage() {
-  const reduceMotion = useReducedMotion();
-  const [mounted, setMounted] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
+  const demoTrigger = useRef<HTMLButtonElement>(null);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
   const [compareMode, setCompareMode] = useState<"original" | "tailored">("tailored");
   const [showReasoning, setShowReasoning] = useState(false);
-  const reduce = !mounted || !!reduceMotion;
-  const dialogRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (!demoOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDemoOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    dialogRef.current?.querySelector<HTMLElement>("button, [href], video")?.focus();
-    return () => window.removeEventListener("keydown", onKey);
-  }, [demoOpen]);
 
   return (
     <div className="min-h-dvh bg-white text-foreground">
-      <header className="sticky top-0 z-40 border-b border-border/60 bg-white/90 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 sm:px-6">
-          <Logo />
-          <div className="ml-auto flex items-center gap-3">
-            <a href="#difference" className="hidden text-sm font-medium text-foreground-secondary hover:text-foreground sm:inline">
-              See the difference
+      <header className="focus-marketing-header">
+        <div className="focus-marketing-nav">
+          <Logo size="lg" />
+          <div className="ml-auto flex items-center gap-4 sm:gap-8">
+            <a href="#how-it-works" className="hidden text-base font-medium text-foreground-secondary hover:text-foreground sm:inline">
+              How it works
             </a>
-            <Link href="/sign-in" className="hidden text-sm font-medium text-foreground-secondary hover:text-foreground sm:inline">
+            <Link href="/sign-in" className="hidden text-base font-medium text-foreground-secondary hover:text-foreground sm:inline">
               Sign in
             </Link>
             <Link
               href="/sign-up"
-              className={cn(buttonVariants({ size: "sm" }), "hidden rounded-full px-4 sm:inline-flex")}
+              className={cn(buttonVariants({ size: "sm" }), "hidden rounded-full px-7 py-6 sm:inline-flex")}
             >
               Get started
-              <ArrowUpRight className="h-3.5 w-3.5" />
             </Link>
             <Link href="/sign-in" className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "sm:hidden")}>
               Sign in
             </Link>
-            <Button type="button" variant="ghost" size="icon" className="md:hidden" aria-label="Open menu" onClick={() => setMobileOpen(true)}>
+            <Button type="button" variant="ghost" size="icon" className="md:hidden" ref={menuTrigger} aria-label="Open menu" onClick={() => setMobileOpen(true)}>
               <Menu className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </header>
 
-      <AnimatePresence>
-        {mobileOpen ? (
-          <motion.div className="fixed inset-0 z-50 md:hidden" initial={reduce ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <button type="button" className="absolute inset-0 bg-black/40" aria-label="Close menu" onClick={() => setMobileOpen(false)} />
-            <motion.div
-              className="absolute inset-y-0 right-0 w-[min(100%,320px)] border-l border-border bg-surface p-5 shadow-[var(--shadow-md)]"
-              initial={reduce ? false : { x: 24 }}
-              animate={{ x: 0 }}
-              exit={{ x: 24 }}
-            >
-              <div className="mb-6 flex items-center justify-between">
-                <Logo size="sm" />
-                <Button type="button" variant="ghost" size="icon" aria-label="Close" onClick={() => setMobileOpen(false)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              <nav aria-label="Mobile menu" className="flex flex-col gap-2" onClick={() => setMobileOpen(false)}>
-                <a href="#difference" className="rounded-[10px] px-3 py-2.5 text-sm hover:bg-surface-2">
-                  See the difference
-                </a>
-                <a href="#how-it-works" className="rounded-[10px] px-3 py-2.5 text-sm hover:bg-surface-2">
-                  How it works
-                </a>
-                <Link href="/sign-in" className="rounded-[10px] px-3 py-2.5 text-sm hover:bg-surface-2">
-                  Sign in
-                </Link>
-                <Link href="/sign-up" className={cn(buttonVariants(), "mt-2 rounded-full")}>
-                  Get started
-                </Link>
-              </nav>
-            </motion.div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      <Dialog open={mobileOpen} onOpenChange={setMobileOpen}>
+        <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); menuTrigger.current?.focus(); }}><DialogTitle>Explore CandidArc</DialogTitle><DialogDescription>Find your next role and prepare your resume.</DialogDescription>
+          <nav aria-label="Mobile menu" className="grid gap-4">
+            <a href="#difference" onClick={() => setMobileOpen(false)}>See the difference</a>
+            <Link href="/sign-in">Sign in</Link><Link href="/sign-up">Get started</Link>
+          </nav>
+        </DialogContent>
+      </Dialog>
 
       <main>
         {/* Approved hero composition */}
-        <section className="relative overflow-hidden">
-          <div className="pointer-events-none absolute inset-0 arc-bg" aria-hidden />
-          <div className="relative mx-auto grid max-w-6xl items-center gap-10 px-4 pb-20 pt-12 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)] lg:gap-8 lg:pb-24 lg:pt-16">
-            <div className="max-w-xl">
-              <p className="inline-flex items-center gap-1.5 rounded-full bg-[var(--mint)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-foreground">
-                <ArrowUpRight className="h-3 w-3 text-headline" aria-hidden />
-                Your next move starts here
-              </p>
-              <h1 className="mt-5 text-[clamp(2rem,4.6vw,3.25rem)] font-bold leading-[1.12] tracking-tight text-foreground">
-                Get noticed for
-                <span className="block text-headline">what you can do.</span>
-              </h1>
-              <p className="mt-5 max-w-md text-base leading-relaxed text-foreground-secondary">
-                Find the right roles. Understand the team. Build a resume that brings your strongest experience forward.
-              </p>
-              <div className="mt-8 flex flex-wrap items-center gap-4">
-                <Link href="/sign-up" className={cn(buttonVariants({ size: "lg" }), "rounded-full px-6")}>
-                  Build my resume
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-2 text-sm font-medium text-foreground hover:text-headline"
-                  onClick={() => setDemoOpen(true)}
-                >
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full border border-border-strong bg-white">
-                    <Play className="h-3.5 w-3.5 fill-current" />
-                  </span>
-                  See it in action
-                </button>
-              </div>
-              <p className="mt-5 text-sm text-foreground-secondary">Have a resume? Bring it. Starting fresh? Start here.</p>
-            </div>
-
-            <div className="pb-10 pt-4 lg:pb-6 lg:pt-2">
-              <LayeredResumeDemo />
-            </div>
+        <section className="focus-hero" aria-labelledby="hero-title">
+        <div className="focus-hero-copy">
+          <p className="focus-eyebrow">YOUR NEXT MOVE STARTS HERE.</p>
+          <h1 id="hero-title">Get noticed for<br /><span>what you can do.</span></h1>
+          <p className="focus-hero-description">Find the right roles. Understand the team.<br className="hidden xl:block" /> Bring your strongest experience forward.</p>
+          <div className="focus-hero-actions">
+            <Link href="/sign-up" className={cn(buttonVariants({ size: "lg" }), "focus-primary-pill")}>Build my resume <ArrowRight size={22} aria-hidden /></Link>
+            <button type="button" className="focus-demo-trigger" ref={demoTrigger} onClick={() => setDemoOpen(true)}><span><Play size={19} fill="currentColor" aria-hidden /></span>See it in action</button>
           </div>
-        </section>
+          <p className="focus-hero-footnote">Have a résumé? Bring it. Starting fresh? Start here.</p>
+        </div>
+        <LayeredResumeDemo />
+      </section>
 
-        <section id="how-it-works" className="border-t border-border bg-canvas">
+      <section id="how-it-works" className="border-t border-border bg-canvas">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
             <h2 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">How it works</h2>
             <p className="mt-2 max-w-2xl text-foreground-secondary">A short path from profile to a résumé you can defend.</p>
@@ -258,82 +191,11 @@ export default function LandingPage() {
         </section>
       </main>
 
-      <AnimatePresence>
-        {demoOpen ? (
-          <motion.div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="demo-title"
-            initial={reduce ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <button type="button" className="absolute inset-0 bg-black/50" aria-label="Close demo" onClick={() => setDemoOpen(false)} />
-            <div ref={dialogRef} className="relative z-10 w-full max-w-3xl rounded-2xl border border-border bg-surface p-4 shadow-[var(--shadow-md)] sm:p-6">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 id="demo-title" className="text-lg font-semibold">
-                  Product demo
-                </h2>
-                <Button type="button" variant="ghost" size="icon" aria-label="Close" onClick={() => setDemoOpen(false)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              <DemoPlayer />
-            </div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-function DemoPlayer() {
-  const [playing, setPlaying] = useState(false);
-  const [hasMp4, setHasMp4] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetch("/marketing/demo-product.mp4", { method: "HEAD" })
-      .then((res) => {
-        if (!cancelled) setHasMp4(res.ok);
-      })
-      .catch(() => {
-        if (!cancelled) setHasMp4(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (hasMp4) {
-    return (
-      <div className="space-y-3">
-        <video className="aspect-video w-full rounded-xl bg-forest object-cover" controls playsInline preload="none" poster="/marketing/demo-poster.svg">
-          <source src="/marketing/demo-product.mp4" type="video/mp4" />
-          <track kind="captions" src="/marketing/demo-captions.vtt" srcLang="en" label="English" default />
-        </video>
-        <p className="text-xs text-foreground-secondary">Edited/condensed footage — not a timing guarantee.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="aspect-video overflow-hidden rounded-xl bg-[var(--forest)] p-6 text-[var(--on-forest)]">
-        <p className="text-sm font-medium text-[var(--fresh)]">Storyboard preview</p>
-        <ol className="mt-4 space-y-2 text-sm">
-          <li>0–8s · Upload or build profile</li>
-          <li>8–18s · Jobs + team signal</li>
-          <li>18–32s · Tailoring progress</li>
-          <li>32–45s · Preview & download</li>
-        </ol>
-        <p className="mt-6 text-xs text-[var(--on-forest)]/80">MP4 not bundled yet. Capture: docs/marketing-video.md</p>
-      </div>
-      <Button type="button" variant="secondary" size="sm" onClick={() => setPlaying((p) => !p)} aria-pressed={playing}>
-        {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-        {playing ? "Pause storyboard" : "Play storyboard"}
-      </Button>
+      <Dialog open={demoOpen} onOpenChange={setDemoOpen}>
+        <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); demoTrigger.current?.focus(); }} className="max-h-[90dvh] max-w-3xl overflow-y-auto"><DialogTitle>Product demo</DialogTitle>
+          <DialogDescription>See how your experience becomes a resume for a specific role. Examples use sample data.</DialogDescription><ResumeStoryboard />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

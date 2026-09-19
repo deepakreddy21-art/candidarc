@@ -7,7 +7,7 @@ import { newId } from "../../database/repositories";
 import { AppError } from "../../domain/types";
 import { previewHtmlFromDocument } from "../../resumes/document-renderer";
 import { buildResumeDocument } from "../../resumes/resume-document";
-import { syncCareerEvidenceFromProfile } from "../profile/career-evidence";
+import { careerFingerprint, reviewedCareerProfile, selectCareerEvidence, syncCareerEvidenceFromProfile } from "../profile/career-evidence";
 import { mapInternalStageToCustomer, needsInputForTechQuestions } from "../../resumes/customer-status";
 import {
   attachQualityProvenance,
@@ -139,9 +139,13 @@ export class CustomerGenerateService {
 
   async generate(ctx: AuthContext, input: GenerateInput) {
     const { user, tenantId } = this.tenant(ctx);
-    const profile = await this.repos.candidateProfiles.getByUser(tenantId, user.id);
+    const storedProfile = await this.repos.candidateProfiles.getByUser(tenantId, user.id);
+    const profile = storedProfile ? reviewedCareerProfile(storedProfile) : null;
+    if (storedProfile && ["pending_scan", "scan_clean", "extracting", "ready_for_review"].includes(storedProfile.resumeImportStatus ?? "") && profile === storedProfile) {
+      throw new AppError("PROFILE_REVIEW_REQUIRED", "Review and confirm the uploaded resume in Profile before tailoring.", 409);
+    }
     let ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
-    if (!ownedEvidence.length && profile) {
+    if (profile?.resumeImportExtraction) {
       await syncCareerEvidenceFromProfile(this.repos.evidence, {
         tenantId,
         userId: user.id,
@@ -149,6 +153,7 @@ export class CustomerGenerateService {
       });
       ownedEvidence = await this.repos.evidence.list(tenantId, { ownerUserId: user.id });
     }
+    ownedEvidence = selectCareerEvidence(ownedEvidence, profile ? careerFingerprint(profile) : undefined);
     if (!ownedEvidence.length) {
       throw new AppError(
         "PROFILE_EVIDENCE_REQUIRED",
@@ -207,6 +212,7 @@ export class CustomerGenerateService {
       candidateProfileId: profile?.id ?? null,
       metadata: {
         customerFacing: true,
+        candidateEvidenceFingerprint: profile ? careerFingerprint(profile) : undefined,
         autoAdvanceAudits: true,
         ...contactSnapshot,
         jobDescription,
@@ -234,6 +240,30 @@ export class CustomerGenerateService {
       },
     });
     return { workflowId: workflow.publicId, applicationId: app.publicId, status: "queued" as const };
+  }
+
+  async getCustomerVersion(ctx: AuthContext, workflowId: string, versionId: string) {
+    const { tenantId, user } = this.tenant(ctx);
+    const workflow = await this.repos.workflows.getByPublicId(tenantId, workflowId);
+    if (!workflow) throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
+    const app = await this.repos.applications.getByPublicId(tenantId, workflow.applicationPublicId);
+    if (!app || app.ownerUserId !== user.id || app.metadata?.customerFacing !== true) {
+      throw new AppError("WORKFLOW_NOT_FOUND", "Resume workflow not found", 404);
+    }
+    const finalIds = app.metadata?.customerFinalVersions;
+    if (!Array.isArray(finalIds) || !finalIds.includes(versionId)) {
+      throw new AppError("RESUME_VERSION_NOT_FOUND", "Checked resume version not found", 404);
+    }
+    const resume = await this.repos.resumes.getByApplication(tenantId, app.publicId);
+    const versions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
+    const version = versions.find((row) => row.publicId === versionId);
+    if (!version) throw new AppError("RESUME_VERSION_NOT_FOUND", "Checked resume version not found", 404);
+    return { id: version.publicId, label: `Version ${finalIds.indexOf(versionId) + 1}`, createdAt: version.createdAt,
+      document: buildResumeDocument({ sections: version.sections,
+        candidateName: String(app.metadata.candidateName ?? "Candidate"), role: app.role, company: app.company,
+        contact: contactFromMetadata(app.metadata),
+      }),
+    };
   }
 
   async getCustomerWorkflow(ctx: AuthContext, workflowId: string) {
@@ -314,6 +344,7 @@ export class CustomerGenerateService {
       downloads: { pdfReady, docxReady },
       documentRetryAvailable: previewable && !documentsAreReady,
     };
+    if (typeof currentApp.metadata?.refinementNotice === "string") response.refinementNotice = currentApp.metadata.refinementNotice;
     // Optional tech confirmation only while generation is waiting on input — hide after advance.
     if (mapped.status === "needs_input" && questions.length) {
       response.techQuestions = questions.filter((question) => question.evidenceStatus === "unanswered" || !question.evidenceStatus);
@@ -376,7 +407,7 @@ export class CustomerGenerateService {
           id: version.publicId,
           label: `Version ${index + 1}`,
           createdAt: version.createdAt,
-        }));
+        })).reverse();
         response.qualityReport = {
           name: qualityReport.name,
           summary: qualityReport.summary,
@@ -701,6 +732,7 @@ export class CustomerGenerateService {
     if (app.ownerUserId && app.ownerUserId !== user.id) {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
+    if (app.workflowStage !== "FINAL_READY") throw new AppError("RESUME_NOT_READY", "Wait for the current resume to finish before refining it.", 409);
     const selected = input.selectedText?.trim();
     const instruction = selected
       ? `Improve only this selected text (do not rewrite the rest of the resume unless required for grammar). Selected text:\n${selected}\n\nInstruction: ${input.instruction}`
@@ -713,7 +745,7 @@ export class CustomerGenerateService {
       applicationId: app.id,
       applicationPublicId: app.publicId,
       stage: "RESEARCH_QUEUED",
-      idempotencyKey: `customer-refine:${app.publicId}:${createHash("sha256").update(`${input.quickAction ?? ""}:${instruction}`).digest("hex")}:${cycleBase}`,
+      idempotencyKey: `customer-refine:${app.publicId}:${workflowId}:${createHash("sha256").update(`${input.quickAction ?? ""}:${instruction}`).digest("hex")}:${cycleBase}`,
       message: "Resume refinement queued",
       payload: {
         customerFacing: true,
@@ -721,6 +753,7 @@ export class CustomerGenerateService {
         cycleBase,
         refinementInstruction: instruction,
         quickAction: input.quickAction,
+        previousCustomerFiles: app.metadata?.customerFiles,
         selectedText: selected,
         sectionId: input.sectionId,
       },
@@ -732,6 +765,7 @@ export class CustomerGenerateService {
       metadata: {
         ...app.metadata,
         customerFiles: undefined,
+        refinementNotice: undefined,
         refinementInstruction: instruction,
         enhancementAvailable: false,
         customerWorkflowPublicId: workflow.publicId,

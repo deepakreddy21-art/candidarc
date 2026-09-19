@@ -1,7 +1,37 @@
 import { expect, test } from "@playwright/test";
-import { generateResumeViaApi, openJobs, seedOnboardedUser, waitForResumeReady } from "./helpers/session";
+import { DEFAULT_PASSWORD, generateResumeViaApi, openJobs, seedOnboardedUser, uniqueEmail, waitForResumeReady } from "./helpers/session";
 
 test.describe("loading and failure recovery", () => {
+  test("onboarding load failure blocks blank edits and Retry restores the saved step", async ({ page }) => {
+    await page.goto("/sign-up");
+    await page.locator("#name").fill("Onboarding Recovery Tester");
+    await page.locator("#email").fill(uniqueEmail("onboarding-load-retry"));
+    await page.locator("#password").fill(DEFAULT_PASSWORD);
+    await page.getByRole("button", { name: /create account/i }).click();
+    await expect(page.getByTestId("onboarding-step")).toHaveText(/step 1 of 3/i);
+    await page.locator("#target-roles").fill("Platform Engineer");
+    await page.locator("#target-roles").press("Enter");
+    await page.getByRole("button", { name: "Senior", exact: true }).click();
+    await page.getByRole("group", { name: /job types/i }).getByRole("button", { name: "Full-time" }).click();
+    await page.getByRole("group", { name: /workplace modes/i }).getByRole("button", { name: "Remote" }).click();
+    await page.getByRole("button", { name: /^continue$/i }).click();
+    await expect(page.getByTestId("onboarding-step")).toHaveText(/step 2 of 3/i);
+
+    await page.route("**/api/v1/profile/resume/import", (route) => route.fulfill({
+      status: 503, json: { error: { message: "Import status unavailable" } },
+    }));
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Could not load onboarding" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^continue$/i })).toHaveCount(0);
+    await expect(page.locator("#target-roles")).toHaveCount(0);
+    await page.unroute("**/api/v1/profile/resume/import");
+    await page.getByRole("button", { name: /^retry$/i }).click();
+    await expect(page.getByTestId("onboarding-step")).toHaveText(/step 2 of 3/i);
+    await page.getByRole("button", { name: /^back$/i }).click();
+    await expect(page.getByTestId("onboarding-step")).toHaveText(/step 1 of 3/i);
+    await expect(page.getByRole("button", { name: /remove platform engineer/i })).toBeVisible();
+  });
+
   test("navigation shows pending feedback before usable content", async ({ page }) => {
     await seedOnboardedUser(page, "nav-pending");
     await page.goto("/app/radar");

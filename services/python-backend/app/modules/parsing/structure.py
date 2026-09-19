@@ -3,7 +3,20 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
+
+from app.modules.parsing.fields import DATE_RANGE_RE, TITLE_HINT_RE, is_location
+from app.modules.parsing.links import strip_link_targets
+from app.modules.parsing.records import (
+    chunk_education as _chunk_education,
+)
+from app.modules.parsing.records import (
+    chunk_experience as _chunk_experience,
+)
+from app.modules.parsing.records import (
+    chunk_projects as _chunk_projects,
+)
 
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 PHONE_RE = re.compile(
@@ -17,43 +30,6 @@ LINKEDIN_RE = re.compile(r"(?:linkedin\.com/in/[\w-]+)", re.I)
 GITHUB_RE = re.compile(r"(?:github\.com/[\w-]+)", re.I)
 URL_RE = re.compile(r"https?://[^\s)]+", re.I)
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.I)
-DATE_RANGE_RE = re.compile(
-    r"(?P<start>(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{4}|\d{1,2}/\d{4}|\d{4})"
-    r"\s*[-–—to?]+\s*"
-    r"(?P<end>Present|Current|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{4}|\d{1,2}/\d{4}|\d{4})",
-    re.I,
-)
-GPA_RE = re.compile(r"\bGPA[:\s]+([0-4](?:\.\d{1,2})?(?:\s*/\s*4(?:\.0)?)?)", re.I)
-# Residential location: require a US-style state code, not "Java, Python".
-LOCATION_HINT_RE = re.compile(
-    r"\b([A-Z][a-zA-Z .'-]+,\s*[A-Z]{2}(?:\s*,\s*[A-Z][a-zA-Z .'-]+)?)\b"
-)
-DEGREE_TOKEN_RE = re.compile(
-    r"\b(?:"
-    r"B\.?S\.?|B\.?A\.?|B\.?Tech\.?|B\.?E\.?|"
-    r"M\.?S\.?|M\.?A\.?|M\.?Tech\.?|M\.?Eng\.?|MBA|M\.?B\.?A\.?|"
-    r"Ph\.?D\.?|Doctorate|"
-    r"Bachelor'?s?|Master'?s?|Associate'?s?|Diploma"
-    r")(?!\w)",
-    re.I,
-)
-TITLE_HINT_RE = re.compile(
-    r"\b("
-    r"engineer|developer|architect|manager|analyst|consultant|specialist|"
-    r"scientist|designer|intern|lead|director|officer|administrator|"
-    r"programmer|founder|owner|researcher|technician|coordinator"
-    r")\b",
-    re.I,
-)
-# Trailing location after employer/institution: "City, ST", "City, ST, Country", or "City, Country".
-EMPLOYER_LOCATION_RE = re.compile(
-    r",\s*("
-    r"[A-Za-z][A-Za-z .'-]+,\s*[A-Z]{2}(?:\s*,\s*[A-Za-z][A-Za-z .'-]+)?"
-    r"|"
-    r"[A-Za-z][A-Za-z .'-]+,\s*[A-Za-z][A-Za-z .'-]+"
-    r")\s*$"
-)
-
 
 def _normalize_pdf_quirks(text: str) -> str:
     """pypdf often replaces bullets and en-dashes with '?'."""
@@ -74,33 +50,40 @@ def _split_lines(text: str) -> list[str]:
 
 SECTION_ALIASES: dict[str, tuple[str, ...]] = {
     "experience": (
-        "experience",
-        "work experience",
-        "professional experience",
-        "employment",
-        "employment history",
-        "career experience",
-        "relevant experience",
-        "work history",
-        "professional history",
-        "work",
+        "experience", "work experience", "professional experience", "employment", "employment history",
+        "career experience", "relevant experience", "work history", "professional history", "work",
+        "career history", "professional background", "relevant work experience", "professional and work experience",
+        "work and professional experience", "industry experience", "employment experience", "career highlights",
     ),
-    "education": ("education", "academic background", "academics"),
-    "projects": ("projects", "personal projects", "selected projects", "side projects"),
-    "skills": ("skills", "technical skills", "core skills", "technologies", "tech stack"),
-    "certifications": ("certifications", "certificates", "licenses", "licenses & certifications"),
-    "publications": ("publications", "papers", "research", "selected publications"),
-    "summary": ("summary", "professional summary", "profile", "about", "objective"),
+    "education": ("education", "academic background", "academics", "academic qualifications", "educational qualifications",
+                  "educational background", "academic history", "education and qualifications", "qualifications"),
+    "projects": ("projects", "project experience", "personal projects", "selected projects", "side projects",
+                 "academic projects", "technical projects", "selected technical projects", "research projects",
+                 "relevant projects", "key projects", "professional projects", "project work"),
+    "skills": ("skills", "technical skills", "core skills", "technologies", "tech stack", "technical expertise",
+               "core competencies", "technical competencies", "skills and technologies", "technical proficiencies"),
+    "certifications": ("certifications", "certificates", "licenses", "licenses and certifications", "certifications and licenses",
+                       "professional certifications", "certifications and training"),
+    "publications": ("publications", "papers", "research", "selected publications", "research publications", "featured publications"),
+    "summary": ("summary", "professional summary", "profile", "about", "objective", "career summary", "summary of qualifications"),
+    "other": ("awards", "honors", "awards and honors", "volunteering", "volunteer experience", "interests", "hobbies",
+              "references", "languages", "activities", "leadership activities", "extracurricular activities"),
 }
 
 
 def _normalize_header(line: str) -> str | None:
-    cleaned = re.sub(r"[^a-zA-Z &/]", "", line).strip().lower()
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    if not cleaned or len(cleaned) > 48:
+    cleaned = unicodedata.normalize("NFKC", line).casefold().strip()
+    cleaned = re.sub(r"^\s*(?:\d+[.)]\s*|[•#]+\s*)", "", cleaned)
+    cleaned = re.sub(r"\s*\(continued\)\s*$", "", cleaned)
+    cleaned = re.sub(r"[&/]", " and ", cleaned)
+    cleaned = re.sub(r"[\s:—–_-]+", " ", cleaned).strip()
+    if not cleaned or len(cleaned) > 64:
         return None
+    compact = cleaned.replace(" ", "")
     for canonical, aliases in SECTION_ALIASES.items():
-        if cleaned in aliases:
+        # PDF tracking may introduce spaces between every glyph. Match only a
+        # complete known heading; never strip spaces from candidate field values.
+        if any(compact == alias.replace(" ", "") for alias in aliases):
             return canonical
     return None
 
@@ -201,17 +184,22 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
         if "|" in line and TITLE_HINT_RE.search(line) and not EMAIL_RE.search(line):
             continue
         # Contact lines often mix email/phone/location — still accept a state-coded city.
-        loc = LOCATION_HINT_RE.search(line)
-        if loc:
-            location = loc.group(1).strip()
+        cells = [re.sub(r"^location\s*:\s*", "", part.strip(), flags=re.I) for part in re.split(r"[|\t]|\s{2,}", line)]
+        location = next((part for part in cells if is_location(part)), None)
+        if location:
             break
         if ":" in line:
             continue
     name_parts = _split_name(full_name)
+    contact_warnings = ["headline_separated"] if headline else []
+    if phones:
+        digits = re.sub(r"\D", "", phones[0])
+        if not 7 <= len(digits) <= 15 or (phones[0].startswith("+1") and len(digits) != 11):
+            contact_warnings.append("phone_needs_review")
     provenance = _provenance(
         name_line or (emails[0] if emails else None),
-        confidence="high" if full_name and emails else "medium",
-        warnings=["headline_separated"] if headline else None,
+        confidence="high" if full_name and emails and not contact_warnings else "medium",
+        warnings=contact_warnings,
     )
     if headline:
         provenance["location_hint"] = f"headline:{headline}"
@@ -232,369 +220,6 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
         "provenance": provenance,
     }
 
-def _is_bullet_line(line: str) -> bool:
-    return bool(re.match(r"^[-•*●▪◦?]", line) or re.match(r"^\d+[.)]\s+", line))
-
-
-def _looks_like_role_header(line: str) -> bool:
-    """Require coherent employment-header evidence — not wrapped bullet fragments."""
-    if _is_bullet_line(line):
-        return False
-    if len(line) > 220:
-        return False
-    has_pipe = bool(re.search(r"\s+[|@]\s+", line))
-    has_dates = bool(DATE_RANGE_RE.search(line))
-    has_title = bool(TITLE_HINT_RE.search(line))
-    if has_pipe and (has_dates or has_title):
-        return True
-    if has_dates and has_title:
-        return True
-    # "Title — Company" without dates still allowed when title-like and short.
-    if has_title and re.search(r"\s+[-–—]\s+", line) and len(line) < 120:
-        return True
-    return False
-
-
-def _split_employer_location(rest: str) -> tuple[str | None, str | None]:
-    cleaned = rest.strip(" -,|/")
-    if not cleaned:
-        return None, None
-    match = EMPLOYER_LOCATION_RE.search(cleaned)
-    if match:
-        location = match.group(1).strip()
-        employer = cleaned[: match.start()].strip(" -,|/")
-        return employer or None, location or None
-    return cleaned, None
-
-
-def _parse_role_header(line: str) -> dict[str, Any]:
-    date_match = DATE_RANGE_RE.search(line)
-    start = date_match.group("start") if date_match else None
-    end = date_match.group("end") if date_match else None
-    without_dates = DATE_RANGE_RE.sub("", line).strip(" -,|/")
-
-    title: str | None = None
-    employer: str | None = None
-    location: str | None = None
-
-    pipe_parts = [p.strip() for p in re.split(r"\s+[|@]\s+", without_dates) if p.strip()]
-    if len(pipe_parts) >= 2:
-        title = pipe_parts[0]
-        employer, location = _split_employer_location(pipe_parts[1])
-        if len(pipe_parts) >= 3 and not location:
-            # Title | Company | Location
-            if employer and not EMPLOYER_LOCATION_RE.search(pipe_parts[1]):
-                location = pipe_parts[2]
-            else:
-                location = location or pipe_parts[2]
-    else:
-        dash_parts = [p.strip() for p in re.split(r"\s+[-–—]\s+", without_dates) if p.strip()]
-        if len(dash_parts) >= 2 and TITLE_HINT_RE.search(dash_parts[0]):
-            title = dash_parts[0]
-            employer, location = _split_employer_location(dash_parts[1])
-        elif "," in without_dates and not date_match:
-            left, right = [p.strip() for p in without_dates.split(",", 1)]
-            if TITLE_HINT_RE.search(left) and len(left) < 80 and len(right) < 100:
-                title, employer = left, right
-            else:
-                title = without_dates
-        else:
-            title = without_dates or None
-
-    return {
-        "title": title or None,
-        "employer": employer,
-        "location": location,
-        "start_date": start,
-        "end_date": end,
-        "is_current": _is_current_end(end),
-        "bullets": [],
-        "technologies": [],
-    }
-
-
-def _reflow_experience_lines(lines: list[str]) -> list[str]:
-    """Join wrapped bullet continuations before classifying employment boundaries."""
-    out: list[str] = []
-    for line in lines:
-        if not line:
-            continue
-        if _is_bullet_line(line) or _looks_like_role_header(line) or not out:
-            out.append(line)
-            continue
-        prev = out[-1]
-        # Soft wrap: previous line did not finish a sentence, or continuation is lowercase.
-        prev_incomplete = not re.search(r"[.!?]\s*$", prev.rstrip())
-        cont_lower = bool(re.match(r"^[a-z0-9]", line))
-        cont_midword = bool(re.search(r"[-–—/]\s*$", prev.rstrip()))
-        if _is_bullet_line(prev) or (not _looks_like_role_header(prev) and (prev_incomplete or cont_lower or cont_midword)):
-            out[-1] = f"{prev.rstrip()} {line.lstrip()}"
-            continue
-        # Orphan uppercase fragment after a complete bullet — still prefer attach over new role.
-        if _is_bullet_line(prev) or prev_incomplete:
-            out[-1] = f"{prev.rstrip()} {line.lstrip()}"
-            continue
-        out.append(line)
-    return out
-
-
-def _role_technologies(bullets: list[str]) -> list[str]:
-    """Technologies mentioned in role bullets only — never the global skills list."""
-    tech_hints = (
-        "Python", "TypeScript", "JavaScript", "Node.js", "React", "Kubernetes", "PostgreSQL",
-        "AWS", "GCP", "Azure", "Docker", "FastAPI", "Next.js", "Redis", "GraphQL", "Java",
-        "Go", "Rust", "SQL", "Spark", "TensorFlow", "PyTorch", "Spring Boot", "Kafka",
-        "Angular", "Hibernate", "Oracle", "DynamoDB",
-    )
-    found: list[str] = []
-    blob = " ".join(bullets)
-    for hint in tech_hints:
-        if re.search(rf"\b{re.escape(hint)}\b", blob, re.I):
-            found.append(hint)
-    return found[:40]
-
-
-def _chunk_experience(lines: list[str]) -> list[dict[str, Any]]:
-    jobs: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    source_order = 0
-    reflowed = _reflow_experience_lines(lines)
-
-    def flush() -> None:
-        nonlocal current, source_order
-        if current:
-            bullets = list(current.get("bullets") or [])
-            current["technologies"] = _role_technologies(bullets)
-            current["is_current"] = _is_current_end(current.get("end_date"))
-            current["source_order"] = source_order
-            current["provenance"] = _provenance(
-                " | ".join(
-                    p
-                    for p in [current.get("title"), current.get("employer"), current.get("start_date"), current.get("end_date")]
-                    if p
-                ),
-                confidence="high" if current.get("title") and current.get("employer") else "medium",
-            )
-            jobs.append(current)
-            source_order += 1
-            current = None
-
-    for line in reflowed:
-        if _looks_like_role_header(line):
-            flush()
-            header = _parse_role_header(line)
-            header["source_order"] = source_order
-            current = header
-            continue
-
-        if _is_bullet_line(line):
-            if not current:
-                current = {
-                    "title": None,
-                    "employer": None,
-                    "location": None,
-                    "start_date": None,
-                    "end_date": None,
-                    "is_current": None,
-                    "bullets": [],
-                    "technologies": [],
-                    "source_order": source_order,
-                }
-            current["bullets"].append(re.sub(r"^[-•*●▪◦?\d.)]+\s*", "", line).strip())
-            continue
-
-        date_match = DATE_RANGE_RE.search(line)
-        if date_match and current and not current.get("start_date"):
-            current["start_date"] = date_match.group("start")
-            current["end_date"] = date_match.group("end")
-            current["is_current"] = _is_current_end(current["end_date"])
-            remainder = DATE_RANGE_RE.sub("", line).strip(" -,|/•")
-            if remainder and not current.get("location") and len(remainder) < 60:
-                # Standalone date line may carry location only.
-                if not TITLE_HINT_RE.search(remainder):
-                    current["location"] = remainder
-            continue
-
-        if not current:
-            current = {
-                "title": None,
-                "employer": None,
-                "location": None,
-                "start_date": None,
-                "end_date": None,
-                "is_current": None,
-                "bullets": [],
-                "technologies": [],
-                "source_order": source_order,
-            }
-        # Non-header prose attaches to the open role as a bullet/continuation.
-        current["bullets"].append(line)
-
-    flush()
-    return [
-        job
-        for job in jobs
-        if job.get("title") or job.get("employer") or job.get("bullets")
-    ]
-
-
-def _parse_institution_location(text: str) -> tuple[str | None, str | None]:
-    cleaned = text.strip()
-    if not cleaned:
-        return None, None
-    match = EMPLOYER_LOCATION_RE.search(cleaned)
-    if match:
-        return cleaned[: match.start()].strip(" -,|/") or None, match.group(1).strip()
-    # Soft location: "..., Chicago, IL"
-    soft = re.search(r",\s*([A-Za-z .'-]+,\s*[A-Z]{2})\s*$", cleaned)
-    if soft:
-        return cleaned[: soft.start()].strip(" -,|/") or None, soft.group(1).strip()
-    return cleaned, None
-
-
-def _chunk_education(lines: list[str]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    year_re = re.compile(r"\b(19|20)\d{2}\b")
-    for line in lines[:20]:
-        gpa_match = GPA_RE.search(line)
-        honors = None
-        if re.search(r"\b(cum laude|magna cum laude|summa cum laude|dean'?s list|honors)\b", line, re.I):
-            honors_match = re.search(
-                r"\b(cum laude|magna cum laude|summa cum laude|dean'?s list|honors)\b",
-                line,
-                re.I,
-            )
-            honors = honors_match.group(1) if honors_match else None
-        parts = [p.strip() for p in re.split(r"\s+[|]\s+", line) if p.strip()]
-        if len(parts) < 2:
-            parts = [p.strip() for p in re.split(r"\s+[,—-]\s+", line) if p.strip()]
-        end_date = None
-        if parts and year_re.fullmatch(parts[-1] or ""):
-            end_date = parts.pop()
-        degree = institution = field = location = None
-
-        if len(parts) >= 3 and DEGREE_TOKEN_RE.search(parts[0]):
-            # Degree | Field | Institution[, Location]
-            degree = parts[0]
-            field = parts[1]
-            institution, location = _parse_institution_location(parts[2])
-        elif len(parts) >= 2 and DEGREE_TOKEN_RE.search(parts[0]):
-            left, right = parts[0], parts[1]
-            in_match = re.match(r"^(.+?)\s+in\s+(.+)$", left, re.I)
-            if in_match:
-                degree = in_match.group(1).strip()
-                field = in_match.group(2).strip()
-            else:
-                degree = left
-                # "B.S. Computer Science | Cascadia University" → degree+field glued
-                deg_field = re.match(
-                    rf"^({DEGREE_TOKEN_RE.pattern})\s+(.+)$",
-                    left,
-                    re.I,
-                )
-                if deg_field and not DEGREE_TOKEN_RE.fullmatch(left.strip()):
-                    degree = deg_field.group(1)
-                    field = deg_field.group(2)
-            institution, location = _parse_institution_location(right)
-            if len(parts) >= 3 and not location:
-                # Degree | Institution | Location-or-year already handled
-                extra = parts[2]
-                if not year_re.fullmatch(extra):
-                    if not institution:
-                        institution = extra
-                    elif not field:
-                        # Unusual ordering fallback
-                        field = institution
-                        institution, location = _parse_institution_location(extra)
-                    else:
-                        location = location or extra
-        elif len(parts) >= 2:
-            institution, location = _parse_institution_location(parts[0])
-            degree = parts[1]
-            field = parts[2] if len(parts) > 2 else None
-        else:
-            institution = parts[0] if parts else line
-
-        out.append(
-            {
-                "institution": institution,
-                "degree": degree,
-                "field": field,
-                "location": location,
-                "start_date": None,
-                "end_date": end_date,
-                "gpa": gpa_match.group(1).strip() if gpa_match else None,
-                "honors": honors,
-                "provenance": _provenance(line, confidence="high" if institution and degree else "medium"),
-            }
-        )
-    return out
-
-def _chunk_projects(lines: list[str]) -> list[dict[str, Any]]:
-    projects: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-
-    def flush() -> None:
-        nonlocal current
-        if not current:
-            return
-        bullets = list(current.get("bullets") or [])
-        if not current.get("description") and bullets:
-            current["description"] = bullets[0]
-        if not current.get("technologies"):
-            current["technologies"] = _role_technologies(bullets + [current.get("description") or ""])
-        current["provenance"] = _provenance(current.get("name"), confidence="medium")
-        projects.append(current)
-        current = None
-
-    for line in lines:
-        url_match = URL_RE.search(line)
-        if re.match(r"^[-•*]", line):
-            if not current:
-                current = {
-                    "name": None,
-                    "role": None,
-                    "organization": None,
-                    "start_date": None,
-                    "end_date": None,
-                    "description": "",
-                    "bullets": [],
-                    "technologies": [],
-                    "url": None,
-                    "repo_url": None,
-                }
-            desc = re.sub(r"^[-•*]+\s*", "", line)
-            current["bullets"].append(desc)
-            if not current.get("description"):
-                current["description"] = desc
-            stack = re.search(r"(?i)\bstack:\s*(.+)$", desc)
-            if stack:
-                current["technologies"] = [
-                    t.strip() for t in re.split(r"[,|/]", stack.group(1)) if 1 < len(t.strip()) < 60
-                ][:40]
-            continue
-        flush()
-        name = line
-        repo_url = url_match.group(0) if url_match and "github" in url_match.group(0).lower() else None
-        url = url_match.group(0) if url_match and not repo_url else None
-        if url_match:
-            name = URL_RE.sub("", line).strip(" -|")
-        current = {
-            "name": name or None,
-            "role": None,
-            "organization": None,
-            "start_date": None,
-            "end_date": None,
-            "description": "",
-            "bullets": [],
-            "technologies": [],
-            "url": url,
-            "repo_url": repo_url,
-        }
-    flush()
-    return projects
-
-
 def _chunk_certifications(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
     legacy: list[str] = []
     entries: list[dict[str, Any]] = []
@@ -609,8 +234,8 @@ def _chunk_certifications(lines: list[str]) -> tuple[list[str], list[dict[str, A
         issue_date = None
         credential_id = None
         credential_url = None
-        name = cleaned
-        parts = [p.strip() for p in re.split(r"\s+[|—-]\s+", cleaned) if p.strip()]
+        name = strip_link_targets(cleaned)
+        parts = [p.strip() for p in re.split(r"\s+[|—-]\s+", name) if p.strip()]
         if len(parts) >= 2:
             name = parts[0]
             # Second token may be issuer or year
@@ -620,6 +245,11 @@ def _chunk_certifications(lines: list[str]) -> tuple[list[str], list[dict[str, A
                 issuer = parts[1]
             if len(parts) >= 3 and re.search(r"(19|20)\d{2}", parts[2]):
                 issue_date = re.search(r"(19|20)\d{2}", parts[2]).group(0)  # type: ignore[union-attr]
+        # Explicit "Issuing body: Certified ..." carries both fields; a generic
+        # "Certification: ..." label does not identify an issuer.
+        prefix = re.match(r"^([^:]{2,120}):\s*((?:Certified|Certification|Certificate|Licensed)\b.+)$", name, re.I)
+        if prefix and not re.search(r"\b(?:certification|certificate|credential|license)\b", prefix[1], re.I):
+            issuer, name = prefix[1].strip(), prefix[2].strip()
         url_match = URL_RE.search(cleaned)
         if url_match:
             credential_url = url_match.group(0)
@@ -683,21 +313,61 @@ def _chunk_publications(lines: list[str]) -> list[dict[str, Any]]:
     return out
 
 
+def _skill_tokens(value: str) -> list[str]:
+    """Split list separators, preserving parenthetical detail and CI/CD-like names."""
+    value = strip_link_targets(value)
+    tokens: list[str] = []
+    start = depth = 0
+    for index, char in enumerate(value):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and (char in ",;•|\n" or (char == "/" and value[index-1:index] == " " and value[index+1:index+2] == " ")):
+            tokens.append(value[start:index].strip())
+            start = index + 1
+    tokens.append(value[start:].strip())
+    normalized = [re.sub(r"\s+", " ", token).strip() for token in tokens]
+    return [token for token in normalized if 1 < len(token) <= 128]
+
+
 def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
     flat: list[str] = []
     groups: list[dict[str, Any]] = []
+    category: str | None = None
+    pending = ""
+    table_category = False
+
+    def flush() -> None:
+        nonlocal pending
+        skills = _skill_tokens(pending)
+        if category and skills:
+            groups.append({"category": category[:128], "skills": skills[:100]})
+        flat.extend(skills)
+        pending = ""
+
     for line in lines:
-        if ":" in line and len(line.split(":", 1)[0]) < 40:
-            category, rest = line.split(":", 1)
-            skills = [s.strip() for s in re.split(r"[,•|/]", rest) if 1 < len(s.strip()) < 60]
-            if skills:
-                groups.append({"category": category.strip()[:128], "skills": skills[:100]})
-                flat.extend(skills)
+        label = re.match(r"^([^:]{1,80}):\s*(.*)$", line)
+        if label and label[1].casefold() not in {"http", "https"}:
+            flush()
+            category, pending = label[1].strip(), label[2].strip()
+            table_category = False
             continue
-        for s in re.split(r"[,•|/]", line):
-            token = s.strip()
-            if 1 < len(token) < 60:
-                flat.append(token)
+        # Word table cells and PDF columns preserve category/value boundaries.
+        # Do not classify a flat "Python | SQL, Java" list as a category row.
+        cells = re.split(r"\s*\|\s*|\s{2,}", line, maxsplit=1)
+        if len(cells) == 2 and len(cells[0]) <= 80 and re.search(r"[,;]", cells[1]) and (
+            " " in cells[0] or cells[0].casefold() in {"languages", "tools", "skills", "databases", "frameworks", "platforms", "collaboration"}
+        ):
+            flush()
+            category, pending = cells[0].strip(), cells[1].strip()
+            table_category = True
+            continue
+        # Wrapped lists continue their category. Standalone lines remain separate
+        # items, while a lowercase continuation preserves a wrapped phrase.
+        wraps = table_category or pending.endswith((",", ";", "|", "&")) or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
+        pending += (" " if wraps else "\n") + re.sub(r"^[-•*]\s+", "", line)
+    flush()
     # Deduplicate only normalized exact equivalents
     seen: set[str] = set()
     deduped: list[str] = []
@@ -719,9 +389,22 @@ def structure_resume_text(text: str, warnings: list[str] | None = None) -> dict[
     current = "header"
     for line in lines:
         header = _normalize_header(line)
+        inline_content = ""
+        if not header and ":" in line:
+            label, content = line.split(":", 1)
+            header = _normalize_header(label)
+            # "Languages: Python, SQL" is a skill group, and "Honors: ..."
+            # belongs to its school; these labels do not start other sections.
+            if (current == "skills" and label.strip().casefold() == "languages") or (
+                current == "education" and label.strip().casefold() == "honors"
+            ):
+                header = None
+            inline_content = content.strip() if header else ""
         if header:
             current = header
             sections.setdefault(current, [])
+            if inline_content:
+                sections[current].append(inline_content)
             continue
         sections.setdefault(current, []).append(line)
 
@@ -731,7 +414,8 @@ def structure_resume_text(text: str, warnings: list[str] | None = None) -> dict[
     projects = _chunk_projects(sections.get("projects", []))
     certifications_legacy, certification_entries = _chunk_certifications(sections.get("certifications", []))
     publications = _chunk_publications(sections.get("publications", []))
-    contact = _contact_from_text(lines, joined)
+    contact_lines = sections.get("header", [])
+    contact = _contact_from_text(contact_lines, "\n".join(contact_lines))
     professional_summary = "\n".join(sections.get("summary", [])).strip() or None
 
     missing: list[str] = []
@@ -751,7 +435,16 @@ def structure_resume_text(text: str, warnings: list[str] | None = None) -> dict[
         or (certification_entries and (contact.get("full_name") or skills))
         or publications
     )
-    quality = "high" if employment and skills else "medium" if usable else "low"
+    record_warnings = [
+        f"{section}[{index}].{warning}"
+        for section, rows in (("employment", employment), ("education", education), ("projects", projects))
+        for index, row in enumerate(rows)
+        for warning in row.get("provenance", {}).get("warnings", [])
+    ]
+    record_warnings.extend(f"contact.{warning}" for warning in contact.get("provenance", {}).get("warnings", [])
+                           if warning != "headline_separated")
+    missing.extend(record_warnings)
+    quality = "high" if employment and skills and not record_warnings else "medium" if usable else "low"
     if not usable:
         warnings.append("INSUFFICIENT_STRUCTURED_CONTENT")
 
@@ -783,6 +476,6 @@ def structure_resume_text(text: str, warnings: list[str] | None = None) -> dict[
         "page_count": None,
         "warnings": warnings,
         "extraction_quality": quality,
-        "missing_fields": missing,
+        "missing_fields": list(dict.fromkeys(missing))[:40],
         "usable": usable,
     }

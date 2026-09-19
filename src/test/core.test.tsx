@@ -31,8 +31,8 @@ describe("product config", () => {
 describe("CreatingState", () => {
   it("shows only three customer-facing résumé phases", () => {
     render(<CreatingState pipelineStage="tailoring" pipelineLabel="Tailoring your résumé" />);
-    expect(screen.getByLabelText("Resume progress")).toBeInTheDocument();
-    expect(screen.getByText("Researching the role")).toBeInTheDocument();
+    expect(screen.getByLabelText("Résumé preparation progress")).toBeInTheDocument();
+    expect(screen.getByText("Understanding the role")).toBeInTheDocument();
     expect(screen.getAllByText("Tailoring your résumé").length).toBeGreaterThan(0);
     expect(screen.getByText("Checking your résumé")).toBeInTheDocument();
     expect(screen.queryByText(/Final QA|HR Audit|EM Audit|V0/i)).not.toBeInTheDocument();

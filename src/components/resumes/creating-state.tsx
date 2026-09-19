@@ -1,122 +1,27 @@
-import { Card, CardContent } from "@/components/ui/card";
-
-import { cn } from "@/lib/utils";
-
-
+import { Check } from "lucide-react";
+import { ResumeMotionScene } from "@/components/brand/resume-motion-scene";
 
 const STAGES = [
-  { id: "understanding", label: "Researching the role" },
-  { id: "tailoring", label: "Tailoring your résumé" },
-  { id: "preparing", label: "Checking your résumé" },
+  { key: "understanding", label: "Understanding the role", caption: "The right details come together." },
+  { key: "tailoring", label: "Tailoring your résumé", caption: "Your strongest experience moves forward." },
+  { key: "preparing", label: "Checking your résumé", caption: "A final check before your review." },
 ] as const;
 
-
-
-function formatElapsed(ms?: number) {
-
-  if (!ms || ms < 1000) return "Just started";
-
-  const seconds = Math.floor(ms / 1000);
-
-  if (seconds < 60) return `${seconds}s elapsed`;
-
-  const minutes = Math.floor(seconds / 60);
-
-  return `${minutes}m ${seconds % 60}s elapsed`;
-
-}
-
-
-
-export function CreatingState({
-  children,
-  pipelineStage = "understanding",
-  pipelineLabel,
-  elapsedMs,
-  needsInput,
-}: {
+type CreatingStateProps = {
   children?: React.ReactNode;
-  pipelineStage?: (typeof STAGES)[number]["id"];
-  pipelineLabel?: string;
-  elapsedMs?: number;
-  needsInput?: boolean;
-}) {
+  pipelineStage?: "understanding" | "tailoring" | "preparing";
+  pipelineLabel?: string; elapsedMs?: number; needsInput?: boolean;
+};
 
-  const activeIndex = STAGES.findIndex((stage) => stage.id === pipelineStage);
-
-
-
-  return (
-
-    <div className="mx-auto max-w-3xl space-y-5">
-
-      <Card>
-
-        <CardContent className="flex min-h-56 flex-col items-center justify-center gap-5 px-6 py-8 text-center">
-
-          <div className="relative flex h-14 w-14 items-center justify-center" aria-hidden>
-            <svg viewBox="0 0 48 48" className="h-12 w-12" fill="none">
-              <path d="M8 34C8 20 20 8 34 8" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" />
-              <circle cx="34" cy="10" r="3.5" fill="var(--lime)" className="motion-safe:animate-pulse" />
-            </svg>
-          </div>
-
-          <div className="space-y-2">
-
-            <h1 className="text-xl font-semibold">
-              {needsInput ? "We need a few details" : (pipelineLabel ?? STAGES[activeIndex]?.label ?? "Working on your resume…")}
-            </h1>
-            <p className="text-sm text-foreground-secondary">
-              {needsInput
-                ? "Add a few missing profile details so we can finish your resume."
-                : `${formatElapsed(elapsedMs)} · Still working — reload this page anytime to check progress.`}
-            </p>
-
-          </div>
-
-          <ol className="grid w-full max-w-md gap-2 sm:grid-cols-3" aria-label="Resume progress">
-
-            {STAGES.map((stage, index) => (
-
-              <li
-
-                key={stage.id}
-
-                className={cn(
-
-                  "rounded-lg border px-3 py-2 text-xs",
-
-                  index < activeIndex
-
-                    ? "border-success/30 bg-success/5 text-success"
-
-                    : index === activeIndex
-
-                      ? "border-accent/40 bg-accent/5 text-foreground"
-
-                      : "border-border text-foreground-muted",
-
-                )}
-
-              >
-
-                {stage.label}
-
-              </li>
-
-            ))}
-
-          </ol>
-
-        </CardContent>
-
-      </Card>
-
-      {children}
-
-    </div>
-
-  );
-
+export function CreatingState({ children, pipelineStage = "understanding", pipelineLabel, elapsedMs = 0, needsInput }: CreatingStateProps) {
+  const index = Math.max(0, STAGES.findIndex((item) => item.key === pipelineStage));
+  const elapsed = elapsedMs < 1000 ? "Just started" : elapsedMs < 60_000 ? `${Math.floor(elapsedMs / 1000)}s elapsed` : `${Math.floor(elapsedMs / 60_000)}m elapsed`;
+  return <div className="focus-creating">
+    <header><p className="focus-eyebrow">BUILT AROUND YOU</p><h1>{needsInput ? "We need a few details" : "Watch your experience come into focus."}</h1><p>{needsInput ? "Add what’s missing so we can continue." : "Three quiet moments. One résumé built around you."}</p></header>
+    <ol className="focus-pipeline" aria-label="Résumé preparation progress">{STAGES.map((item, i) => <li key={item.key} data-state={i < index ? "complete" : i === index ? "active" : "pending"} aria-current={i === index ? "step" : undefined}><span>{i < index ? <Check size={18} aria-hidden /> : `0${i + 1}`}</span><p>{item.label}</p></li>)}</ol>
+    <ResumeMotionScene stage={pipelineStage} />
+    <div className="focus-creating-status" role="status"><h2>{needsInput ? "Waiting for your details" : STAGES[index].caption}</h2><p>{pipelineLabel && pipelineLabel !== STAGES[index].label ? `${pipelineLabel} · ` : ""}{elapsed}</p></div>
+    <p className="text-center text-sm text-foreground-secondary">Your job details are saved. You can leave this page and return to check progress.</p>
+    {children}
+  </div>;
 }
-

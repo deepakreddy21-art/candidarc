@@ -304,3 +304,28 @@ def test_constant_time_token_comparison() -> None:
     source = inspect.getsource(require_service_token)
     # The function should use hmac.compare_digest
     assert "compare_digest" in source, "Token comparison should use hmac.compare_digest"
+
+
+def test_research_failures_are_not_employer_findings() -> None:
+    from app.domain.schemas import ResearchSource
+
+    for message in ["Fetch failed: timeout", "Configured search would query Acme", "Returned no readable text"]:
+        result = synthesize_from_sources(company="Acme", sources=[ResearchSource(
+            id="failed-source", url="https://example.com/engineering", title="Engineering",
+            accessed_at="2026-09-18", supporting_text=message,
+        )])
+        assert result.company_research_status == "unavailable"
+        assert result.sources == []
+        assert all(finding.status == "unavailable" for finding in result.findings)
+
+
+def test_public_reference_keeps_inferred_status() -> None:
+    from app.domain.schemas import ResearchSource
+
+    result = synthesize_from_sources(company="Acme", sources=[ResearchSource(
+        id="article", url="https://example.com/engineering", title="Engineering article",
+        accessed_at="2026-09-18", supporting_text="Acme describes PostgreSQL in this article.",
+        classification="inferred",
+    )])
+    assert result.findings[0].status == "inferred"
+    assert result.findings[0].source_ids == ["article"]

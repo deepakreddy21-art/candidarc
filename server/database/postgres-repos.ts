@@ -1857,6 +1857,7 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
               COALESCE(${s.workflowRuns.payload}, '{}'::jsonb),
               ARRAY[${claimKey}]::text[],
               jsonb_build_object(
+                'token', ${newId("claim")}::text,
                 'at', now(),
                 'expiresAt', now() + (${STAGE_CLAIM_LEASE_MS} * interval '1 millisecond'),
                 'attempt', ${s.workflowRuns.attempt}
@@ -1910,6 +1911,23 @@ function createWorkflowRepository(db: Db): Repositories["workflows"] {
           .limit(1)
       )[0];
       return mapWorkflow(updated, application?.publicId ?? "");
+    },
+    releaseStageClaim: async (tenantId, runId, expectedStage, claim) => {
+      if (claim == null) return false;
+      const claimKey = `claimed:${expectedStage}`;
+      const running = expectedStage.endsWith("_QUEUED")
+        ? (expectedStage.replace(/_QUEUED$/, "_RUNNING") as WorkflowStage)
+        : null;
+      const rows = await db.update(s.workflowRuns).set({
+        payload: sql`COALESCE(${s.workflowRuns.payload}, '{}'::jsonb) - ${claimKey}`,
+        updatedAt: sql`now()`,
+      }).where(and(
+        eq(s.workflowRuns.tenantId, tenantId),
+        eq(s.workflowRuns.id, runId),
+        or(eq(s.workflowRuns.stage, expectedStage), running ? eq(s.workflowRuns.stage, running) : sql`false`),
+        sql`${s.workflowRuns.payload} -> ${claimKey} = ${JSON.stringify(claim)}::jsonb`,
+      )).returning({ id: s.workflowRuns.id });
+      return rows.length === 1;
     },
   };
 }
