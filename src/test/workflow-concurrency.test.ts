@@ -133,6 +133,12 @@ function createMockPythonClient() {
         },
       };
     }),
+    generateResumeOnce: vi.fn(async () => {
+      pythonClientCalls.push("generate-once");
+      return { resume: resumeDoc(0), provider: "mock", model: "mock", promptVersion: "single-test", latencyMs: 1,
+        usage: { inputTokens: 1, outputTokens: 1, estimatedCostCents: 2, costUnknown: false },
+        localValidation: { passed: true, violations: [], latency_ms: 1 } };
+    }),
     generateResume: vi.fn(async () => {
       pythonClientCalls.push("generate");
       return {
@@ -325,15 +331,13 @@ describe("workflow concurrency", () => {
     let run = (await repos.workflows.getByPublicId(tenantId, created.workflowId))!;
     await pipeline.handleStage(run);
     run = (await repos.workflows.getById(run.id))!;
-    await pipeline.handleStage(run);
-    run = (await repos.workflows.getById(run.id))!;
     expect(run.stage).toBe("V0_GENERATING");
     const client = pythonClient.getPythonIntelligenceClient();
-    vi.mocked(client.generateResume).mockRejectedValueOnce(new AppError("TEMPORARY_PROVIDER_FAILURE", "Unavailable", 503, undefined, true));
+    vi.mocked(client.generateResumeOnce).mockRejectedValueOnce(new AppError("TEMPORARY_PROVIDER_FAILURE", "Unavailable", 503, undefined, true));
     await expect(pipeline.handleStage(run)).rejects.toBeDefined();
     expect((await repos.workflows.getById(run.id))?.payload["claimed:V0_GENERATING"]).toBeUndefined();
     await pipeline.handleStage((await repos.workflows.getById(run.id))!);
-    expect((await repos.workflows.getById(run.id))?.stage).toBe("HR_AUDIT_1_RUNNING");
+    expect((await repos.workflows.getById(run.id))?.stage).toBe("FINAL_QA_RUNNING");
   });
 
   it("a no-change refinement releases usage and restores the prior checked documents", async () => {
@@ -666,7 +670,7 @@ describe("workflow concurrency", () => {
     expect(app?.workflowStage).toBe("V1_GENERATING");
   });
 
-  it("full HR1/EM1/HR2/EM2 cycle produces resume versions V0-V4 once", async () => {
+  it("new customer workflow produces one version and no HR/EM calls", async () => {
     const { repos, engine, userId, tenantId } = await setupWorkflowRuntime(true);
     const service = new CustomerGenerateService(repos, engine, getStorage());
     const ctx = context(userId, tenantId, repos);
@@ -688,6 +692,8 @@ describe("workflow concurrency", () => {
     const resume = await repos.resumes.getByApplication(tenantId, created.applicationId);
     const versions = resume ? await repos.resumes.listVersions(tenantId, resume.publicId) : [];
     const versionNumbers = versions.map((version) => version.versionNumber).sort((a, b) => a - b);
-    expect(versionNumbers).toEqual([0, 1, 2, 3, 4]);
+    expect(versionNumbers).toEqual([0]);
+    expect(pythonClientCalls.filter(c => c === "generate-once")).toHaveLength(1);
+    expect(pythonClientCalls.filter(c => /audit|regenerate|final/.test(c))).toHaveLength(0);
   }, 35_000);
 });

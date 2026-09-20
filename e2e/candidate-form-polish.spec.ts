@@ -51,7 +51,7 @@ test("status conflicts stay visibly unsaved until the server state is reloaded",
   await expect(table.getByRole("alert")).toHaveCount(0);
 });
 
-test("preview text selection reaches refinement and can be cleared", async ({ page }) => {
+test("preview text stays selectable without promising an unavailable rewrite", async ({ page }) => {
   await seedOnboardedUser(page, "preview-selection");
   const generated = await generateResumeViaApi(page);
   await page.goto(`/app/resumes/${generated.workflowId}`);
@@ -66,7 +66,7 @@ test("preview text selection reaches refinement and can be cleared", async ({ pa
     return selection.toString().trim();
   });
   expect(selected.length).toBeGreaterThan(0);
-  await expect(page.getByText(/Improving selected text only/)).toContainText(selected.slice(0, 180));
-  await page.getByRole("button", { name: "Clear selection" }).click();
   await expect(page.getByText(/Improving selected text only/)).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: /what would you like to improve/i })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /download pdf/i })).toBeVisible();
 });

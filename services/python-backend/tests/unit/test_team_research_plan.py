@@ -112,7 +112,8 @@ def test_product_offering_and_jd_mentions_do_not_authorize_team_usage():
 
 
 def test_unknown_tech_is_removed_and_candidate_tools_are_preserved():
-    assert research(technologies=["PostgreSQL", "Kafka"]).findings[0].technologies == ["PostgreSQL"]
+    assert research(technologies=["PostgreSQL", "Kafka"]).findings == []
+    assert research(technologies=["PostgreSQL"]).findings[0].technologies == ["PostgreSQL"]
     result = authorize_plan(plan(candidate_technologies=["AWS", "OCI", "Kafka"]), [evidence()], [finding()])
     assert result[0].candidate_technologies == ["AWS"]
 

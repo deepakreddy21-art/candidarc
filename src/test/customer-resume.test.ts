@@ -167,7 +167,7 @@ describe("customer resume generation", () => {
     expect(status).not.toHaveProperty("blocked");
   });
 
-  it("late evidence marks enhancement available without overwriting prior versions", async () => {
+  it("late evidence preserves the immutable operation without promising a paid enhancement", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
     await seedOwnedEvidence(repos, tenantId, userId);
@@ -195,10 +195,8 @@ describe("customer resume generation", () => {
     const answered = await service.submitTechAnswers(ctx, generated.workflowId, [
       { id: "tech_k8s", answer: "yes_professional", evidence: "Ran production clusters at Acme." },
     ]);
-    expect(answered.enhancementAvailable).toBe(true);
-    const enhanced = await service.createEnhancedVersion(ctx, generated.workflowId);
-    expect(enhanced.workflowId).not.toBe(generated.workflowId);
-    expect(enhanced.status).toBe("queued");
+    expect(answered.enhancementAvailable).toBe(false);
+    await expect(service.createEnhancedVersion(ctx, generated.workflowId)).rejects.toMatchObject({ code: "LOCAL_REWRITE_UNAVAILABLE" });
   });
 
   it("creates non-empty, correctly identified PDF and DOCX documents", async () => {
@@ -210,7 +208,7 @@ describe("customer resume generation", () => {
     expect(docx.readUInt32LE(0)).toBe(0x04034b50);
   }, 60_000);
 
-  it("refinement preserves old versions and allocates a new pipeline cycle", async () => {
+  it("historical refinement records preserve old versions and allocate a new cycle", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
     await seedOwnedEvidence(repos, tenantId, userId);
@@ -221,7 +219,7 @@ describe("customer resume generation", () => {
     const resume = await repos.resumes.createResume({ id: newId("res"), publicId: newId("resp"), tenantId, applicationId: app!.id, applicationPublicId: app!.publicId, title: "Resume", templateId: "clean", length: "one-page", currentVersionPublicId: null });
     const old = await repos.resumes.appendVersion({ id: newId("rv"), publicId: newId("rvp"), tenantId, resumeId: resume.id, versionNumber: 4, versionLabel: "V4", score: 80, scoreBreakdown: {}, notes: "", triggeredBy: "initial", sections: [], idempotencyKey: "old" });
     await expect(service.refine(ctx, generated.workflowId, { instruction: "Emphasize leadership" })).rejects.toMatchObject({ code: "RESUME_NOT_READY" });
-    await repos.applications.update(tenantId, generated.applicationId, { workflowStage: "FINAL_READY", metadata: { ...app!.metadata, qualityReport: { versionPublicId: old.publicId, score: 99 } } });
+    await repos.applications.update(tenantId, generated.applicationId, { workflowStage: "FINAL_READY", metadata: { ...app!.metadata, generationPolicy: "legacy", qualityReport: { versionPublicId: old.publicId, score: 99 } } });
     const refined = await service.refine(ctx, generated.workflowId, { instruction: "Emphasize leadership" });
     expect((await repos.resumes.getVersion(tenantId, old.publicId))?.publicId).toBe(old.publicId);
     const run = await repos.workflows.getByPublicId(tenantId, refined.workflowId);

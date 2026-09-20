@@ -59,7 +59,8 @@ Requirements: 5+ years experience, strong ownership.`);
     expect(bytes.subarray(0, 5).toString()).toBe("%PDF-");
     const text = await pdfContains(bytes, ["Harbor Systems", "Audit Tester", "Engineer"]);
     expect(text).toMatch(/S[aã?]o Paulo|Paulo/);
-    expect(text).toMatch(/impact narrative|systems ownership/i);
+    expect(text).toMatch(/na[iï?]ve clustering/i);
+    expect(text).not.toMatch(/impact narrative|systems ownership/i);
     expect(text).not.toMatch(/I worked at Northwind Labs as /i);
   });
 
@@ -81,7 +82,8 @@ Requirements: 5+ years experience, strong ownership.`);
     expect(bytes.readUInt32LE(0)).toBe(0x04034b50);
     const text = await docxContains(bytes, ["Harbor Systems", "Audit Tester", "Engineer"]);
     expect(text).toMatch(/São Paulo|Sao Paulo/i);
-    expect(text).toMatch(/impact narrative|systems ownership/i);
+    expect(text).toMatch(/na[iï]ve clustering/i);
+    expect(text).not.toMatch(/impact narrative|systems ownership/i);
     expect(text).not.toMatch(/I worked at Northwind Labs as /i);
     await page.unrouteAll({ behavior: "ignoreErrors" });
   });
@@ -129,36 +131,18 @@ Requirements: 5+ years experience, strong ownership.`);
     await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 
-  test("refine creates a new version without restoring immutable history", async ({ page }) => {
-    test.setTimeout(180_000);
-    await seedOnboardedUser(page, "resume-refine");
+  test("local capability notice does not advertise a paid rewrite", async ({ page }) => {
+    await seedOnboardedUser(page, "resume-local");
     const generated = await generateResumeViaApi(page);
     await page.goto(`/app/resumes/${generated.workflowId}`);
     await waitForResumeReady(page);
-    const history = page.getByRole("heading", { name: /version history/i });
-    await expect(history).toBeVisible();
-    await page.getByRole("textbox", { name: /what would you like to improve/i }).fill("Emphasize TypeScript");
-    const refined = page.waitForResponse(
-      (res) => res.url().includes("/refine") && res.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: /create new version/i }).click();
-    const refinedResponse = await refined;
-    expect(refinedResponse.ok()).toBeTruthy();
-    const nextVersion = await refinedResponse.json();
-    await page.waitForURL(`**/app/resumes/${nextVersion.workflowId}`);
-    await waitForResumeReady(page);
     await expect(page.getByRole("heading", { name: /version history/i })).toBeVisible();
-    const compare = page.getByRole("button", { name: /^compare$/i }).first();
-    await expect(compare).toBeVisible();
-    await compare.click();
-    const comparison = page.getByRole("region", { name: "Resume version comparison" });
-    await expect(comparison).toBeVisible();
-    await expect(comparison.getByRole("heading", { name: /Version 1 compared with current/i })).toBeVisible();
-    await expect(comparison.getByRole("status")).toHaveText(/[1-9]\d* section.*changed/i);
-    await expect(comparison).toContainText("TypeScript");
+    await expect(page.getByText(/Free-form rewriting is not available yet/)).toBeVisible();
+    await expect(page.getByRole("button", { name: /create new version/i })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /download pdf/i })).toBeVisible();
   });
 
-  test("writing review exposes ten criteria and sends a flagged bullet to the editor", async ({ page }) => {
+  test("local writing review exposes ten criteria without an unsupported edit action", async ({ page }) => {
     await seedOnboardedUser(page, "resume-writing-review");
     const generated = await generateResumeViaApi(page);
     await page.goto(`/app/resumes/${generated.workflowId}`);
@@ -174,32 +158,26 @@ Requirements: 5+ years experience, strong ownership.`);
     await outcomes.locator("summary").click();
     const finding = outcomes.locator("li").first();
     await expect(finding.locator("blockquote")).toBeVisible();
-    const text = await finding.locator("blockquote").innerText();
-    await finding.getByRole("button", { name: "Review this text" }).click();
-    await expect(page.getByText("Improving selected text only:", { exact: false })).toContainText(text.slice(0, 180));
-    const editor = page.getByRole("textbox", { name: /what would you like to improve/i });
-    await expect(editor).toBeFocused();
-    await page.getByRole("button", { name: "Use more precise action verbs", exact: true }).click();
-    await expect(editor).toHaveValue("Use more precise action verbs");
-    await page.getByRole("button", { name: "Clear selection", exact: true }).click();
-    await expect(page.getByText("Improving selected text only:", { exact: false })).toHaveCount(0);
+    await expect(finding.getByRole("button", { name: "Review this text" })).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: /what would you like to improve/i })).toHaveCount(0);
     await expect(page.getByRole("link", { name: /download pdf/i })).toBeVisible();
   });
 
-  test("a refinement with no safe change keeps the checked resume downloadable", async ({ page }) => {
+  test("a direct unsupported rewrite preserves the current version and downloads", async ({ page }) => {
     await seedOnboardedUser(page, "resume-no-change");
     const generated = await generateResumeViaApi(page);
     await page.goto(`/app/resumes/${generated.workflowId}`);
     await waitForResumeReady(page);
-    await page.getByRole("button", { name: /make it more concise/i }).click();
-    const refined = page.waitForResponse((res) => res.url().includes("/refine") && res.request().method() === "POST");
-    await page.getByRole("button", { name: /create new version/i }).click();
-    const response = await refined;
-    expect(response.ok()).toBeTruthy();
-    const next = await response.json();
-    await page.waitForURL(`**/app/resumes/${next.workflowId}`);
-    await expect(page.getByRole("status").filter({ hasText: "Your previous resume is unchanged" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: /your tailored resume/i })).toBeVisible();
+    const result = await page.evaluate(async id => {
+      const csrf = decodeURIComponent(document.cookie.split("; ").find(v => v.startsWith("candidarc_csrf="))?.split("=")[1] ?? "");
+      const response = await fetch(`/api/v1/resumes/workflows/${id}/refine`, { method: "POST",
+        headers: { "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify({ instruction: "Make it more concise" }) });
+      return { status: response.status, body: await response.json() };
+    }, generated.workflowId);
+    expect(result.status).toBe(422);
+    expect(result.body.error.code).toBe("LOCAL_REWRITE_UNAVAILABLE");
+    await page.reload();
+    await waitForResumeReady(page);
     await expect(page.getByRole("button", { name: /^compare$/i })).toHaveCount(0);
     const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("link", { name: /download pdf/i }).click()]);
     await pdfContains(await readFile((await download.path())!), ["Harbor Systems", "Audit Tester"]);

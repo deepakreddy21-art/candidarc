@@ -180,7 +180,7 @@ async def test_missing_credentials_in_production(monkeypatch: pytest.MonkeyPatch
         )
 
 
-def test_production_ready_checks_per_role(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_single_request_readiness_requires_generation_not_removed_audit_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_MODE", "production")
     monkeypatch.setenv("AI_MODE", "live")
     monkeypatch.setenv("PYTHON_BACKEND_TOKEN", "prod-token-not-dev-prefix-32chars!!")
@@ -192,7 +192,13 @@ def test_production_ready_checks_per_role(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("ANTHROPIC_AUDIT_API_KEY", raising=False)
     get_settings.cache_clear()
     errors = get_settings().ready_errors()
-    assert any("Audit role" in e for e in errors)
+    assert not any("Audit role" in e for e in errors)
+    assert not any("Generation role" in e for e in errors)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_GENERATION_API_KEY", raising=False)
+    get_settings.cache_clear()
+    assert any("Generation role" in e for e in get_settings().ready_errors())
+    get_settings.cache_clear()
 
 
 def test_production_ready_requires_postgres_evidence_store(monkeypatch: pytest.MonkeyPatch) -> None:
