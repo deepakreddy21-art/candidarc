@@ -13,6 +13,7 @@ from app.domain.schemas import (
     ResumeBullet,
     ResumeDocument,
     ResumeSection,
+    SectionType,
     UserConfirmation,
 )
 from app.modules.scoring.service import score_resume
@@ -691,6 +692,11 @@ def validate_resume_claims(
         elif section_types & {"certifications", "awards"}:
             org_code = "UNSUPPORTED_CERTIFICATION"
 
+        if section.type == "publications" and section.content:
+            publication_corpus = _evidence_corpus([item for item in evidence if item.source_type == "publication"])
+            if not publication_corpus or not _text_grounded_in_corpus(section.content, publication_corpus, set()):
+                violations.append("UNSUPPORTED_PUBLICATION")
+
         # Section content (summary / skills / education body / cert text)
         if section.content:
             violations.extend(detect_injection_markers(section.content, code_prefix="PROMPT_INJECTION"))
@@ -742,6 +748,12 @@ def validate_resume_claims(
                 resume_item.dates or "",
             ]
             item_blob = " ".join(part for part in item_fields if part)
+            if section.type == "publications":
+                publication_corpus = _evidence_corpus([item for item in associated if item.source_type == "publication"])
+                if not publication_corpus or any(
+                    field and not _text_grounded_in_corpus(field, publication_corpus, set()) for field in item_fields
+                ):
+                    violations.append("UNSUPPORTED_PUBLICATION")
             if item_blob.strip():
                 violations.extend(detect_injection_markers(item_blob, code_prefix="PROMPT_INJECTION"))
                 item_atoms = extract_claim_atoms(item_blob)
@@ -826,6 +838,10 @@ def validate_resume_claims(
             _append_metric_semantic_violations(bullet.text, cited, violations)
 
             source_types = {(item.source_type or "").lower() for item in cited}
+            if section.type == "publications":
+                publication_corpus = _evidence_corpus([item for item in cited if item.source_type == "publication"])
+                if not publication_corpus or not _text_grounded_in_corpus(bullet.text, publication_corpus, set()):
+                    violations.append("UNSUPPORTED_PUBLICATION")
             if section_types & {"education"} and "education" not in source_types:
                 violations.append("UNSUPPORTED_EDUCATION")
             if section_types & {"certifications", "awards"} and not source_types.intersection(
@@ -1130,6 +1146,21 @@ def build_grounded_resume(
                 bullets=[bullet_from(item) for item in education],
             )
         )
+
+    optional_sections: list[tuple[str, SectionType, str]] = [
+        ("project", "projects", "Project Experience"),
+        ("certification", "certifications", "Certifications"),
+        ("publication", "publications", "Publications"),
+    ]
+    for source_type, section_type, title in optional_sections:
+        supported = [item for item in augmented if item.source_type == source_type]
+        if supported:
+            sections.append(ResumeSection(
+                type=section_type,
+                title=title,
+                order=len(sections),
+                bullets=[bullet_from(item) for item in supported],
+            ))
 
     scored = score_resume(
         sections=sections,

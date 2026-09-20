@@ -83,7 +83,7 @@ const resumeItemSchema = z.object({
 
 export const resumeSectionSchema = z.object({
   id: z.string().optional(),
-  type: z.enum(["summary", "skills", "experience", "projects", "education", "certifications"]),
+  type: z.enum(["summary", "skills", "experience", "projects", "education", "certifications", "publications"]),
   title: z.string(),
   order: z.number().int().nonnegative().optional(),
   content: z.string().optional(),

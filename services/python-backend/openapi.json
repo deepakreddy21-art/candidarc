@@ -3511,7 +3511,8 @@
               "experience",
               "projects",
               "education",
-              "certifications"
+              "certifications",
+              "publications"
             ],
             "title": "Type",
             "type": "string"
@@ -3589,7 +3590,8 @@
               "experience",
               "projects",
               "education",
-              "certifications"
+              "certifications",
+              "publications"
             ],
             "title": "Type",
             "type": "string"

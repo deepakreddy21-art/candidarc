@@ -1,122 +1,90 @@
-/**
- * CandidArc ATS v1 — canonical résumé HTML shared by browser preview and PDF print.
- * Single-column ATS-safe reading order. Not an MIT/Harvard/alumni template.
- */
+/** One typesetting specification for the browser preview and Chromium PDF. */
 import type { ResumeDocument } from "@/types/resume-document";
-import { CANDIDARC_ATS_V1_TEMPLATE } from "@/types/resume-document";
+import { RESUME_FONT_FACES, RESUME_TEMPLATE as T, resumeContactLinks, resumeLink } from "./resume-template";
 
 function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function contactLine(doc: ResumeDocument): string {
-  return [
-    doc.contact.email,
-    doc.contact.phone,
-    doc.contact.location,
-    doc.contact.linkedIn,
-    doc.contact.github,
-    doc.contact.portfolio,
-  ]
-    .filter(Boolean)
-    .map((value) => escapeHtml(String(value)))
-    .join(" · ");
+function bulletList(bullets: string[] = [], skills = false): string {
+  if (!bullets.length) return "";
+  return `<ul>${bullets.map((bullet) => {
+    const separator = skills ? bullet.indexOf(":") : -1;
+    const text = separator > 0 && separator < 70
+      ? `<strong>${escapeHtml(bullet.slice(0, separator + 1))}</strong>${escapeHtml(bullet.slice(separator + 1))}`
+      : escapeHtml(bullet);
+    return `<li>${text}</li>`;
+  }).join("")}</ul>`;
 }
 
-/** Body markup used by preview and print — contact + sections only (no target role/company). */
 export function renderResumeDocumentBodyHtml(doc: ResumeDocument): string {
-  const sections = doc.sections
-    .map((section) => {
-      const bullets = section.bullets?.length
-        ? `<ul>${section.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>`
-        : "";
-      const entries = (section.entries ?? [])
-        .map((entry) => {
-          const meta = [entry.location, entry.dates].filter(Boolean).join(" · ");
-          return `<article class="entry">
-            <div class="entry-head">
-              <strong>${escapeHtml(entry.heading)}</strong>
-              ${entry.subheading ? `<span>${escapeHtml(entry.subheading)}</span>` : ""}
-            </div>
-            ${meta ? `<div class="entry-meta">${escapeHtml(meta)}</div>` : ""}
-            ${entry.bullets.length ? `<ul>${entry.bullets.map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>` : ""}
-          </article>`;
-        })
-        .join("");
-      return `<section>
-        <h2>${escapeHtml(section.title)}</h2>
-        ${section.content ? `<p>${escapeHtml(section.content)}</p>` : ""}
-        ${bullets}
-        ${entries}
-      </section>`;
-    })
-    .join("");
-
+  const sections = doc.sections.map((section) => {
+    const entries = (section.entries ?? []).map((entry) => `<article class="entry">
+      <div class="entry-heading">
+        <div class="entry-row"><strong>${escapeHtml(entry.heading)}</strong>${entry.dates ? `<strong class="entry-right">${escapeHtml(entry.dates)}</strong>` : ""}</div>
+        ${entry.subheading || entry.location ? `<div class="entry-row entry-meta"><span>${escapeHtml(entry.subheading ?? "")}</span>${entry.location ? `<span class="entry-right">${escapeHtml(entry.location)}</span>` : ""}</div>` : ""}
+      </div>
+      ${bulletList(entry.bullets)}
+    </article>`).join("");
+    return `<section class="section-${section.type}">
+      <h2>${escapeHtml(section.title)}</h2>
+      ${section.content ? `<p>${escapeHtml(section.content)}</p>` : ""}
+      ${bulletList(section.bullets, section.type === "skills")}${entries}
+    </section>`;
+  }).join("");
+  const contact = [doc.contact.location, doc.contact.phone, doc.contact.email].filter(Boolean).map((v) => escapeHtml(v!)).join(" | ");
+  const links = resumeContactLinks(doc.contact).map(({ label, value }) => {
+    const href = resumeLink(value);
+    const text = `<strong>${label}:</strong> ${escapeHtml(value)}`;
+    return href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${text}</a>` : text;
+  }).join(" | ");
   return `<header>
-      <h1>${escapeHtml(doc.contact.name)}</h1>
-      ${doc.contact.headline ? `<div class="headline">${escapeHtml(doc.contact.headline)}</div>` : ""}
-      ${contactLine(doc) ? `<div class="contact">${contactLine(doc)}</div>` : ""}
-    </header>
-    ${sections}`;
+    <h1>${escapeHtml(doc.contact.name)}</h1>
+    ${doc.contact.headline ? `<div class="headline">${escapeHtml(doc.contact.headline)}</div>` : ""}
+    ${contact ? `<div class="contact">${contact}</div>` : ""}
+    ${links ? `<div class="contact">${links}</div>` : ""}
+  </header>${sections}`;
 }
 
-export function renderResumeDocumentHtml(doc: ResumeDocument, opts: { preview?: boolean } = {}): string {
-  const pageClass = opts.preview ? "page preview" : "page print";
-  const body = renderResumeDocumentBodyHtml(doc);
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="candidarc-template" content="${escapeHtml(CANDIDARC_ATS_V1_TEMPLATE)}" />
-  <style>
-    @page { size: letter; margin: 0.55in 0.6in; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: ${opts.preview ? "#eef1f4" : "#fff"}; color: #111; font-family: "Segoe UI", Calibri, Arial, sans-serif; }
-    .page.preview,
-    .page.print {
-      width: 8.5in;
-      min-height: 11in;
-      padding: 0.55in 0.6in;
-      background: #fff;
-    }
-    .page.preview {
-      margin: 0 auto;
-      box-shadow: 0 8px 28px rgba(0,0,0,.12);
-    }
-    .page.print {
-      margin: 0;
-    }
-    header { border-bottom: 1px solid #ddd; padding-bottom: 10px; margin-bottom: 14px; }
-    h1 { margin: 0; font-size: 22px; letter-spacing: 0.01em; }
-    .headline { margin-top: 4px; font-size: 12px; color: #333; }
-    .contact { margin-top: 6px; font-size: 10.5px; color: #444; }
-    section { margin-top: 14px; break-inside: avoid-page; }
-    h2 {
-      margin: 0 0 6px;
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      border-bottom: 1px solid #e5e5e5;
-      padding-bottom: 2px;
-    }
-    p, li, .entry-meta { font-size: 10.5px; line-height: 1.45; }
-    ul { margin: 4px 0 0 18px; padding: 0; }
-    li { margin-bottom: 3px; }
-    .entry { margin-top: 8px; }
-    .entry-head { display: flex; justify-content: space-between; gap: 12px; font-size: 10.8px; }
-    .entry-head span { color: #444; font-weight: 500; }
-    .entry-meta { color: #555; margin-top: 2px; }
-  </style>
-</head>
-<body>
-  <main class="${pageClass}" data-template="${escapeHtml(CANDIDARC_ATS_V1_TEMPLATE)}">
-    ${body}
-  </main>
-</body>
-</html>`;
+export function renderResumeDocumentHtml(doc: ResumeDocument, opts: { preview?: boolean; fontSources?: string[] } = {}): string {
+  const fonts = RESUME_FONT_FACES.map((font, i) => `@font-face {
+    font-family: "${T.fontFamily}"; src: url("${opts.fontSources?.[i] ?? `/fonts/resume/${font.file}`}") format("truetype");
+    font-style: ${font.style}; font-weight: ${font.weight}; font-display: block;
+  }`).join("\n");
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8" />
+    <meta name="candidarc-template" content="${T.name}" />
+    <style>
+      ${fonts}
+      @page { size: ${T.page.width}pt ${T.page.height}pt; margin: ${T.page.top}pt ${T.page.right}pt ${T.page.bottom}pt ${T.page.left}pt; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body { background: #fff; color: #000; font-family: "${T.fontFamily}", "Times New Roman", serif; font-size: ${T.bodySize}pt; line-height: ${T.leading}pt; font-kerning: normal; }
+      .page.preview { width: ${T.page.width}pt; min-height: ${T.page.height}pt; padding: ${T.page.top}pt ${T.page.right}pt ${T.page.bottom}pt ${T.page.left}pt; }
+      /* Print margins belong to @page only. Never pad the print content a second time. */
+      .page.print { width: auto; margin: 0; padding: 0; }
+      header { text-align: center; padding-bottom: 5pt; border-bottom: ${T.rule}pt solid #000; break-inside: avoid; }
+      h1 { margin: 0 0 ${T.nameGap}pt; font-size: ${T.nameSize}pt; line-height: 1.05; font-weight: 700; overflow-wrap: anywhere; }
+      .contact, .headline { font-size: ${T.contactSize}pt; line-height: ${T.leading}pt; overflow-wrap: anywhere; }
+      a { color: inherit; text-decoration: none; }
+      a:focus-visible { outline: 1pt solid #000; outline-offset: 1pt; }
+      section { margin-top: ${T.sectionGap}pt; }
+      h2 { margin: 0 0 ${T.headingGap}pt; text-align: center; text-transform: uppercase; font-size: ${T.headingSize}pt; line-height: ${T.leading}pt; font-weight: 700; break-after: avoid; }
+      h2:has(+ .entry) { margin-bottom: 0; }
+      .section-summary > p { text-indent: ${T.summaryIndent}pt; }
+      p { margin: 0; text-align: justify; white-space: pre-line; overflow-wrap: anywhere; orphans: 2; widows: 2; }
+      ul { margin: 2pt 0 0; padding-left: ${T.bulletIndent}pt; }
+      li { padding: 0; margin: 0 0 ${T.bulletGap}pt; text-align: justify; overflow-wrap: anywhere; orphans: 2; widows: 2; }
+      li::marker { font-size: ${T.contactSize}pt; }
+      li:last-child { margin-bottom: 0; }
+      .entry + .entry { margin-top: ${T.entryGap}pt; }
+      .entry-heading { break-inside: avoid; break-after: avoid; }
+      .entry-row { line-height: ${T.bodySize}pt; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; column-gap: 12pt; }
+      .entry-row > * { min-width: 0; overflow-wrap: anywhere; max-width: 100%; }
+      .entry-right { margin-left: auto; text-align: right; }
+      .entry-meta { font-style: italic; }
+      .section-certifications > p { text-align: center; font-weight: 700; }
+      @media print { .page.preview { width: auto; min-height: 0; padding: 0; } }
+    </style></head><body><main class="page ${opts.preview ? "preview" : "print"}" data-template="${T.name}">
+    ${renderResumeDocumentBodyHtml(doc)}
+    </main></body></html>`;
 }

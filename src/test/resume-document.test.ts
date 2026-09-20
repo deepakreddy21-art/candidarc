@@ -129,15 +129,15 @@ describe("resume document model", () => {
     expect(layout.atsTextOrder).toContain("Experience");
   });
 
-  it("stamps CandidArc ATS v1 template metadata", () => {
+  it("stamps CandidArc Classic v1 template metadata", () => {
     const doc = buildResumeDocument({
       sections: fixtureSections,
       candidateName: "Alex Example",
       role: "Platform Engineer",
       company: "Acme Robotics",
     });
-    expect(doc.metadata.template).toBe("CandidArc ATS v1");
-    expect(doc.metadata.templateId).toBe("candidarc-ats-v1");
+    expect(doc.metadata.template).toBe("CandidArc Classic v1");
+    expect(doc.metadata.templateId).toBe("candidarc-classic-v1");
   });
 
   it("creates non-empty PDF and DOCX with shared substantive content", async () => {
@@ -158,7 +158,7 @@ describe("resume document model", () => {
     expect(docx.readUInt32LE(0)).toBe(0x04034b50);
     const verification = await verifyPdfContainsCanonicalContent(pdf, doc);
     expect(verification.ok).toBe(true);
-    expect(doc.metadata.template).toBe("CandidArc ATS v1");
+    expect(doc.metadata.template).toBe("CandidArc Classic v1");
   }, 60_000);
 
   it("preserves long skills lines, dates, and companies in extractable PDF text", async () => {

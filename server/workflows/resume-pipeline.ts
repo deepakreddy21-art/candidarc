@@ -1,3 +1,4 @@
+import { CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
 import { selectCareerEvidence } from "../modules/profile/career-evidence";
 import { createHash } from "crypto";
 import {
@@ -1366,7 +1367,7 @@ export class ResumePipeline {
         applicationId: run.applicationId,
         applicationPublicId: run.applicationPublicId,
         title: `${run.applicationPublicId} resume`,
-        templateId: "candidarc-ats-v1",
+        templateId: CANDIDARC_CLASSIC_V1_TEMPLATE_ID,
         length: "one-page",
         currentVersionPublicId: null,
       });

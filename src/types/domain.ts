@@ -256,7 +256,7 @@ export interface ResumeBullet {
 
 export interface ResumeSection {
   id: string;
-  type: "summary" | "skills" | "experience" | "projects" | "education" | "certifications";
+  type: "summary" | "skills" | "experience" | "projects" | "education" | "certifications" | "publications";
   title: string;
   order: number;
   content?: string;

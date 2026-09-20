@@ -46,7 +46,7 @@ export const ResumeSectionSchema = z.object({
   "items": z.array(ResumeItemSchema).max(50).nullable().optional(),
   "order": z.number().int().min(0.0).max(100.0).optional(),
   "title": z.string().min(1).max(512),
-  "type": z.enum(["summary", "skills", "experience", "projects", "education", "certifications"]),
+  "type": z.enum(["summary", "skills", "experience", "projects", "education", "certifications", "publications"]),
 }).strict();
 export type ResumeSection = z.infer<typeof ResumeSectionSchema>;
 

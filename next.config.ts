@@ -8,6 +8,7 @@ const isDemoOrTest = appMode === "demo" || process.env.NODE_ENV === "test";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: path.join(__dirname),
+  outputFileTracingIncludes: { "/*": ["./public/fonts/resume/*.ttf"] },
   // BullMQ pulls in ioredis; keep it external so Next.js does not bundle it into server chunks.
   serverExternalPackages: ["bullmq", "ioredis", "pdf-parse", "@napi-rs/canvas"],
   env: {

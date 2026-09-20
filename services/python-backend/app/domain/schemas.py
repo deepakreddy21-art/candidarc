@@ -27,7 +27,7 @@ ClaimSourceKind = Literal["candidate_evidence", "user_confirmation", "job_requir
 AuditLens = Literal["hr-1", "em-1", "hr-2", "em-2"]
 FindingSeverity = Literal["critical", "major", "minor", "suggestion"]
 FindingStatus = Literal["open", "accepted", "rejected", "edited"]
-SectionType = Literal["summary", "skills", "experience", "projects", "education", "certifications"]
+SectionType = Literal["summary", "skills", "experience", "projects", "education", "certifications", "publications"]
 QaStatus = Literal["pass", "warn", "fail", "warning", "pending"]
 
 

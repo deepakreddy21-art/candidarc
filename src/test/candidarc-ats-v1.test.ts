@@ -9,7 +9,7 @@ import {
   resumeDocumentPlainText,
   validateResumeLayout,
 } from "@/lib/resume-document";
-import { CANDIDARC_ATS_V1_TEMPLATE, CANDIDARC_ATS_V1_TEMPLATE_ID } from "@/types/resume-document";
+import { CANDIDARC_CLASSIC_V1_TEMPLATE, CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
 import { renderResumeDocumentBodyHtml, renderResumeDocumentHtml } from "@/lib/resume-html";
 import {
   PdfRenderFailedError,
@@ -90,11 +90,11 @@ function fixtureDoc(overrides?: {
   });
 }
 
-describe("CandidArc ATS v1 template contract", () => {
+describe("CandidArc Classic v1 template contract", () => {
   it("tags the canonical document with the named template", () => {
     const doc = fixtureDoc();
-    expect(doc.metadata.template).toBe(CANDIDARC_ATS_V1_TEMPLATE);
-    expect(doc.metadata.templateId).toBe(CANDIDARC_ATS_V1_TEMPLATE_ID);
+    expect(doc.metadata.template).toBe(CANDIDARC_CLASSIC_V1_TEMPLATE);
+    expect(doc.metadata.templateId).toBe(CANDIDARC_CLASSIC_V1_TEMPLATE_ID);
   });
 
   it("omits target role/company from résumé body across preview HTML, plain text, and DOCX", async () => {
