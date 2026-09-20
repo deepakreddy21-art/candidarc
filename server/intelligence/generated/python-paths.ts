@@ -15,6 +15,7 @@ export const PYTHON_BACKEND_PATHS = {
   evidenceSearch: "/v1/evidence/search",
   evidenceMatch: "/v1/evidence/match",
   resumesGenerate: "/v1/resumes/generate",
+  resumesGenerateOnce: "/v1/resumes/generate-once",
   resumesAudit: "/v1/resumes/audit",
   resumesRegenerate: "/v1/resumes/regenerate",
   resumesFinalQa: "/v1/resumes/final-qa",
@@ -38,6 +39,7 @@ export const PYTHON_OPENAPI_PATHS = [
   "/v1/resumes/audit",
   "/v1/resumes/final-qa",
   "/v1/resumes/generate",
+  "/v1/resumes/generate-once",
   "/v1/resumes/parse",
   "/v1/resumes/regenerate",
 ] as const;

@@ -90,6 +90,28 @@ export const ResumeGenerateResponseSchema = z.object({
 }).strict();
 export type ResumeGenerateResponse = z.infer<typeof ResumeGenerateResponseSchema>;
 
+export const LocalResumeValidationSchema = z.object({
+  "capabilities": z.object({
+}),
+  "cpu_ms": z.number().int().min(0.0),
+  "latency_ms": z.number().int().min(0.0),
+  "passed": z.boolean(),
+  "process_peak_rss_native_units": z.number().int().nullable().optional(),
+  "violations": z.array(z.string()),
+}).strict();
+export type LocalResumeValidation = z.infer<typeof LocalResumeValidationSchema>;
+
+export const SingleRequestGenerateResponseSchema = z.object({
+  "latency_ms": z.number().int().min(0.0),
+  "local_validation": LocalResumeValidationSchema,
+  "model": z.string().min(1).max(512),
+  "prompt_version": z.string().min(1).max(512),
+  "provider": z.string().min(1).max(512),
+  "resume": ResumeDocumentSchema,
+  "usage": ProviderUsageSchema.nullable().optional(),
+}).strict();
+export type SingleRequestGenerateResponse = z.infer<typeof SingleRequestGenerateResponseSchema>;
+
 export const AuditFindingSchema = z.object({
   "before_text": z.string().max(4000),
   "edited_text": z.string().max(4000).nullable().optional(),
@@ -272,6 +294,8 @@ export const EvidenceItemSchema = z.object({
   "candidate_confirmation_status": z.string().min(1).max(512),
   "claim_text": z.string().max(4000).nullable().optional(),
   "confidence": z.enum(["high", "medium", "low"]),
+  "details": z.object({
+}).optional(),
   "employer_association": z.string().max(512).nullable().optional(),
   "id": z.string().min(1).max(128),
   "metrics": z.array(z.string().max(512)).max(50).optional(),
@@ -315,6 +339,7 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "HealthReadyResponse",
   "JobParseRequest",
   "JobParseResponse",
+  "LocalResumeValidation",
   "MistakeMemoryRule",
   "ProviderUsage",
   "RequestContext",
@@ -344,6 +369,8 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "ResumeSection-Input",
   "ResumeSection-Output",
   "ScoreBreakdown",
+  "SingleRequestGenerateRequest",
+  "SingleRequestGenerateResponse",
   "UserConfirmation",
   "ValidationError",
 ] as const;

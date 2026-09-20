@@ -125,6 +125,7 @@ class RequestContext(StrictModel):
 
 
 class EvidenceItem(StrictModel):
+    details: dict[str, Any] = Field(default_factory=dict)
     id: StrId
     tenant_id: StrId
     owner_user_id: StrId
@@ -700,6 +701,11 @@ class ResumeGenerateRequest(StrictModel):
         return self
 
 
+class SingleRequestGenerateRequest(ResumeGenerateRequest):
+    operation_id: str = Field(min_length=16, max_length=128)
+    research_sources: list[ResearchSource] = Field(default_factory=list, max_length=8)
+
+
 class ResumeGenerateResponse(StrictModel):
     resume: ResumeDocument
     provider: StrShort
@@ -707,6 +713,19 @@ class ResumeGenerateResponse(StrictModel):
     prompt_version: StrShort
     latency_ms: int = Field(ge=0)
     usage: ProviderUsage | None = None
+
+
+class LocalResumeValidation(StrictModel):
+    passed: bool
+    violations: list[str]
+    latency_ms: int = Field(ge=0)
+    cpu_ms: int = Field(ge=0)
+    process_peak_rss_native_units: int | None = None
+    capabilities: dict[str, Any]
+
+
+class SingleRequestGenerateResponse(ResumeGenerateResponse):
+    local_validation: LocalResumeValidation
 
 
 class AuditRequest(StrictModel):

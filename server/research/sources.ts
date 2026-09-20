@@ -21,6 +21,8 @@ export type ResearchCollectContext = TeamContext & {
   jobDescription?: string;
   researchDepth?: string;
   signal?: AbortSignal;
+  onSearch?: (query: string) => Promise<void>;
+  fetchPage?: <T>(work: () => Promise<T>) => Promise<T>;
 };
 
 export interface ResearchSourceAdapter {
@@ -108,6 +110,8 @@ export class ConfiguredSearchAdapter implements ResearchSourceAdapter {
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
     url.searchParams.set("q", query.slice(0, 400));
     url.searchParams.set("count", String(limit));
+    context.signal?.throwIfAborted();
+    await context.onSearch?.(query);
     const response = await ssrfFetch(url.toString(), {
       maxRedirects: 0,
       headers: { "X-Subscription-Token": apiKey, Accept: "application/json" },
@@ -120,7 +124,7 @@ export class ConfiguredSearchAdapter implements ResearchSourceAdapter {
     const results = await Promise.all(candidates.map(async (row): Promise<ResearchSourceRecord | null> => {
       try {
         // The search token is never forwarded to result pages. SSRF checks apply to every URL/redirect.
-        const page = await ssrfFetch(row.url!, { signal: context.signal, timeoutMs: 5_000, maxRedirects: 1 });
+        const page = await (context.fetchPage ?? (async work => work()))(() => ssrfFetch(row.url!, { signal: context.signal, timeoutMs: 5_000, maxRedirects: 1, maxBytes: 500_000 }));
         const excerpt = htmlToPlainText(page.body.toString("utf8")).slice(0, MAX_EXCERPT).trim();
         if (!excerpt) return null;
         return { url: page.url, title: row.title?.slice(0, 300) || new URL(page.url).hostname,
@@ -147,7 +151,7 @@ export class UrlFetchResearchAdapter implements ResearchSourceAdapter {
       unique.map(async (raw, index): Promise<ResearchSourceRecord | null> => {
         const accessedAt = new Date().toISOString();
         try {
-          const fetched = await ssrfFetch(raw, { signal: context.signal, timeoutMs: 5_000, maxRedirects: 1 });
+          const fetched = await (context.fetchPage ?? (async work => work()))(() => ssrfFetch(raw, { signal: context.signal, timeoutMs: 5_000, maxRedirects: 1, maxBytes: 500_000 }));
           const excerpt = htmlToPlainText(fetched.body.toString("utf8")).slice(0, MAX_EXCERPT);
           if (!excerpt.trim()) return null;
           return {

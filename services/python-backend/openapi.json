@@ -430,6 +430,10 @@
             "title": "Confidence",
             "type": "string"
           },
+          "details": {
+            "title": "Details",
+            "type": "object"
+          },
           "employer_association": {
             "anyOf": [
               {
@@ -1484,6 +1488,56 @@
           }
         },
         "title": "JobParseResponse",
+        "type": "object"
+      },
+      "LocalResumeValidation": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "cpu_ms": {
+            "minimum": 0.0,
+            "title": "Cpu Ms",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "passed": {
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "process_peak_rss_native_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Process Peak Rss Native Units"
+          },
+          "violations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Violations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "passed",
+          "violations",
+          "latency_ms",
+          "cpu_ms",
+          "capabilities"
+        ],
+        "title": "LocalResumeValidation",
         "type": "object"
       },
       "MistakeMemoryRule": {
@@ -3995,6 +4049,247 @@
         "title": "ScoreBreakdown",
         "type": "object"
       },
+      "SingleRequestGenerateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "absolute_version": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Absolute Version"
+          },
+          "accepted_findings": {
+            "items": {
+              "$ref": "#/components/schemas/AuditFinding"
+            },
+            "maxItems": 100,
+            "title": "Accepted Findings",
+            "type": "array"
+          },
+          "allowed_technologies": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Allowed Technologies",
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/RequestContext"
+          },
+          "cycle_step": {
+            "anyOf": [
+              {
+                "maximum": 4.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cycle Step"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceItem"
+            },
+            "maxItems": 500,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "evidence_matches": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceMatchRow"
+            },
+            "maxItems": 200,
+            "title": "Evidence Matches",
+            "type": "array"
+          },
+          "final_qa_repair": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinalQaRepairDirective"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job_description": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Job Description",
+            "type": "string"
+          },
+          "job_requirements": {
+            "items": {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Job Requirements",
+            "type": "array"
+          },
+          "mistake_memory": {
+            "items": {
+              "$ref": "#/components/schemas/MistakeMemoryRule"
+            },
+            "maxItems": 100,
+            "title": "Mistake Memory",
+            "type": "array"
+          },
+          "operation_id": {
+            "maxLength": 128,
+            "minLength": 16,
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "previous_resume": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResumeDocument-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refinement_instruction": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refinement Instruction"
+          },
+          "rejected_findings": {
+            "items": {
+              "$ref": "#/components/schemas/AuditFinding"
+            },
+            "maxItems": 100,
+            "title": "Rejected Findings",
+            "type": "array"
+          },
+          "research_findings": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchFinding"
+            },
+            "maxItems": 100,
+            "title": "Research Findings",
+            "type": "array"
+          },
+          "research_sources": {
+            "items": {
+              "$ref": "#/components/schemas/ResearchSource"
+            },
+            "maxItems": 8,
+            "title": "Research Sources",
+            "type": "array"
+          },
+          "resume_plan": {
+            "items": {
+              "$ref": "#/components/schemas/ResumePlanItem"
+            },
+            "maxItems": 12,
+            "title": "Resume Plan",
+            "type": "array"
+          },
+          "user_confirmations": {
+            "items": {
+              "$ref": "#/components/schemas/UserConfirmation"
+            },
+            "maxItems": 100,
+            "title": "User Confirmations",
+            "type": "array"
+          },
+          "version_number": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Number"
+          }
+        },
+        "required": [
+          "context",
+          "job_description",
+          "evidence",
+          "operation_id"
+        ],
+        "title": "SingleRequestGenerateRequest",
+        "type": "object"
+      },
+      "SingleRequestGenerateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "latency_ms": {
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "local_validation": {
+            "$ref": "#/components/schemas/LocalResumeValidation"
+          },
+          "model": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "prompt_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
+          "resume": {
+            "$ref": "#/components/schemas/ResumeDocument-Output"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "resume",
+          "provider",
+          "model",
+          "prompt_version",
+          "latency_ms",
+          "local_validation"
+        ],
+        "title": "SingleRequestGenerateResponse",
+        "type": "object"
+      },
       "UserConfirmation": {
         "additionalProperties": false,
         "description": "Typed user confirmation for generate/regenerate.\n\nOnly confirmations with a non-empty evidence_description may create first-person\nexperience claims. Bare yes without evidence is ignored (never added as experience).\n\nProvenance fields (id, tenant_id, owner_user_id) enable scoped validation:\n- Confirmations from foreign tenants/owners are rejected during claim validation.\n- Affirmative confirmations with evidence_description OR related_evidence_ids\n  may provide provenance for technologies in grounded_targets during repair.",
@@ -4751,6 +5046,62 @@
           }
         },
         "summary": "Resumes Generate"
+      }
+    },
+    "/v1/resumes/generate-once": {
+      "post": {
+        "operationId": "resumes_generate_once_v1_resumes_generate_once_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SingleRequestGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SingleRequestGenerateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resumes Generate Once"
       }
     },
     "/v1/resumes/parse": {

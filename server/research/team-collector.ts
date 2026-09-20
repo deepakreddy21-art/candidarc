@@ -44,7 +44,16 @@ export class TeamResearchCollector {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20_000);
-    const input = { ...context, signal: controller.signal };
+    // A shared limiter covers direct URLs and all search result pages.
+    let active = 0;
+    const waiting: Array<() => void> = [];
+    const fetchPage = async <T>(work: () => Promise<T>): Promise<T> => {
+      if (active >= 3) await new Promise<void>(resolve => waiting.push(resolve));
+      else active += 1;
+      try { controller.signal.throwIfAborted(); return await work(); }
+      finally { const next = waiting.shift(); if (next) next(); else active -= 1; }
+    };
+    const input = { ...context, signal: controller.signal, fetchPage };
     const batches: ResearchSourceRecord[][] = [];
     let failures = 0;
     const searchEnabled = Boolean(getEnv().BRAVE_SEARCH_API_KEY);

@@ -48,6 +48,7 @@ type ReadyData = {
   downloads: { pdfReady: boolean; docxReady: boolean };
   documentRetryAvailable?: boolean;
   enhancementAvailable?: boolean;
+  localOnlyEdits?: boolean;
   refinementNotice?: string;
   research?: ResumeResearch;
 };
@@ -170,7 +171,7 @@ export function ResumeReady({
         </CardContent>
       </Card>
       <div className="grid gap-5 lg:grid-cols-2">
-        <RefinePanel workflowId={data.workflowId} selectedText={selectedText} onClearSelection={() => setSelectedText("")} />
+        {data.localOnlyEdits ? <p className="rounded-lg border border-border p-4 text-sm">Review your resume before applying. Free-form rewriting is not available yet; your saved version remains available to preview and download.</p> : <RefinePanel workflowId={data.workflowId} selectedText={selectedText} onClearSelection={() => setSelectedText("")} />}
         <VersionHistory
           versions={data.versions ?? []}
           currentId={data.resume?.versionId ?? data.versions?.[0]?.id}
@@ -180,9 +181,9 @@ export function ResumeReady({
       {compareId && resumeDoc ? (
         <ResumeComparison workflowId={data.workflowId} versionId={compareId} current={resumeDoc} onClose={() => setCompareId(undefined)} />
       ) : null}
-      <AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />
+      {<AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />}
       <ResearchSummary research={data.research} />
-      <QualityReport report={data.qualityReport} onReviewText={(text) => {
+      <QualityReport report={data.qualityReport} onReviewText={data.localOnlyEdits ? undefined : (text) => {
         setSelectedText(text);
         const editor = globalThis.document.getElementById("refinement");
         editor?.scrollIntoView({ block: "center", behavior: "auto" });

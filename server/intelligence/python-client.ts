@@ -16,6 +16,7 @@ import {
   ResearchSynthesizeResponseSchema,
   ResumeDocumentSchema,
   ResumeGenerateResponseSchema,
+  SingleRequestGenerateResponseSchema,
   type AuditFinding,
   type EvidenceItem,
   type ProviderUsage,
@@ -243,6 +244,7 @@ export function toSnakeEvidence(item: Record<string, unknown>): EvidenceItem {
     claim_text: (item.claimText ?? item.claim_text ?? null) as string | null,
     employer_association: (item.employerAssociation ?? item.employer_association ??
       (payload.source === "career-profile" && payload.kind === "employment" ? item.organization : null) ?? null) as string | null,
+    details: payload.details && typeof payload.details === "object" ? payload.details : {},
     project_association: (item.projectAssociation ?? item.project_association ??
       (payload.source === "career-profile" && payload.kind === "project" ? item.title : null) ?? null) as string | null,
   };
@@ -1138,6 +1140,14 @@ export class PythonIntelligenceClient {
     };
   }
 
+  async generateResumeOnce(input: GenerateResumeInput & { operationId: string; researchSources: Array<Record<string, unknown>> }) {
+    const data = await this.post(PYTHON_BACKEND_PATHS.resumesGenerateOnce, {
+      ...buildGenerateBody(input), operation_id: input.operationId, research_sources: input.researchSources,
+    });
+    const { local_validation, ...generation } = SingleRequestGenerateResponseSchema.parse(data);
+    return { ...this.mapGenerateResponse(generation), localValidation: local_validation };
+  }
+
   async generateResume(input: GenerateResumeInput) {
     const data = await this.post(
       PYTHON_BACKEND_PATHS.resumesGenerate,
@@ -1215,6 +1225,7 @@ export class PythonIntelligenceClient {
           suggestedText: finding.suggested_text,
           expectedScoreImpact: finding.expected_score_impact,
           evidenceSource: finding.evidence_source ?? undefined,
+          evidenceIds: finding.evidence_ids,
         })),
         rejectedFindings: (parsed.rejected_findings ?? []).map((finding) => ({
           severity: finding.severity,
@@ -1225,6 +1236,7 @@ export class PythonIntelligenceClient {
           suggestedText: finding.suggested_text,
           expectedScoreImpact: finding.expected_score_impact,
           evidenceSource: finding.evidence_source ?? undefined,
+          evidenceIds: finding.evidence_ids,
           rejectionReason: finding.rejection_reason ?? undefined,
         })),
       },

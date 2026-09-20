@@ -1,3 +1,4 @@
+import { runSingleRequestStage } from "./single-request-pipeline";
 import { CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
 import { selectCareerEvidence } from "../modules/profile/career-evidence";
 import { createHash } from "crypto";
@@ -230,6 +231,10 @@ export class ResumePipeline {
     }
 
     try {
+      if (claimed.payload.generationPolicy === "single-request-v1") {
+        await runSingleRequestStage(this.deps, claimed);
+        return;
+      }
       switch (claimed.stage) {
         case "RESEARCH_QUEUED":
         case "RESEARCH_RUNNING":

@@ -1,3 +1,4 @@
+import { ResumeWorkStore, contentHash } from "../../database/resume-work-store";
 import { createHash } from "crypto";
 import { customerResearchSummary } from "../../resumes/research-summary";
 import { languageReviewForVersion } from "../../../src/lib/resume-writing-review";
@@ -172,16 +173,6 @@ export class CustomerGenerateService {
       jobDescription = await fetchJobDescriptionFromUrl(input.jobUrl);
     }
 
-    const sourceHash = createHash("sha256")
-      .update(JSON.stringify([input.jobUrl ?? "", jobDescription ?? "", input.company, input.role,
-        input.team, input.product, input.businessUnit, profile ? careerFingerprint(profile) : null]))
-      .digest("hex");
-    const idempotencyKey = `customer:${user.id}:${sourceHash}:${input.idempotencyKey ?? sourceHash}`;
-    const existing = await this.repos.workflows.findByIdempotency(tenantId, idempotencyKey);
-    if (existing) {
-      return { workflowId: existing.publicId, applicationId: existing.applicationPublicId, status: "queued" as const };
-    }
-
     const company = input.company?.trim() || "Target company";
     const role = input.role?.trim() || "Target role";
     const contactSnapshot = {
@@ -194,9 +185,37 @@ export class CustomerGenerateService {
       candidatePortfolio: profile?.portfolio ?? undefined,
       candidateProfileId: profile?.publicId ?? undefined,
     };
-    const app = await this.repos.applications.create({
+    const store = new ResumeWorkStore(this.repos, tenantId, user.id);
+    // Mutable UI matching/timestamps are not new career facts and cannot mint another allowance.
+    const snapshotEvidence = ownedEvidence.map(e => ({
+      id: e.id, publicId: e.publicId, tenantId: e.tenantId, ownerUserId: e.ownerUserId,
+      title: e.title, organization: e.organization, situation: e.situation, task: e.task,
+      actions: e.actions, result: e.result, technologies: e.technologies, payload: e.payload,
+      sourceType: e.sourceType, claimText: e.claimText, verificationStatus: e.verificationStatus,
+      evidenceStatus: e.evidenceStatus, candidateConfirmationStatus: e.candidateConfirmationStatus,
+      employerAssociation: e.employerAssociation, projectAssociation: e.projectAssociation,
+    })).sort((a, b) => a.publicId.localeCompare(b.publicId));
+    const profileKey = contentHash({ contactSnapshot, evidence: snapshotEvidence });
+    const jobSnapshot = { jobDescription, jobUrl: input.jobUrl, company, role, team: input.team,
+      product: input.product, businessUnit: input.businessUnit, location: input.location };
+    const jobKey = contentHash(jobSnapshot);
+    const sourceHash = contentHash(["single-request-v1", tenantId, user.id, profileKey, jobKey]);
+    // Client nonces must never buy another allowance for the same immutable inputs.
+    const idempotencyKey = `single:${user.id}:${sourceHash}`;
+    const existing = await this.repos.workflows.findByIdempotency(tenantId, idempotencyKey);
+    if (existing) return { workflowId: existing.publicId, applicationId: existing.applicationPublicId, status: "queued" as const };
+    await store.put("profile", profileKey, { contactSnapshot, evidence: snapshotEvidence });
+    await store.put("job", jobKey, jobSnapshot);
+    await store.put("operation", sourceHash, { profileKey, jobKey, policy: "single-request-v1" });
+    const initToken = await store.claim("operation", sourceHash);
+    if (!initToken) throw new AppError("GENERATION_STARTING", "This resume is already being prepared. Please retry shortly.", 409, undefined, true);
+    try {
+    const raced = await this.repos.workflows.findByIdempotency(tenantId, idempotencyKey);
+    if (raced) return { workflowId: raced.publicId, applicationId: raced.applicationPublicId, status: "queued" as const };
+    const applicationPublicId = `app-single-${sourceHash}`;
+    const app = await this.repos.applications.getByPublicId(tenantId, applicationPublicId) ?? await this.repos.applications.create({
       id: newId("app"),
-      publicId: `app-resume-${Date.now().toString(36)}-${newId("r").slice(-6)}`,
+      publicId: applicationPublicId,
       tenantId,
       company,
       companyMark: company.slice(0, 2).toUpperCase(),
@@ -219,7 +238,9 @@ export class CustomerGenerateService {
       metadata: {
         customerFacing: true,
         candidateEvidenceFingerprint: profile ? careerFingerprint(profile) : undefined,
-        autoAdvanceAudits: true,
+        autoAdvanceAudits: false,
+        generationPolicy: "single-request-v1",
+        generationOperationId: sourceHash,
         ...contactSnapshot,
         jobDescription,
         jobUrl: input.jobUrl,
@@ -240,7 +261,7 @@ export class CustomerGenerateService {
       stage: "RESEARCH_QUEUED",
       idempotencyKey,
       message: "Customer resume generation queued",
-      payload: { customerFacing: true, autoAdvanceAudits: true, cycleBase: 0 },
+      payload: { customerFacing: true, autoAdvanceAudits: false, cycleBase: 0, generationPolicy: "single-request-v1", generationOperationId: sourceHash },
     });
     await this.repos.applications.update(tenantId, app.publicId, {
       metadata: {
@@ -250,6 +271,7 @@ export class CustomerGenerateService {
       },
     });
     return { workflowId: workflow.publicId, applicationId: app.publicId, status: "queued" as const };
+    } finally { await store.release("operation", sourceHash, initToken); }
   }
 
   async getCustomerVersion(ctx: AuthContext, workflowId: string, versionId: string) {
@@ -360,6 +382,7 @@ export class CustomerGenerateService {
       response.pipelineLabel = phase === "planning" ? "Connecting the role to your experience"
         : phase === "analyzing" ? "Reviewing company and team sources" : "Researching the role and its team";
     }
+    response.localOnlyEdits = currentApp.metadata?.generationPolicy === "single-request-v1";
     if (typeof currentApp.metadata?.refinementNotice === "string") response.refinementNotice = currentApp.metadata.refinementNotice;
     // Optional tech confirmation only while generation is waiting on input — hide after advance.
     if (mapped.status === "needs_input" && questions.length) {
@@ -444,7 +467,7 @@ export class CustomerGenerateService {
           languageReview: languageReviewForVersion(currentApp.metadata?.languageReview, current.publicId),
         };
       }
-      if (currentApp.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;
+      if (currentApp.metadata?.generationPolicy !== "single-request-v1" && currentApp.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;
     }
     if (mapped.status === "failed") {
       response.error =
@@ -469,6 +492,9 @@ export class CustomerGenerateService {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
 
+    if (app.metadata?.localCorrectionRequired === true) {
+      throw new AppError("LOCAL_CORRECTION_REQUIRED", "The saved draft failed factual checks. Review its source facts in Profile; retrying this unchanged draft cannot fix it and will not request another generation.", 422);
+    }
     const files = (app.metadata?.customerFiles ?? {}) as CustomerFilesMeta;
     const pendingFormats = Array.isArray(files.pendingFormats)
       ? files.pendingFormats.filter((f): f is "pdf" | "docx" => f === "pdf" || f === "docx")
@@ -491,7 +517,8 @@ export class CustomerGenerateService {
       const versions = resume ? await this.repos.resumes.listVersions(tenantId, resume.publicId) : [];
       const finalIds = (app.metadata?.customerFinalVersions ?? []) as string[];
       const version =
-        versions.find((item) => finalIds.includes(item.publicId)) ?? versions.at(-1) ?? null;
+        versions.find((item) => item.publicId === app.metadata?.currentExportVersionId) ??
+        versions.find((item) => item.publicId === finalIds.at(-1)) ?? versions.at(-1) ?? null;
       if (!version) {
         throw new AppError("RESUME_VERSION_NOT_FOUND", "No résumé version available to re-render", 404);
       }
@@ -695,13 +722,13 @@ export class CustomerGenerateService {
         knownTechnologies: claimableTechnologies(questions),
         techAnswersFingerprint: fingerprint,
         techQuestionsSkipped: opts.skip === true,
-        ...(isComplete ? { enhancementAvailable: true } : {}),
+        ...(isComplete && app.metadata?.generationPolicy !== "single-request-v1" ? { enhancementAvailable: true } : {}),
       },
     });
 
     await this.resumePausedWorkflow(run, updatedApp, questions);
 
-    return { accepted: true, enhancementAvailable: isComplete };
+    return { accepted: true, enhancementAvailable: isComplete && app.metadata?.generationPolicy !== "single-request-v1" };
   }
 
   private async resumePausedWorkflow(
@@ -752,6 +779,9 @@ export class CustomerGenerateService {
       throw new AppError("FORBIDDEN_OWNERSHIP", "You do not own this resume workflow", 403);
     }
     if (app.workflowStage !== "FINAL_READY") throw new AppError("RESUME_NOT_READY", "Wait for the current resume to finish before refining it.", 409);
+    if (app.metadata?.generationPolicy === "single-request-v1") {
+      throw new AppError("LOCAL_REWRITE_UNAVAILABLE", "Open-ended rewriting needs a local generative model, which is not installed. Your saved resume is unchanged. Correct source facts in Profile; downloads and local document retries remain available.", 422);
+    }
     const selected = input.selectedText?.trim();
     const instruction = selected
       ? `Improve only this selected text (do not rewrite the rest of the resume unless required for grammar). Selected text:\n${selected}\n\nInstruction: ${input.instruction}`

@@ -37,6 +37,8 @@ from app.domain.schemas import (
     ResumeGenerateResponse,
     ResumeParseRequest,
     ResumeParseResponse,
+    SingleRequestGenerateRequest,
+    SingleRequestGenerateResponse,
 )
 from app.modules.audits import service as audits
 from app.modules.evidence.service import index_evidence_items, search_evidence_store
@@ -566,3 +568,16 @@ async def resumes_final_qa(
             handler=_handler,
         ),
     )
+
+
+@router.post("/resumes/generate-once", response_model=SingleRequestGenerateResponse)
+async def resumes_generate_once(request: Request, body: SingleRequestGenerateRequest) -> dict[str, Any]:
+    from app.modules.single_request import generate_once
+    _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
+    if body.previous_resume or body.refinement_instruction or body.final_qa_repair or body.absolute_version != 0:
+        raise HTTPException(422, detail={"code": "INITIAL_GENERATION_ONLY"})
+    try:
+        return await generate_once(request, body)
+    except Exception as exc:
+        _raise_provider(exc)
+        raise

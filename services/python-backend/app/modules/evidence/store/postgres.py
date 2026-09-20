@@ -60,7 +60,9 @@ class PostgresEvidenceStore:
         embedding_dimensions: int,
         statement_timeout_ms: int = 5_000,
         command_timeout: float = 10.0,
+        pool_max: int = 5,
     ) -> None:
+        self._pool_max = pool_max
         self._dsn = dsn
         self._embedding_dimensions = embedding_dimensions
         self._statement_timeout_ms = statement_timeout_ms
@@ -183,7 +185,7 @@ class PostgresEvidenceStore:
             self._pool = await asyncpg.create_pool(
                 dsn=self._dsn,
                 min_size=1,
-                max_size=5,
+                max_size=self._pool_max,
                 command_timeout=self._command_timeout,
                 timeout=self._command_timeout,
                 init=_init_conn,
@@ -264,6 +266,7 @@ class PostgresEvidenceStore:
                         if (
                             existing["content_hash"] == content_hash
                             and int(existing["embedding_dimensions"]) == embedding_dimensions
+                            and existing["embedding_model"] == embedding_model
                         ):
                             chunk_rows = await conn.fetch(
                                 """

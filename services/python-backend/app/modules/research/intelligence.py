@@ -97,7 +97,7 @@ def authorize_research(
     for finding in analysis.findings:
         quotes = finding.supporting_quotes
         valid = bool(quotes) and set(finding.source_ids) == {q.source_id for q in quotes}
-        valid = valid and all(q.source_id in by_id and normalized(q.quote) in normalized(by_id[q.source_id].supporting_text) for q in quotes)
+        valid = valid and all(q.source_id in by_id and len(normalized(q.quote)) >= 12 and normalized(q.quote) in normalized(by_id[q.source_id].supporting_text) for q in quotes)
         if not valid:
             limitations.append("A proposed finding was omitted because its source quotation could not be validated.")
             continue
@@ -106,9 +106,9 @@ def authorize_research(
             limitations.append("A reference could not be attributed to the requested company.")
             continue
         text = " ".join(normalized(q.quote) for q in quotes)
-        finding = finding.model_copy(update={
-            "technologies": [t for t in finding.technologies if mentions(t, text)],
-        })
+        if any(not mentions(t, text) for t in finding.technologies):
+            limitations.append("A finding was omitted because its technology claims lacked quoted support.")
+            continue
         subject = team if finding.scope == "team" else product if finding.scope == "product" else None
         if finding.scope in {"team", "product"} and (not subject or not mentions(subject, text)):
             finding = finding.model_copy(update={"scope": "company", "subject": company,

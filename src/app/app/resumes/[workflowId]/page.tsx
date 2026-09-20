@@ -35,6 +35,7 @@ type WorkflowData = {
   };
   enhancementAvailable?: boolean;
   refinementNotice?: string;
+  localOnlyEdits?: boolean;
   research?: ResumeResearch;
   error?: string;
 };
@@ -124,7 +125,7 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
     return (
       <div className="mx-auto max-w-2xl space-y-4">
         <ErrorState title="We couldn’t create your resume" description={data.error ?? data.message} />
-        <Button onClick={retry} disabled={retrying}>{retrying ? "Retrying…" : "Retry Generation"}</Button>
+        <Button onClick={retry} disabled={retrying}>{retrying ? "Retrying…" : data.localOnlyEdits ? "Resume saved work" : "Retry Generation"}</Button>
       </div>
     );
   }

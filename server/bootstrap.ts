@@ -1,3 +1,5 @@
+import { preserveLegacyCustomerRun } from "./workflows/single-request-pipeline";
+import { renderCustomerArtifacts } from "./resumes/export-cache";
 import { getEnv, isFeatureCopilotEnabled, isFeatureRadarEnabled } from "./config/env";
 import {
   type AuditFindingRecord,
@@ -371,6 +373,10 @@ async function buildRuntime(): Promise<Runtime> {
       }
       const claimedStage = payload.stage ?? run.stage;
       try {
+        if (run.payload.customerFacing === true && run.payload.generationPolicy !== "single-request-v1") {
+          await preserveLegacyCustomerRun({ ...repos, engine, queue }, run);
+          return;
+        }
         await pipeline.handleStage(run, claimedStage);
       } catch (error) {
         if (error instanceof AppError && error.status >= 400 && error.status < 500 && !error.retryable) {
@@ -401,6 +407,13 @@ async function buildRuntime(): Promise<Runtime> {
     const app = await repos.applications.getByPublicId(tenantId, applicationPublicId);
     const version = await repos.resumes.getVersion(tenantId, versionPublicId);
     if (!app || !version) throw new Error("Document rendering source not found");
+    if (app.metadata?.generationPolicy === "single-request-v1") {
+      // Existing product exposes both downloads on ready; retries request only failed formats.
+      await renderCustomerArtifacts({ repos, storage: getStorage() }, tenantId, applicationPublicId,
+        version, payload.formats?.length ? payload.formats : ["pdf", "docx"]);
+      return;
+    }
+    if (app.metadata?.currentExportVersionId && app.metadata.currentExportVersionId !== version.publicId) return;
     const existingFiles =
       app.metadata?.customerFiles && typeof app.metadata.customerFiles === "object"
         ? (app.metadata.customerFiles as Record<string, unknown>)
