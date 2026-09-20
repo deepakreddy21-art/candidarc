@@ -167,9 +167,13 @@ Requirements: 5+ years experience, strong ownership.`);
     const review = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Résumé quality review$/ }) });
     await expect(review.locator("details")).toHaveCount(10);
     await expect(review).toContainText("not a VMock score");
-    const actionVerbs = review.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Action verbs/ }) });
-    await actionVerbs.locator("summary").click();
-    const finding = actionVerbs.locator("li").first();
+    // This fixture has no stated outcome or scope. Test that specific warning
+    // instead of relying on an incidental action-verb flag from another section.
+    const outcomes = review.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Outcomes and scope/ }) });
+    await expect(outcomes).toContainText("Review suggested");
+    await outcomes.locator("summary").click();
+    const finding = outcomes.locator("li").first();
+    await expect(finding.locator("blockquote")).toBeVisible();
     const text = await finding.locator("blockquote").innerText();
     await finding.getByRole("button", { name: "Review this text" }).click();
     await expect(page.getByText("Improving selected text only:", { exact: false })).toContainText(text.slice(0, 180));
