@@ -125,7 +125,7 @@ async def test_openai_parse_called_and_usage_returned() -> None:
     assert resume.absolute_version == 0
     client.beta.chat.completions.parse.assert_awaited()
     request = client.beta.chat.completions.parse.call_args.kwargs
-    assert "Prefer context-specific verbs over Built, Developed" in request["messages"][0]["content"]
+    assert "Choose the most accurate, natural action verb" in request["messages"][0]["content"]
     assert usage.input_tokens == 11
     assert usage.output_tokens == 22
     assert usage.provider_request_id == "resp-1"
@@ -271,6 +271,12 @@ async def test_anthropic_messages_create_called() -> None:
                 "suggested_text": resume.sections[0].bullets[0].text,  # type: ignore[index]
                 "expected_score_impact": 1.0,
                 "evidence_ids": ["ev-1"],
+                "meaning_review": {
+                    "action": "supported", "object": "supported", "ownership": "supported",
+                    "scope": "supported", "outcome": "supported", "naturalness": "natural",
+                    "explanation": "The source preserves the role and dates.",
+                    "source_quotes": [{"evidence_id": "ev-1", "quote": evidence[0].claim_text}],
+                },
             }
         ],
     }

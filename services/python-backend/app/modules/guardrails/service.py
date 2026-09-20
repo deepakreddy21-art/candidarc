@@ -906,6 +906,11 @@ def adjudicate_finding(
                 return False, "UNKNOWN_EVIDENCE_ID"
 
     scoped = [evidence_by_id[eid] for eid in (evidence_ids or []) if eid in evidence_by_id] or evidence
+    if unsupported_responsibility_upgrade(
+        finding_suggested_text,
+        [action for item in scoped for action in [*(item.actions or []), item.claim_text or ""] if action],
+    ):
+        return False, "UNSUPPORTED_OWNERSHIP"
     corpus = _evidence_corpus(scoped)
     scoped_allowed = collect_allowed_technologies(scoped)
 

@@ -33,6 +33,7 @@ type ReadyData = {
   };
   versions?: Array<{ id: string; label: string; createdAt: string }>;
   qualityReport?: {
+    languageReview?: import("@/lib/resume-writing-review").LanguageReviewCheck[];
     writingReview?: WritingReview;
     summary?: string;
     score?: number;

@@ -22,45 +22,18 @@ from app.domain.schemas import (
     ResumeDocument,
 )
 from app.modules.audits import service as audits
+from app.modules.quality.meaning import (
+    MEANING_REVIEW_INSTRUCTIONS,
+    ReviewedAuditOutput,
+    authorize_audit_edit,
+)
 from app.modules.research import service as research
 from app.modules.retrieval.service import match_evidence_request_scoped
 from app.prompts.registry import get_audit_prompt
 from app.providers.retries import map_sdk_exception, with_retries
 
 AUDIT_TOOL_NAME = "emit_audit_findings"
-AUDIT_TOOL_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string"},
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "severity": {"type": "string", "enum": ["critical", "major", "minor", "suggestion"]},
-                    "section": {"type": "string"},
-                    "title": {"type": "string"},
-                    "explanation": {"type": "string"},
-                    "before_text": {"type": "string"},
-                    "suggested_text": {"type": "string"},
-                    "expected_score_impact": {"type": "number"},
-                    "evidence_source": {"type": "string"},
-                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": [
-                    "severity",
-                    "section",
-                    "title",
-                    "explanation",
-                    "before_text",
-                    "suggested_text",
-                    "expected_score_impact",
-                ],
-            },
-        },
-    },
-    "required": ["summary", "findings"],
-}
+AUDIT_TOOL_SCHEMA: dict[str, Any] = ReviewedAuditOutput.model_json_schema()
 
 
 class AnthropicProvider:
@@ -158,7 +131,7 @@ class AnthropicProvider:
             response = await client.messages.create(
                 model=self.model,
                 max_tokens=4096,
-                system=prompt.system,
+                system=f"{prompt.system}\n{MEANING_REVIEW_INSTRUCTIONS}",
                 tools=[
                     {
                         "name": AUDIT_TOOL_NAME,
@@ -187,8 +160,9 @@ class AnthropicProvider:
             raise ProviderError(PROVIDER_OUTPUT_INVALID, "Anthropic audit missing tool payload")
 
         try:
-            findings = [AuditFinding.model_validate(item) for item in tool_input.get("findings") or []]
-            summary = str(tool_input.get("summary") or f"{lens} audit complete")
+            reviewed = ReviewedAuditOutput.model_validate(tool_input)
+            findings = [authorize_audit_edit(item, resume, evidence) for item in reviewed.findings]
+            summary = reviewed.summary
         except Exception as exc:
             raise ProviderError(PROVIDER_OUTPUT_INVALID, str(exc)) from exc
         return findings, summary, response

@@ -635,7 +635,7 @@ def _apply_finding_text(text: str, finding: AuditFinding) -> str:
     replacement = finding.edited_text or finding.suggested_text
     if finding.before_text and finding.before_text in text:
         return text.replace(finding.before_text, replacement, 1)
-    return replacement
+    return text
 
 
 def _bullet_fingerprint(text: str) -> str:
@@ -806,13 +806,10 @@ def apply_accepted_findings(
         return previous
 
     def applies(finding: AuditFinding, bullet: ResumeBullet, section_type: str) -> bool:
-        if finding.before_text and finding.before_text in bullet.text:
-            return True
-        cited = set(bullet.evidence_ids)
-        finding_evidence = set(finding.evidence_ids)
-        if finding.evidence_source:
-            finding_evidence.add(finding.evidence_source)
-        return finding.section == section_type and bool(cited.intersection(finding_evidence))
+        finding_evidence = set(finding.evidence_ids or ([finding.evidence_source] if finding.evidence_source else []))
+        return (finding.section == section_type and bool(finding.before_text)
+                and finding.before_text in bullet.text
+                and (not finding_evidence or finding_evidence.issubset(bullet.evidence_ids)))
 
     sections = []
     for section in previous.sections:
@@ -844,7 +841,7 @@ def apply_accepted_findings(
         content = section.content
         if content:
             for finding in actionable:
-                if finding.section == section.type or finding.before_text in content:
+                if finding.section == section.type and finding.before_text and finding.before_text in content:
                     content = _apply_finding_text(content, finding)
             if any(banned in content.lower() for banned in banned_phrases):
                 content = section.content

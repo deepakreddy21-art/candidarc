@@ -58,6 +58,9 @@ FINAL_QA_CHECK_REGISTRY: Mapping[FinalQaCheckCode, FinalQaCheckDefinition] = Map
     FinalQaCheckCode.UNSUPPORTED_CLAIM: _definition(
         FinalQaCheckCode.UNSUPPORTED_CLAIM, blocking=True, repairable=True
     ),
+    # Semantic ambiguity cannot be repaired by deleting a word or re-running regex.
+    FinalQaCheckCode.MEANING_PRESERVATION: _definition(FinalQaCheckCode.MEANING_PRESERVATION, blocking=True),
+    FinalQaCheckCode.NATURAL_PHRASING: _definition(FinalQaCheckCode.NATURAL_PHRASING, blocking=False),
     FinalQaCheckCode.EVIDENCE_LINKED: _definition(
         FinalQaCheckCode.EVIDENCE_LINKED, blocking=True, required=True
     ),

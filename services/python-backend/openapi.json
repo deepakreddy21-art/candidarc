@@ -897,6 +897,8 @@
           "ATS_FORMAT",
           "LENGTH_REDUCE",
           "UNSUPPORTED_CLAIM",
+          "MEANING_PRESERVATION",
+          "NATURAL_PHRASING",
           "EVIDENCE_LINKED",
           "TECHNOLOGY_CLAIMS",
           "SCORE_RUBRIC_PRESENT",

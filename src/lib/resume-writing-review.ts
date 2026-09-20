@@ -17,6 +17,27 @@ export type WritingReview = {
   findings: WritingFinding[];
 };
 
+export type LanguageReviewCheck = {
+  code: "MEANING_PRESERVATION" | "NATURAL_PHRASING";
+  label: string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+};
+
+/** Never show another version's AI review, or imply mock/local checks are semantic review. */
+export function languageReviewForVersion(value: unknown, versionPublicId: string): LanguageReviewCheck[] {
+  const review = row(value);
+  if (review.versionPublicId !== versionPublicId) return [];
+  return list(review.checks).flatMap((value) => {
+    const check = row(value);
+    if ((check.code !== "MEANING_PRESERVATION" && check.code !== "NATURAL_PHRASING") ||
+        (check.status !== "pass" && check.status !== "warn" && check.status !== "fail") ||
+        typeof check.detail !== "string") return [];
+    return [{ code: check.code, label: check.code === "MEANING_PRESERVATION" ? "Meaning and responsibility" : "Natural phrasing",
+      status: check.status, detail: check.detail }];
+  });
+}
+
 type Row = Record<string, unknown>;
 export type ReviewBullet = Omit<WritingFinding, "criterion" | "message"> & { source: Row };
 const row = (value: unknown): Row => value && typeof value === "object" ? value as Row : {};
@@ -70,9 +91,7 @@ export function reviewResumeWriting(input: { sections: Row[]; pageCount?: number
     if (preferred.has(opening) || fallback.has(opening)) {
       openers.set(opening, [...(openers.get(opening) ?? []), bullet]);
     }
-    if (fallback.has(opening)) {
-      add("action_verbs", bullet, `“${opening}” is a familiar opening. Prefer a more precise action verb if it preserves what you actually did; otherwise keep it.`);
-    } else if (!preferred.has(opening)) {
+    if (!fallback.has(opening) && !preferred.has(opening)) {
       add("action_verbs", bullet, "Check the opening: use a precise action you performed. An unrecognized verb may still be appropriate; do not imply greater ownership.");
     }
     const key = normalize(bullet.text);

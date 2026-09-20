@@ -1,5 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
-import type { WritingReview } from "@/lib/resume-writing-review";
+import type { LanguageReviewCheck, WritingReview } from "@/lib/resume-writing-review";
 
 type Report = {
   name?: string;
@@ -16,6 +16,7 @@ type Report = {
   aiEstimates?: string[];
   nextSteps?: string[];
   writingReview?: WritingReview;
+  languageReview?: LanguageReviewCheck[];
 };
 
 export function QualityReport({ report, onReviewText }: { report?: Report; onReviewText?: (text: string) => void }) {
@@ -29,6 +30,18 @@ export function QualityReport({ report, onReviewText }: { report?: Report; onRev
           </summary>
           <div className="mt-3 space-y-3 text-sm text-foreground-secondary">
             {report.summary ? <p>{report.summary}</p> : null}
+            {report.languageReview?.length ? (
+              <div className="space-y-3">
+                <p className="font-medium text-foreground">Meaning and phrasing · AI review</p>
+                <p>Reviewed against your cited experience. Review suggestions in context; AI can still miss nuance.</p>
+                {report.languageReview.map((check) => (
+                  <details key={check.code} className="rounded-lg border border-border p-3" open={check.status !== "pass"}>
+                    <summary className="cursor-pointer text-foreground">{check.label} · {check.status === "pass" ? "No concerns identified" : "Review suggested"}</summary>
+                    <p className="mt-2 whitespace-pre-line">{check.detail}</p>
+                  </details>
+                ))}
+              </div>
+            ) : null}
             {report.writingReview ? (
               <div className="space-y-4">
                 <p>Suggestions help you refine the wording. Keep your facts and use your judgment; every résumé does not need every competency.</p>

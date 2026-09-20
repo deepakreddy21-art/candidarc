@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { languageReviewForVersion } from "../../../src/lib/resume-writing-review";
 import { z } from "zod";
 import type { AuthContext } from "../../auth/guards";
 import { requireTenantMembership, requireTenantRole, requireUser } from "../../auth/guards";
@@ -425,6 +426,7 @@ export class CustomerGenerateService {
           nextSteps: qualityReport.nextSteps,
           checks: qualityReport.checks,
           writingReview: qualityReport.writingReview,
+          languageReview: languageReviewForVersion(currentApp.metadata?.languageReview, current.publicId),
         };
       }
       if (currentApp.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;

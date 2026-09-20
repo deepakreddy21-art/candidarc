@@ -41,6 +41,8 @@ class FinalQaCheckCode(StrEnum):
     ATS_FORMAT = "ATS_FORMAT"
     LENGTH_REDUCE = "LENGTH_REDUCE"
     UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
+    MEANING_PRESERVATION = "MEANING_PRESERVATION"
+    NATURAL_PHRASING = "NATURAL_PHRASING"
     EVIDENCE_LINKED = "EVIDENCE_LINKED"
     TECHNOLOGY_CLAIMS = "TECHNOLOGY_CLAIMS"
     SCORE_RUBRIC_PRESENT = "SCORE_RUBRIC_PRESENT"
@@ -64,6 +66,8 @@ FINAL_QA_LABEL_BY_CODE: dict[FinalQaCheckCode, str] = {
     FinalQaCheckCode.ATS_FORMAT: "ATS format",
     FinalQaCheckCode.LENGTH_REDUCE: "Length check",
     FinalQaCheckCode.UNSUPPORTED_CLAIM: "Unsupported factual claim",
+    FinalQaCheckCode.MEANING_PRESERVATION: "Meaning and responsibility",
+    FinalQaCheckCode.NATURAL_PHRASING: "Natural phrasing",
     FinalQaCheckCode.EVIDENCE_LINKED: "Evidence linked",
     FinalQaCheckCode.TECHNOLOGY_CLAIMS: "Technology claims",
     FinalQaCheckCode.SCORE_RUBRIC_PRESENT: "Score rubric present",

@@ -108,7 +108,7 @@ export type PromptId = keyof typeof basePrompts;
 const writingPrompts = new Set<PromptId>(["resume-generation", "hr-audit-1", "em-audit-1", "hr-audit-2", "em-audit-2", "final-qa"]);
 const prompts = Object.fromEntries(Object.entries(basePrompts).map(([id, prompt]) => [id,
   writingPrompts.has(id as PromptId)
-    ? { ...prompt, version: "1.1.0", rubricVersion: "writing-r1", system: `${prompt.system}\n${RESUME_WRITING_POLICY}` }
+    ? { ...prompt, version: "1.2.0", rubricVersion: "writing-r2", system: `${prompt.system}\n${RESUME_WRITING_POLICY}` }
     : prompt,
 ])) as Record<PromptId, PromptDefinition>;
 

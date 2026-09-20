@@ -2027,6 +2027,11 @@ export class ResumePipeline {
       nextAction: "Export resume",
       metadata: {
         ...(application?.metadata ?? {}),
+        languageReview: {
+          versionPublicId: latest.publicId,
+          checks: supplement.data.checks.filter((check) =>
+            check.code === "MEANING_PRESERVATION" || check.code === "NATURAL_PHRASING"),
+        },
         qualityReport: attachQualityProvenance(
           computeCandidArcQualityScore({
             sections: latest.sections as Array<Record<string, unknown>>,

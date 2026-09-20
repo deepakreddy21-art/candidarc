@@ -21,6 +21,12 @@ from app.domain.schemas import (
 )
 from app.modules.guardrails.service import validate_resume_claims
 from app.modules.quality import service as quality
+from app.modules.quality.meaning import (
+    MEANING_REVIEW_INSTRUCTIONS,
+    ReviewedFinalQa,
+    authorize_meaning_reviews,
+    review_targets,
+)
 from app.modules.research import service as research
 from app.modules.retrieval.service import match_evidence_request_scoped
 from app.prompts.registry import FINAL_QA, RESUME_GENERATION
@@ -265,6 +271,7 @@ class OpenAIProvider:
         user_payload = {
             "resume": resume.model_dump(),
             "evidence": [e.model_dump() for e in evidence],
+            "review_targets": [target.model_dump() for target in review_targets(resume)],
             "deterministic_checks": det,
             "extra_checks": [
                 c.model_dump() if hasattr(c, "model_dump") else c for c in (deterministic_checks or [])
@@ -275,22 +282,22 @@ class OpenAIProvider:
                 response = await client.beta.chat.completions.parse(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": FINAL_QA.system},
+                        {"role": "system", "content": f"{FINAL_QA.system}\n{MEANING_REVIEW_INSTRUCTIONS}"},
                         {"role": "user", "content": json.dumps(user_payload)},
                     ],
-                    response_format=FinalQaResponse,
+                    response_format=ReviewedFinalQa,
                 )
                 parsed = response.choices[0].message.parsed
                 if parsed is None:
                     raise ProviderError(PROVIDER_OUTPUT_INVALID, "OpenAI returned empty final QA")
-                if isinstance(parsed, FinalQaResponse):
-                    return parsed, response
-                return FinalQaResponse.model_validate(parsed), response
+                if hasattr(parsed, "model_dump"):
+                    parsed = parsed.model_dump()
+                return authorize_meaning_reviews(ReviewedFinalQa.model_validate(parsed), resume, evidence), response
 
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": FINAL_QA.system},
+                    {"role": "system", "content": f"{FINAL_QA.system}\n{MEANING_REVIEW_INSTRUCTIONS}\nOutput schema: {json.dumps(ReviewedFinalQa.model_json_schema())}"},
                     {"role": "user", "content": json.dumps(user_payload)},
                 ],
                 response_format={"type": "json_object"},
@@ -298,7 +305,7 @@ class OpenAIProvider:
             content = response.choices[0].message.content
             if not content:
                 raise ProviderError(PROVIDER_OUTPUT_INVALID, "OpenAI returned empty content")
-            return FinalQaResponse.model_validate(json.loads(content)), response
+            return authorize_meaning_reviews(ReviewedFinalQa.model_validate(json.loads(content)), resume, evidence), response
         except ProviderError:
             raise
         except Exception as exc:

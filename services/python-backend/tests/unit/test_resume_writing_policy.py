@@ -15,8 +15,8 @@ def source(evidence_id: str, action: str) -> EvidenceItem:
 
 def test_all_provider_paths_receive_the_shared_policy() -> None:
     for prompt in [RESUME_GENERATION, FINAL_QA, *AUDIT_PROMPTS.values()]:
-        assert "writing-r1" in prompt.prompt_version
-        assert "Prefer context-specific verbs over Built, Developed" in prompt.system
+        assert "writing-r2" in prompt.prompt_version
+        assert "Choose the most accurate, natural action verb" in prompt.system
         assert "never invent percentages" in prompt.system
         assert "selected-text edit scope" in prompt.system
         assert "advisory" in prompt.system
