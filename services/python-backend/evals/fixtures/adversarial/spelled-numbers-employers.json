@@ -122,7 +122,7 @@
   },
   {
     "id": "valid-spelled-number",
-    "claim_text": "Architected five microservices for the payment platform at Acme Labs",
+    "claim_text": "Built five microservices for the payment platform at Acme Labs",
     "claim_category": "spelled_numbers",
     "evidence": [
       {
@@ -130,6 +130,48 @@
         "title": "Engineer",
         "organization": "Acme Labs",
         "claim_text": "Engineer at Acme Labs. Built 5 microservices for payments",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high",
+        "metrics": ["5 microservices"]
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_clean": true
+  },
+  {
+    "id": "spelled-number-does-not-authorize-architecture",
+    "claim_text": "Architected five microservices for the payment platform at Acme Labs",
+    "claim_category": "ownership",
+    "evidence": [
+      {
+        "id": "ev-sp-valid-1",
+        "title": "Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Engineer at Acme Labs. Built 5 microservices for payments",
+        "technologies": ["Python"],
+        "source_type": "employment",
+        "verification_status": "user_attested",
+        "candidate_confirmation_status": "confirmed",
+        "confidence": "high",
+        "metrics": ["5 microservices"]
+      }
+    ],
+    "allowed_technologies": ["Python"],
+    "expected_violations": ["UNSUPPORTED_OWNERSHIP"]
+  },
+  {
+    "id": "spelled-number-with-evidenced-architecture",
+    "claim_text": "Architected five microservices for the payment platform at Acme Labs",
+    "claim_category": "ownership",
+    "evidence": [
+      {
+        "id": "ev-sp-valid-1",
+        "title": "Engineer",
+        "organization": "Acme Labs",
+        "claim_text": "Engineer at Acme Labs. Designed 5 microservices for payments",
         "technologies": ["Python"],
         "source_type": "employment",
         "verification_status": "user_attested",

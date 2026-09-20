@@ -69,3 +69,14 @@ live output against the candidate's actual evidence.
 
 No paid live-AI calls or new PostgreSQL durability run were performed for this
 writing change. Existing CI gates remain enabled.
+
+### CI evaluation correction
+
+The first CI run found an incompatible older evaluation expectation: its clean
+number-spelling example changed `Built 5 microservices` into `Architected five
+microservices`. Number equivalence does not establish architecture responsibility.
+The clean case now keeps the verb unchanged. Separate cases require rejecting
+unsupported architecture and accepting it when the same cited evidence records
+design work. The evaluator still fails on every unexpected violation; no
+guardrail, CI gate, or assertion was disabled. Run `npm run eval:resume` as well as
+unit tests when changing generation or claim validation.

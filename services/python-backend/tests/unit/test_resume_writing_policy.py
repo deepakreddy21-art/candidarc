@@ -46,6 +46,19 @@ def test_leadership_elsewhere_does_not_authorize_an_uncited_role() -> None:
     assert "UNSUPPORTED_OWNERSHIP" not in validate_resume_claims(resume, evidence, [])
 
 
+@pytest.mark.parametrize(("action", "claim", "expected"), [
+    ("Built 5 microservices for payments", "Built five microservices for payments", set()),
+    ("Built 5 microservices for payments", "Architected five microservices for payments", {"UNSUPPORTED_OWNERSHIP"}),
+    ("Designed 5 microservices for payments", "Architected five microservices for payments", set()),
+])
+def test_number_paraphrases_keep_responsibility_checks(action: str, claim: str, expected: set[str]) -> None:
+    evidence = [source("e1", action)]
+    resume = build_grounded_resume(absolute_version=0, cycle_step=0, evidence=evidence, notes="writing")
+    resume.sections = [ResumeSection(type="experience", title="Experience", order=0,
+                                    bullets=[ResumeBullet(text=claim, evidence_ids=["e1"])])]
+    assert set(validate_resume_claims(resume, evidence, [])) == expected
+
+
 @pytest.mark.parametrize(("original", "expected"), [
     ("Built APIs for 3 departments.", "Implemented APIs for 3 departments."),
     ("Developed documentation for analysts.", "Authored documentation for analysts."),
