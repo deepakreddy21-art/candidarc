@@ -3,14 +3,18 @@ import { readFile } from "node:fs/promises";
 import { completeOnboardingViaApi, seedOnboardedUser, signupViaApi, uniqueEmail } from "./helpers/session";
 
 test.describe("settings interactions", () => {
-  test("saving preferences persists after reload", async ({ page }) => {
+  test("unsupported preferences are disabled and job preferences persist", async ({ page }) => {
     await seedOnboardedUser(page, "prefs");
     await page.goto("/app/settings/preferences");
-    await page.getByRole("switch", { name: /email digest/i }).click();
-    await page.getByRole("button", { name: /save preferences/i }).click();
-    await expect(page.getByText(/preferences saved/i)).toBeVisible();
+    await expect(page.getByRole("switch", { name: /email digest/i })).toBeDisabled();
+    await page.getByRole("link", { name: /edit job preferences/i }).click();
+    await expect(page).toHaveURL(/settings\/job-preferences/);
+    await page.getByRole("textbox", { name: /^Preferred locations/ }).fill("Chicago, IL");
+    await page.getByRole("button", { name: "Save job preferences", exact: true }).click();
+    await expect(page.getByRole("status")).toHaveText("Saved");
     await page.reload();
-    await expect(page.getByRole("switch", { name: /email digest/i })).toHaveAttribute("aria-checked", "false");
+    await expect(page.getByTestId("chip-Chicago, IL")).toBeVisible();
+    await expect(page.getByTestId("chip-Chicago")).toHaveCount(0);
   });
 
   test("billing portal controls stay disabled with a reason", async ({ page }) => {
@@ -117,7 +121,7 @@ test.describe("settings interactions", () => {
     await expect(page.getByRole("heading", { name: /^Privacy$/i })).toBeVisible();
     await page.goto("/app/profile");
     await expect(page.getByRole("heading", { name: /^Profile$/i })).toBeVisible();
-    await expect(page.locator("#identity-email")).toHaveValue(user.email);
+    await expect(page.locator("#email")).toHaveValue(user.email);
   });
 
   test("integrations list disabled live connectors instead of fake connect buttons", async ({ page }) => {

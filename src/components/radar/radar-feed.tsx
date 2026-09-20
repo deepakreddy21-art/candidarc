@@ -371,6 +371,51 @@ export function RadarFeed() {
     }
   }
 
+  function resetFilters() {
+    setQ("");
+    setLocation("");
+    setArrangement("any");
+    setAdvanced({
+      company: "",
+      employmentType: "",
+      seniority: "",
+      sponsorship: "",
+      compensationMin: "",
+      freshnessBasis: "discovered",
+      includeReposts: true,
+      hideDuplicates: false,
+      requireOriginal: false,
+      excludedCompanies: "",
+      verifiedOpen: false,
+      companyDirect: false,
+      freshnessPreset: "7d",
+    });
+    writeUrl({
+      q: undefined,
+      location: undefined,
+      sponsorship: undefined,
+      company: undefined,
+      seniority: undefined,
+      arrangement: undefined,
+      employmentType: undefined,
+      compensationMin: undefined,
+      verifiedOpen: undefined,
+      companyDirect: undefined,
+      hideDuplicates: undefined,
+      includeReposts: undefined,
+      freshnessPreset: undefined,
+      freshnessBasis: undefined,
+      excludedCompanies: undefined,
+      requireOriginal: undefined,
+      genuinelyNew: undefined,
+      customStart: undefined,
+      customEnd: undefined,
+      timezone: undefined,
+    });
+  }
+
+  const hasFilters = [...searchParams.keys()].some((key) => key !== "tab" && key !== "job");
+
   function selectJob(id: string) {
     if (isNarrow) {
       router.push(`/app/radar/jobs/${id}`);
@@ -389,19 +434,7 @@ export function RadarFeed() {
             <Link href="/app/resumes/new" className={buttonVariants({ size: "sm" })}>
               Tailor a job I found
             </Link>
-            <Link href="/app/radar/saved" className={buttonVariants({ variant: "secondary", size: "sm" })}>
-              Saved searches
-            </Link>
-            <Button type="button" variant="secondary" size="sm" onClick={() => setSaveSearchOpen(true)}>
-              Save search
-            </Button>
-            <Button type="button" variant="secondary" size="sm" onClick={() => setAlertOpen(true)}>
-              Create alert
-            </Button>
-            <Link href="/app/radar/alerts" className={buttonVariants({ variant: "secondary", size: "sm" })}>
-              Alerts
-            </Link>
-            <Link href="/app/settings/preferences" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+            <Link href="/app/settings/job-preferences" className={buttonVariants({ variant: "secondary", size: "sm" })}>
               Preferences
             </Link>
           </div>
@@ -608,6 +641,21 @@ export function RadarFeed() {
         </Button>
       </div>
 
+      <div className="flex flex-wrap gap-2 border-b border-border pb-3" aria-label="Search tools">
+            <Link href="/app/radar/saved" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+              Saved searches
+            </Link>
+            <Button type="button" variant="secondary" size="sm" onClick={() => setSaveSearchOpen(true)}>
+              Save search
+            </Button>
+            <Button type="button" variant="secondary" size="sm" onClick={() => setAlertOpen(true)}>
+              Create alert
+            </Button>
+            <Link href="/app/radar/alerts" className={buttonVariants({ variant: "secondary", size: "sm" })}>
+              Alerts
+            </Link>
+      </div>
+
       <div className="flex flex-wrap gap-2">
         {[
           filters.q ? `Keywords: ${filters.q}` : null,
@@ -623,58 +671,8 @@ export function RadarFeed() {
               {chip}
             </span>
           ))}
-        {(filters.q ||
-          filters.location ||
-          filters.sponsorship ||
-          filters.company ||
-          filters.seniority ||
-          (filters.arrangement && filters.arrangement !== "any") ||
-          filters.verifiedOpenOnly ||
-          filters.companyDirectOnly) ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              setQ("");
-              setLocation("");
-              setArrangement("any");
-              setAdvanced({
-                company: "",
-                employmentType: "",
-                seniority: "",
-                sponsorship: "",
-                compensationMin: "",
-                freshnessBasis: "discovered",
-                includeReposts: true,
-                hideDuplicates: false,
-                requireOriginal: false,
-                excludedCompanies: "",
-                verifiedOpen: false,
-                companyDirect: false,
-                freshnessPreset: "7d",
-              });
-              writeUrl({
-                q: undefined,
-                location: undefined,
-                sponsorship: undefined,
-                company: undefined,
-                seniority: undefined,
-                arrangement: undefined,
-                employmentType: undefined,
-                compensationMin: undefined,
-                verifiedOpen: undefined,
-                companyDirect: undefined,
-                hideDuplicates: undefined,
-                includeReposts: undefined,
-                freshnessPreset: undefined,
-                freshnessBasis: undefined,
-                excludedCompanies: undefined,
-                requireOriginal: undefined,
-                genuinelyNew: undefined,
-              });
-            }}
-          >
+        {hasFilters ? (
+          <Button type="button" size="sm" variant="ghost" onClick={resetFilters}>
             Reset filters
           </Button>
         ) : null}
@@ -774,23 +772,15 @@ export function RadarFeed() {
             </div>
           ) : jobs.length === 0 && !error ? (
             <EmptyState
-              title="No matching roles"
-              description="Try a broader search or clear filters."
+              title={filters.tab === "saved" && !hasFilters ? "No saved jobs yet" : "No matching roles"}
+              description={filters.tab === "saved" && !hasFilters ? "Save a job to find it here later." : "Try a broader search or clear filters."}
               action={
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() =>
-                    writeUrl({
-                      q: undefined,
-                      location: undefined,
-                      verifiedOpen: undefined,
-                      companyDirect: undefined,
-                      genuinelyNew: undefined,
-                    })
-                  }
+                  onClick={filters.tab === "saved" && !hasFilters ? () => writeUrl({ tab: "best" }) : resetFilters}
                 >
-                  Clear filters
+                  {filters.tab === "saved" && !hasFilters ? "Browse jobs" : "Clear filters"}
                 </Button>
               }
             />

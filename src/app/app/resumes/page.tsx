@@ -37,6 +37,8 @@ export default function ResumesPage() {
     void load();
   }, [load]);
 
+  const matches = apps.filter((app) => `${app.role} ${app.company}`.toLowerCase().includes(query.trim().toLowerCase()));
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -78,12 +80,9 @@ export default function ResumesPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+          {!matches.length && <EmptyState title="No resumes match this search" description="Try a company name or job title." action={<button type="button" className={buttonVariants({ variant: "secondary" })} onClick={() => setQuery("")}>Clear search</button>} />}
           <ul className="divide-y divide-border rounded-xl border border-border bg-surface" data-testid="resume-list">
-            {apps
-              .filter((app) => {
-                const hay = `${app.role} ${app.company}`.toLowerCase();
-                return hay.includes(query.trim().toLowerCase());
-              })
+            {matches
               .map((app) => {
                 const href = customerResumePath(app);
                 if (!href) return null;

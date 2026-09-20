@@ -137,6 +137,7 @@ function apiErrorFromBody(body: ErrorBody | null, status: number): ApiError {
 type ApiResult<T> = { ok: true; data: T } | { ok: false; network: boolean; status?: number };
 
 type CreateApplicationRequest = Partial<Application> & Pick<Application, "company" | "role"> & {
+  trackingOnly?: boolean;
   jobUrl?: string;
   jobDescriptionText?: string;
   researchDepth?: string;
@@ -180,12 +181,12 @@ async function apiUpload<T>(path: string, form: FormData): Promise<ApiResult<T>>
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
-      if (!isDemoFallbackAllowed()) throw apiErrorFromBody(body, res.status);
-      return { ok: false, network: false, status: res.status };
+      throw apiErrorFromBody(body, res.status);
     }
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (error instanceof ApiError) throw error;
     if (isTimeoutError(error)) throw error instanceof RequestTimeoutError ? error : new RequestTimeoutError();
     if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
@@ -205,12 +206,12 @@ async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: numb
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string; requestId?: string }; message?: string } | null;
-      if (!isDemoFallbackAllowed()) throw apiErrorFromBody(body, res.status);
-      return { ok: false, network: false, status: res.status };
+      throw apiErrorFromBody(body, res.status);
     }
     const data = (await res.json()) as T;
     return { ok: true, data };
   } catch (error) {
+    if (error instanceof ApiError) throw error;
     if (isTimeoutError(error)) throw error instanceof RequestTimeoutError ? error : new RequestTimeoutError();
     if (isCancelledError(error)) throw error instanceof RequestCancelledError ? error : new RequestCancelledError();
     if (!isDemoFallbackAllowed()) {
@@ -458,13 +459,7 @@ export const api = {
       profile: CandidateProfile;
     }>("/profile/onboarding", { method: "PATCH", body: JSON.stringify(input) });
     if (res.ok) return res.data;
-    if (!isDemoFallbackAllowed()) throw new ApiError("Could not save onboarding progress", res.status);
-    if (input.data) await mock.updateProfile(input.data as Partial<CandidateProfile>);
-    return {
-      step: input.step ?? 0,
-      completedAt: input.completed ? new Date().toISOString() : null,
-      profile: await mock.getProfile(),
-    };
+    throw new ApiError("Could not save onboarding progress. Your edits are still here; try again.", res.status);
   },
   async uploadResume(file: File): Promise<{ file: { id: string; scanStatus: string }; importStatus: string }> {
     const form = new FormData();
@@ -530,6 +525,9 @@ export const api = {
       method: "POST",
       timeoutMs: LONG_WRITE_TIMEOUT_MS,
       body: JSON.stringify({
+        trackingOnly: input.trackingOnly,
+        candidateStatus: input.candidateStatus,
+        appliedAt: input.appliedAt,
         company: input.company,
         role: input.role,
         location: input.location,
@@ -545,30 +543,19 @@ export const api = {
       }),
     });
     if (res.ok) return res.data.application;
-    if (!isDemoFallbackAllowed()) throw new ApiError("Could not create application", res.status);
+    if (input.trackingOnly || !isDemoFallbackAllowed()) throw new ApiError("Could not create application. Your details are still here; try again.", res.status);
     return mock.createApplication(input);
   },
   async archiveApplications(ids: string[]): Promise<void> {
-    let usedApi = false;
     for (const id of ids) {
       const res = await apiFetch(`/applications/${id}`, { method: "DELETE" });
-      if (res.ok) usedApi = true;
-    }
-    if (!usedApi) {
-      if (!isDemoFallbackAllowed()) throw new ApiError("Could not archive applications", 503);
-      await mock.archiveApplications(ids);
+      if (!res.ok) throw new ApiError("Could not archive application. Try again.", res.status);
     }
   },
   async restoreApplication(id: string): Promise<Application | undefined> {
-    const res = await apiFetch<{ application: Application }>(`/applications/${id}/restore`, {
-      method: "POST",
-      body: "{}",
-    });
-    if (res.ok) return res.data.application;
-    if (!isDemoFallbackAllowed()) throw new ApiError("Could not restore application", res.status);
-    const current = await mock.getApplication(id);
-    if (!current) return undefined;
-    return mock.updateApplication(id, { archived: false } as never);
+    const res = await apiFetch<{ application: Application }>(`/applications/${id}/restore`, { method: "POST", body: "{}" });
+    if (!res.ok) throw new ApiError("Could not restore application. Try again.", res.status);
+    return res.data.application;
   },
   async updateApplication(
     id: string,
@@ -597,8 +584,7 @@ export const api = {
       body: JSON.stringify(patch),
     });
     if (res.ok) return res.data.application;
-    if (!isDemoFallbackAllowed()) throw new ApiError("Could not update application", res.status);
-    return mock.updateApplication(id, patch);
+    throw new ApiError("Could not update application. Your changes were not saved; try again.", res.status);
   },
   async getJobDescription(id: string): Promise<JobDescription | undefined> {
     if (!isDemoFallbackAllowed()) return undefined;

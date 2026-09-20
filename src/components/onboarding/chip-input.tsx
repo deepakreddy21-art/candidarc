@@ -16,6 +16,7 @@ type ChipInputProps = {
   optional?: boolean;
   hint?: string;
   error?: string | null;
+  commitOnComma?: boolean;
 };
 
 export function ChipInput({
@@ -28,6 +29,7 @@ export function ChipInput({
   optional,
   hint,
   error,
+  commitOnComma = true,
 }: ChipInputProps) {
   const [draft, setDraft] = useState("");
   const filtered = useMemo(() => {
@@ -68,8 +70,9 @@ export function ChipInput({
             {value}
             <button
               type="button"
-              className="rounded-full p-0.5 text-foreground-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+              className="inline-flex size-7 items-center justify-center rounded-full text-foreground-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
               aria-label={`Remove ${value}`}
+              onMouseDown={(event) => event.preventDefault()}
               onClick={() => onChange(values.filter((v) => v !== value))}
             >
               <X className="size-3" />
@@ -80,13 +83,15 @@ export function ChipInput({
           id={id}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          onBlur={(event) => {
+            // Tab to a suggestion must not save the unfinished query as another chip.
+            if (event.relatedTarget instanceof HTMLElement && event.relatedTarget.dataset.chipSuggestion === id) return;
+            if (draft.trim()) commit(draft);
+          }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === ",") {
+            if (!e.nativeEvent.isComposing && (e.key === "Enter" || (commitOnComma && e.key === ","))) {
               e.preventDefault();
               if (draft.trim()) commit(draft);
-            }
-            if (e.key === "Backspace" && !draft && values.length) {
-              onChange(values.slice(0, -1));
             }
           }}
           placeholder={values.length ? "" : placeholder}
@@ -97,11 +102,13 @@ export function ChipInput({
         />
       </div>
       {filtered.length > 0 ? (
-        <ul className="flex flex-wrap gap-2" role="listbox" aria-label="Suggestions">
+        <ul className="flex flex-wrap gap-2" aria-label={`${label} suggestions`}>
           {filtered.map((suggestion) => (
             <li key={suggestion}>
               <button
                 type="button"
+                data-chip-suggestion={id}
+                onMouseDown={(event) => event.preventDefault()}
                 className="rounded-full border border-border px-2.5 py-1 text-xs text-foreground-secondary hover:border-border-strong hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                 onClick={() => commit(suggestion)}
               >
@@ -131,7 +138,7 @@ type MultiToggleProps = {
 
 export function MultiToggle({ legend, options, values, onChange, optional, error }: MultiToggleProps) {
   return (
-    <fieldset className="space-y-2">
+    <fieldset className="space-y-2" tabIndex={-1} aria-invalid={Boolean(error)}>
       <legend className="text-sm font-medium text-foreground">
         {legend}
         {optional ? <span className="ml-1 font-normal text-foreground-muted">(optional)</span> : null}

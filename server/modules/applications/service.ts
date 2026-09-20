@@ -24,22 +24,22 @@ export class ApplicationsService {
     return ctx.activeTenantId;
   }
 
-  async create(ctx: AuthContext, input: CreateApplicationInput) {
+  private async createRecord(ctx: AuthContext, input: CreateApplicationInput, trackingOnly: boolean) {
     const user = requireUser(ctx);
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
 
-    const publicId = `app-${input.company.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24)}-${Date.now().toString(36)}`;
-    const app = await this.applications.create({
+    const publicId = newId("app");
+    return this.applications.create({
       id: newId("app"),
       publicId,
       tenantId,
       company: input.company,
       companyMark: input.company.slice(0, 2).toUpperCase(),
       role: input.role,
-      location: input.location ?? "Remote",
-      employmentType: input.employmentType ?? "Full-time",
-      status: "researching",
+      location: input.location ?? (trackingOnly ? "" : "Remote"),
+      employmentType: input.employmentType ?? (trackingOnly ? "" : "Full-time"),
+      status: trackingOnly ? "draft" : "researching",
       stage: "APPLICATION_CREATED",
       workflowStage: "APPLICATION_CREATED",
       resumeScore: 0,
@@ -50,9 +50,10 @@ export class ApplicationsService {
       deadline: input.deadline,
       archived: false,
       roleFamily: input.roleFamily ?? "General",
-      nextAction: "Start research",
+      nextAction: trackingOnly ? (input.candidateStatus === "Applied" ? "Follow up" : "Review job") : "Start research",
       ownerUserId: user.id,
       metadata: {
+        ...(trackingOnly ? { candidateStatus: input.candidateStatus ?? "Saved", appliedAt: input.candidateStatus === "Applied" ? input.appliedAt : undefined, trackingOnly: true } : {}),
         jobUrl: input.jobUrl,
         jobDescription: input.jobDescription ?? input.jobDescriptionText,
         researchDepth: input.researchDepth ?? "standard",
@@ -63,6 +64,16 @@ export class ApplicationsService {
       },
     });
 
+  }
+
+  /** Recording an external application never queues research or incurs AI usage. */
+  async createTracked(ctx: AuthContext, input: CreateApplicationInput) {
+    return this.createRecord(ctx, input, true);
+  }
+
+  async create(ctx: AuthContext, input: CreateApplicationInput) {
+    const app = await this.createRecord(ctx, input, false);
+    const tenantId = app.tenantId;
     const idempotencyKey = input.idempotencyKey ?? `app-create:${app.publicId}`;
     const workflow = await this.engine.start({
       tenantId,

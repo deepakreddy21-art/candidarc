@@ -52,6 +52,7 @@ export const onboardingStepDataSchema = z
     requiresSponsorship: z.boolean().optional().nullable(),
     salaryPreference: z.string().max(80).optional().nullable(),
     fullName: z.string().min(1).max(160).optional(),
+    preferredName: z.string().max(80).optional(),
     email: z.string().email().max(160).optional().or(z.literal("")),
     phone: z.string().max(40).optional().nullable(),
     location: z.string().max(160).optional().nullable(),

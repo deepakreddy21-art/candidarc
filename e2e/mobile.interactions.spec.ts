@@ -68,7 +68,10 @@ test.describe("mobile interactions @mobile", () => {
       buffer: importResumePdf(),
     });
     await expect(page.getByText(/ready — review|resume ready/i)).toBeVisible({ timeout: 90_000 });
-    await expect(page.getByTestId("imported-role-title-0")).toContainText(/Harbor Systems/i);
+    const role = page.locator(".focus-review-record").filter({ has: page.getByRole("button", { name: "Edit role 1", exact: true }) });
+    await expect(role).toContainText("Harbor Systems");
+    await page.getByRole("button", { name: "Edit role 1", exact: true }).click();
+    await expect(page.getByLabel("Employer 1", { exact: true })).toHaveValue("Harbor Systems");
   });
 
   test("tailor and PDF download work at 390px", async ({ page }) => {

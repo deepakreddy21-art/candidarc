@@ -52,8 +52,8 @@ const destinations: Destination[] = [
     homeHref: /\/app\/radar(?:\?|$)/,
     usable: async (page) => {
       await expect(page.getByRole("heading", { name: /^Profile$/i })).toBeVisible();
-      await expect(page.locator("#identity-fullName")).toBeVisible({ timeout: 15_000 });
-      await expect(page.locator("#identity-fullName")).toBeEnabled();
+      await expect(page.locator("#full-name")).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator("#full-name")).toBeEnabled();
     },
   },
   {

@@ -10,14 +10,16 @@ import {
 } from "./types";
 
 type Props = {
+  section?: "all" | "required" | "optional";
   form: OnboardingFormState;
   onChange: (patch: Partial<OnboardingFormState>) => void;
   errors: Partial<Record<string, string>>;
 };
 
-export function StepWorkPreferences({ form, onChange, errors }: Props) {
+export function StepWorkPreferences({ form, onChange, errors, section = "all" }: Props) {
   return (
     <div className="space-y-6">
+      {section !== "optional" && <>
       <MultiToggle
         legend="Job types"
         options={JOB_TYPE_OPTIONS}
@@ -40,10 +42,13 @@ export function StepWorkPreferences({ form, onChange, errors }: Props) {
         values={form.preferredLocations}
         onChange={(preferredLocations) => onChange({ preferredLocations })}
         suggestions={[...LOCATION_SUGGESTIONS]}
-        placeholder="City, region, or Remote"
+        placeholder="City, region, country"
+        commitOnComma={false}
         optional
       />
 
+      </>}
+      {section !== "required" && <>
       <fieldset className="space-y-2">
         <legend className="text-sm font-medium text-foreground">
           Willing to relocate <span className="font-normal text-foreground-muted">(optional)</span>
@@ -64,7 +69,7 @@ export function StepWorkPreferences({ form, onChange, errors }: Props) {
                     ? "rounded-[11px] border border-accent bg-accent/10 px-3 py-2 text-sm"
                     : "rounded-[11px] border border-border-strong bg-surface px-3 py-2 text-sm text-foreground-secondary"
                 }
-                onClick={() => onChange({ willingToRelocate: option.value })}
+                onClick={() => onChange({ willingToRelocate: selected ? null : option.value })}
               >
                 {option.label}
               </button>
@@ -107,7 +112,7 @@ export function StepWorkPreferences({ form, onChange, errors }: Props) {
                       ? "rounded-[11px] border border-accent bg-accent/10 px-3 py-2 text-sm"
                       : "rounded-[11px] border border-border-strong bg-surface px-3 py-2 text-sm text-foreground-secondary"
                   }
-                  onClick={() => onChange({ requiresSponsorship: option.value })}
+                  onClick={() => onChange({ requiresSponsorship: selected ? null : option.value })}
                 >
                   {option.label}
                 </button>
@@ -125,9 +130,12 @@ export function StepWorkPreferences({ form, onChange, errors }: Props) {
           id="salary"
           value={form.salaryPreference}
           onChange={(e) => onChange({ salaryPreference: e.target.value })}
-          placeholder="e.g. $140k+ base"
+          placeholder="e.g. USD 80,000 per year or GBP 30 per hour"
+          aria-describedby="salary-hint"
         />
+        <p id="salary-hint" className="text-xs text-foreground-muted">Include the currency and whether the amount is yearly or hourly.</p>
       </div>
+      </>}
     </div>
   );
 }

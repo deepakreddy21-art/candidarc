@@ -33,7 +33,7 @@ export default function OpportunityOverviewPage() {
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [savedNotes, setSavedNotes] = useState("");
+  const [saveError, setSaveError] = useState<string | null>(null);
   const requestId = useRef(0);
 
   useEffect(() => {
@@ -46,7 +46,6 @@ export default function OpportunityOverviewPage() {
         setApp(found ?? null);
         if (found) {
           setNotes(found.notes ?? "");
-          setSavedNotes(found.notes ?? "");
           setFollowUpAt(found.followUpAt ?? "");
           setInterviewAt(found.interviewAt ?? "");
           setCoverLetter(found.coverLetter ?? "");
@@ -97,6 +96,7 @@ export default function OpportunityOverviewPage() {
   async function saveTracker() {
     if (!app) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const saved = await api.updateApplication(app.id, {
         notes,
@@ -108,10 +108,9 @@ export default function OpportunityOverviewPage() {
         expectedVersion: app.version,
       });
       setApp(saved);
-      setSavedNotes(saved.notes ?? notes);
       toast.success("Application workspace saved");
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Could not save");
+      setSaveError(err instanceof ApiError && err.status === 409 ? "This application changed elsewhere. Your edits are still here. Reload the page after copying anything you want to keep." : "Could not save. Your edits are still here; try again.");
     } finally {
       setSaving(false);
     }
@@ -230,7 +229,7 @@ export default function OpportunityOverviewPage() {
         </Link>
       </div>
 
-      <section className="space-y-3 rounded-xl border border-border p-4">
+      <fieldset disabled={saving || generating} className="space-y-3 rounded-xl border border-border p-4">
         <h2 className="text-sm font-medium">Workspace</h2>
         <p className="text-xs text-foreground-muted">
           Opening an employer site is not proof you applied. Confirm status after you submit.
@@ -334,6 +333,7 @@ export default function OpportunityOverviewPage() {
             Copy outreach
           </Button>
         </div>
+        {saveError && <p role="alert" className="text-sm text-destructive">{saveError}</p>}
         <div className="flex flex-wrap gap-2">
           <Button type="button" onClick={() => void saveTracker()} disabled={saving}>
             {saving ? "Saving…" : "Save workspace"}
@@ -343,14 +343,21 @@ export default function OpportunityOverviewPage() {
             variant="secondary"
             disabled={saving}
             onClick={() => {
-              setNotes(savedNotes);
-              toast.message("Unsaved note edits discarded");
+              setNotes(app.notes ?? "");
+              setFollowUpAt(app.followUpAt ?? "");
+              setInterviewAt(app.interviewAt ?? "");
+              setContactName(app.contacts?.[0]?.name ?? "");
+              setCoverLetter(app.coverLetter ?? "");
+              setOutreachDraft(app.outreachDraft ?? "");
+              setConnectionBasis("");
+              setSaveError(null);
+              toast.message("Unsaved workspace edits discarded");
             }}
           >
             Cancel
           </Button>
         </div>
-      </section>
+      </fieldset>
       <AskPanel contextType="application" contextId={app.id} company={app.company} role={app.role} />
       <ApplicationCopilot opportunityId={app.id} company={app.company} role={app.role} />
     </div>

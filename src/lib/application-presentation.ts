@@ -84,6 +84,10 @@ export function customerNextAction(
     resumeScore: app.resumeScore,
     candidateStatus: app.candidateStatus,
   });
+  if (status === "Applied") return "Follow up";
+  if (status === "Interviewing") return "Prepare for interview";
+  if (status === "Offer") return "Review offer";
+  if (status === "Rejected" || status === "Withdrawn") return "Archive or reopen";
   const resume = mapResumeProgress({
     status: app.status,
     resumeScore: app.resumeScore,
@@ -93,10 +97,6 @@ export function customerNextAction(
   if (resume === "Preparing") return "Wait for resume";
   if (resume === "Not started") return "Tailor resume";
   if (status === "Ready to apply" || status === "Saved") return "Apply on company site";
-  if (status === "Applied") return "Follow up";
-  if (status === "Interviewing") return "Prepare for interview";
-  if (status === "Offer") return "Review offer";
-  if (status === "Rejected" || status === "Withdrawn") return "Archive or reopen";
   // Strip internal pipeline jargon from legacy nextAction strings
   const raw = app.nextAction ?? "";
   if (/research|evidence|audit|final.?qa|v\d|hr-|em-/i.test(raw)) {

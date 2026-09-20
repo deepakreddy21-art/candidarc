@@ -113,26 +113,31 @@ test.describe("jobs interactions", () => {
     await seedOnboardedUser(page, "jobs-select");
     await openJobs(page);
     const title = (await page.getByTestId("job-row").first().locator("h3").innerText()).trim();
-    await page.getByTestId("job-row").first().getByRole("button").first().click();
+    await page.getByTestId("job-row").first().getByRole("link").first().click();
     const detail = page.getByTestId("job-detail");
     await expect(detail).toBeVisible();
     await expect(detail).toContainText(title);
     await expect(detail.getByText(/Why this job fits/i)).toBeVisible();
   });
 
-  test("opening a company site does not mark the application Applied", async ({ page }) => {
+  test("opening a company site does not mark the application Applied", async ({ page, context }) => {
+    // The fixture handoff must not depend on external DNS/network availability.
+    await context.route("https://example.com/jobs/candidarc-handoff", (route) => route.fulfill({
+      contentType: "text/html", body: "<h1>Employer application</h1>",
+    }));
     await seedOnboardedUser(page, "jobs-apply-link");
     await openJobs(page);
     await page.getByRole("textbox", { name: /search jobs/i }).fill("Example Handoff Engineer");
     await page.getByRole("button", { name: /^search$/i }).click();
     await expect(page.getByTestId("job-row").filter({ hasText: /example handoff engineer/i })).toBeVisible();
-    await page.getByTestId("job-row").filter({ hasText: /example handoff engineer/i }).getByRole("button").first().click();
+    await page.getByTestId("job-row").filter({ hasText: /example handoff engineer/i }).getByRole("link").first().click();
     const apply = page.getByTestId("job-detail").getByRole("link", { name: /apply on company site/i });
     await expect(apply).toBeVisible();
     const popupPromise = page.waitForEvent("popup");
     await apply.click();
     const popup = await popupPromise;
     await expect(popup).toHaveURL(/example\.com\/jobs\/candidarc-handoff/);
+    await expect(popup.getByRole("heading", { name: "Employer application" })).toBeVisible();
     await popup.close();
     await page.goto("/app/opportunities");
     await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();

@@ -57,11 +57,13 @@ test.describe("loading and failure recovery", () => {
     });
     await page.goto("/app/profile");
     await expect(page.getByRole("heading", { name: /^Profile$/i })).toBeVisible();
-    await expect(page.locator("#identity-fullName")).toBeVisible();
-    await expect(page.getByText(/import status unavailable/i)).toBeVisible();
+    await expect(page.locator("#full-name")).toBeVisible();
+    await expect(page.locator("#full-name")).toBeDisabled();
+    await expect(page.getByRole("heading", { name: "Import status unavailable", exact: true })).toBeVisible();
     await page.unroute("**/api/v1/profile/resume/import");
     await page.getByRole("button", { name: /^retry$/i }).click();
     await expect(page.getByText(/import status unavailable/i)).toHaveCount(0);
+    await expect(page.locator("#full-name")).toBeEnabled();
   });
 
   test("Applications shows a recoverable error instead of spinning forever", async ({ page }) => {
@@ -81,7 +83,10 @@ test.describe("loading and failure recovery", () => {
     await expect(page.getByRole("heading", { name: /^Applications$/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /^retry$/i })).toBeVisible();
     await expect(page.getByRole("heading", { name: /couldn’t load this view/i })).toBeVisible();
-    await expect(page.getByText(/could not load applications/i)).toBeVisible();
+    await expect(page.getByText("Applications unavailable", { exact: true })).toBeVisible();
+    await page.unroute("**/api/v1/applications**");
+    await page.getByRole("button", { name: /^retry$/i }).click();
+    await expect(page.getByText(/no applications yet/i)).toBeVisible();
   });
 
   test("a stale Profile GET does not replace a newer route", async ({ page }) => {
@@ -160,7 +165,7 @@ test.describe("loading and failure recovery", () => {
     await expect(page.getByRole("heading", { name: /^Resumes$/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /^retry$/i })).toBeVisible();
     await expect(page.getByRole("heading", { name: /couldn’t load this view/i })).toBeVisible();
-    await expect(page.getByText(/could not load applications|could not load resumes/i)).toBeVisible();
+    await expect(page.getByText("resumes unavailable", { exact: true })).toBeVisible();
   });
 
   test("Radar Retry restores jobs after a failed search", async ({ page }) => {
@@ -184,26 +189,22 @@ test.describe("loading and failure recovery", () => {
     await expect(page.getByTestId("job-row").first()).toBeVisible();
   });
 
-  test("slow Profile responses keep identity input and retry does not duplicate writes", async ({ page }) => {
+  test("failed Profile autosave preserves input and can be retried", async ({ page }) => {
     await seedOnboardedUser(page, "profile-slow");
     await page.goto("/app/profile");
-    await expect(page.locator("#identity-fullName")).toBeVisible();
-    await page.locator("#identity-fullName").fill("Kept Input");
-    await page.route("**/api/v1/profile", async (route) => {
-      if (route.request().method() !== "PATCH") {
-        await route.continue();
-        return;
-      }
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ error: { message: "Profile save failed" } }),
-      });
+    await expect(page.locator("#full-name")).toBeVisible();
+    await page.route("**/api/v1/profile/onboarding", async (route) => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { message: "Profile save failed" } }) });
     });
-    await page.getByRole("button", { name: /save identity/i }).click();
-    await expect(page.getByText(/profile save failed|could not save profile/i).first()).toBeVisible();
-    await expect(page.locator("#identity-fullName")).toHaveValue("Kept Input");
+    await page.locator("#full-name").fill("Kept Input");
+    await expect(page.getByText(/save failed — your edits remain here/i)).toBeVisible();
+    await expect(page.locator("#full-name")).toHaveValue("Kept Input");
     await page.unrouteAll({ behavior: "ignoreErrors" });
+    await page.getByRole("button", { name: "Retry save", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
+    await page.reload();
+    await expect(page.locator("#full-name")).toHaveValue("Kept Input");
   });
 
   test("generate starts a single workflow with pending feedback", async ({ page }) => {

@@ -12,6 +12,8 @@ import type { OnboardingFormState } from "./types";
 type Props = {
   form: OnboardingFormState;
   compactReview?: boolean;
+  contactInitiallyOpen?: boolean;
+  contactOnly?: boolean;
   disabled?: boolean;
   onChange: (patch: Partial<OnboardingFormState>) => void;
   errors: Partial<Record<string, string>>;
@@ -79,6 +81,8 @@ function ambiguousClass(ambiguous: boolean): string {
 export function StepCareerProfile({
   form,
   compactReview = false,
+  contactInitiallyOpen = false,
+  contactOnly = false,
   disabled = false,
   onChange,
   errors,
@@ -90,13 +94,14 @@ export function StepCareerProfile({
   importErrorCode,
 }: Props) {
   const [filename, setFilename] = useState<string>();
-  const [contactOpen, setContactOpen] = useState<boolean>();
+  const [contactOpen, setContactOpen] = useState<boolean | undefined>(contactInitiallyOpen ? true : undefined);
   useEffect(() => {
     if (errors.fullName || errors.email || errors.phone || errors.location) setContactOpen(true);
   }, [errors.fullName, errors.email, errors.phone, errors.location]);
   const fileRef = useRef<HTMLInputElement>(null);
   const analyzing = ["pending_scan", "scan_clean", "extracting"].includes(importStatus ?? "");
   const showReview =
+    contactOnly ||
     form.careerProfileMode === "manual" ||
     importStatus === "ready_for_review" ||
     importStatus === "confirmed";
@@ -108,7 +113,7 @@ export function StepCareerProfile({
 
   return (
     <fieldset disabled={disabled || analyzing || uploading} className="space-y-6">
-      {!compact && <div className="grid gap-3 sm:grid-cols-2">
+      {!compact && !contactOnly && <div className="grid gap-3 sm:grid-cols-2">
         <button
           type="button"
           className={
@@ -137,7 +142,7 @@ export function StepCareerProfile({
         </button>
       </div>}
 
-      {form.careerProfileMode === "upload" ? (
+      {form.careerProfileMode === "upload" && !contactOnly ? (
         <div className={compact ? "focus-import-summary" : "space-y-3 rounded-md border border-border bg-surface p-4"}>
           <input
             ref={fileRef}
@@ -214,21 +219,27 @@ export function StepCareerProfile({
                 <Label htmlFor="full-name">Full name</Label>
                 <Input
                   id="full-name"
+                  autoComplete="name"
+                  spellCheck={false}
                   required
                   value={form.fullName}
                   onChange={(e) => onChange({ fullName: e.target.value })}
                   aria-invalid={Boolean(errors.fullName)}
-                  aria-describedby={errors.fullName ? "error-fullName" : undefined}
+                  aria-describedby={`full-name-hint${errors.fullName ? " error-fullName" : ""}`}
                   data-testid="imported-full-name"
                 />
+                <p id="full-name-hint" className="text-xs text-foreground-muted">As you want it to appear on your resume.</p>
                 {errors.fullName && <p id="error-fullName" className="text-xs text-destructive" role="alert">{errors.fullName}</p>}
               </div>
               <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.email.trim())}`}>
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="email">Email address</Label>
                 <Input
                   id="email"
                   required
                   type="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  spellCheck={false}
                   value={form.email}
                   onChange={(e) => onChange({ email: e.target.value })}
                   data-testid="imported-email"
@@ -238,10 +249,11 @@ export function StepCareerProfile({
                 {errors.email && <p id="error-email" className="text-xs text-destructive" role="alert">{errors.email}</p>}
               </div>
               <div className={`space-y-1.5 ${ambiguousClass(uploadReviewMode && !form.phone.trim())}`}>
-                <Label htmlFor="phone">Phone</Label>
+                <Label htmlFor="phone">Phone number</Label>
                 <Input
                   id="phone"
                   type="tel"
+                  autoComplete="tel"
                   required
                   value={form.phone}
                   onChange={(e) => onChange({ phone: e.target.value })}
@@ -255,6 +267,7 @@ export function StepCareerProfile({
                 <Label htmlFor="location">Current location</Label>
                 <Input
                   id="location"
+                  autoComplete="address-level2"
                   required
                   value={form.location}
                   onChange={(e) => onChange({ location: e.target.value })}
@@ -266,25 +279,37 @@ export function StepCareerProfile({
                 {errors.location && <p id="error-location" className="text-xs text-destructive" role="alert">{errors.location}</p>}
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="linkedin">LinkedIn (optional)</Label>
-                <Input id="linkedin" value={form.linkedIn} onChange={(e) => onChange({ linkedIn: e.target.value })} />
+                <Label htmlFor="linkedin">LinkedIn profile (optional)</Label>
+                <Input id="linkedin" inputMode="url" autoCapitalize="none" spellCheck={false} value={form.linkedIn} onChange={(e) => onChange({ linkedIn: e.target.value })} />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="github">GitHub (optional)</Label>
-                <Input id="github" value={form.github} onChange={(e) => onChange({ github: e.target.value })} />
+                <Label htmlFor="github">GitHub profile (optional)</Label>
+                <Input id="github" inputMode="url" autoCapitalize="none" spellCheck={false} value={form.github} onChange={(e) => onChange({ github: e.target.value })} />
               </div>
               <div className="space-y-1.5 sm:col-span-2">
-                <Label htmlFor="portfolio">Portfolio / personal website (optional)</Label>
+                <Label htmlFor="portfolio">Portfolio or personal website (optional)</Label>
                 <Input
                   id="portfolio"
+                  inputMode="url"
+                  autoCapitalize="none"
+                  spellCheck={false}
                   value={form.portfolio}
                   onChange={(e) => onChange({ portfolio: e.target.value })}
                   data-testid="imported-portfolio"
                 />
               </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="headline">Professional headline (optional)</Label>
+                <Input id="headline" value={form.headline} onChange={(e) => onChange({ headline: e.target.value })} />
+              </div>
+              <div className="space-y-1.5 sm:col-span-2">
+                <Label htmlFor="preferred-name">Preferred name (optional)</Label>
+                <Input id="preferred-name" autoComplete="nickname" spellCheck={false} value={form.preferredName} onChange={(e) => onChange({ preferredName: e.target.value })} />
+              </div>
             </div>
           </details>
 
+          {!contactOnly && <>
           {compact ? <CareerReview form={form} onChange={onChange} /> : <CareerSections form={form} onChange={onChange} />}
           <details open={!compact && (Boolean(form.summary.trim()) || form.careerProfileMode === "manual")} className="rounded-md border border-border p-3">
             <summary className="cursor-pointer text-sm font-medium">Professional summary (optional)</summary>
@@ -302,6 +327,7 @@ export function StepCareerProfile({
               {errors.career}
             </p>
           ) : null}
+          </>}
         </div>
       ) : null}
     </fieldset>

@@ -19,19 +19,18 @@ export const ONBOARDING_STEPS = [
 
 export const ROLE_SUGGESTIONS = [
   "Software Engineer",
-  "Senior Software Engineer",
-  "Full-Stack Engineer",
-  "Backend Engineer",
-  "Frontend Engineer",
-  "Platform Engineer",
-  "ML Engineer",
-  "Data Engineer",
+  "Financial Analyst",
+  "Supply Chain Analyst",
+  "Quality Assurance Manager",
+  "Data Analyst",
   "Product Manager",
+  "Marketing Manager",
+  "Registered Nurse",
+  "ML Engineer",
   "Engineering Manager",
 ];
 
 export const LOCATION_SUGGESTIONS = [
-  "Remote",
   "San Francisco, CA",
   "New York, NY",
   "Austin, TX",
@@ -39,6 +38,10 @@ export const LOCATION_SUGGESTIONS = [
   "Chicago, IL",
   "Boston, MA",
   "Los Angeles, CA",
+  "London, UK",
+  "Toronto, Canada",
+  "Bengaluru, India",
+  "São Paulo, Brazil",
 ];
 
 export const INDUSTRY_SUGGESTIONS = [
@@ -122,6 +125,7 @@ export type OnboardingFormState = {
   requiresSponsorship: boolean | null;
   salaryPreference: string;
   fullName: string;
+  preferredName: string;
   email: string;
   phone: string;
   location: string;
@@ -171,6 +175,7 @@ export function emptyOnboardingForm(): OnboardingFormState {
     requiresSponsorship: null,
     salaryPreference: "",
     fullName: "",
+    preferredName: "",
     email: "",
     phone: "",
     location: "",
@@ -219,7 +224,8 @@ export function formToPayload(form: OnboardingFormState): Record<string, unknown
     workAuthorization: form.workAuthorization.trim() || null,
     requiresSponsorship: form.requiresSponsorship,
     salaryPreference: form.salaryPreference.trim() || null,
-    fullName: form.fullName.trim() || undefined,
+    fullName: form.fullName.trim(),
+    preferredName: (form.preferredName ?? "").trim(),
     email: form.email.trim(),
     phone: form.phone.trim() || null,
     location: form.location.trim() || null,
@@ -229,11 +235,11 @@ export function formToPayload(form: OnboardingFormState): Record<string, unknown
     headline: form.headline.trim() || null,
     summary: form.summary.trim() || null,
     skills: normalizeList(form.skills),
-    employment: form.employment,
-    projects: form.projects,
+    employment: form.employment.map((row) => ({ ...row, technologies: row.technologies ? normalizeList(row.technologies) : undefined })),
+    projects: form.projects.map((row) => ({ ...row, technologies: row.technologies ? normalizeList(row.technologies) : undefined })),
     education: form.education,
     certifications: form.certifications,
-    publications: form.publications,
+    publications: form.publications.map((row) => ({ ...row, authors: row.authors ? normalizeList(row.authors) : undefined })),
     careerProfileMode: form.careerProfileMode || undefined,
     evidenceNotes: form.evidenceNotes.trim() || undefined,
   };

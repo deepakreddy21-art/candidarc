@@ -18,7 +18,7 @@ export function OnboardingShell({ step, saving, saveStatus, onBack, onContinue, 
   const current = ONBOARDING_STEPS[step] ?? ONBOARDING_STEPS[0];
   const saved = !saving && saveStatus === "Saved";
   return (
-    <main className="focus-onboarding">
+    <main className="focus-onboarding" data-reviewing={reviewingImport || undefined}>
       <aside className="focus-onboarding-aside">
         <Logo size="lg" />
         <div className="focus-onboarding-art">

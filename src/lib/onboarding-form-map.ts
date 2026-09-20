@@ -53,6 +53,7 @@ export function profileToForm(
 
   return {
     ...base,
+    preferredName: profile.preferredName ?? "",
     targetRoles: profile.targetRoleFamilies ?? [],
     seniority: profile.seniority ?? "",
     targetCompanies: profile.targetCompanies ?? [],
@@ -149,7 +150,7 @@ export function mergeExtractionPreservingPreferences(
     {
       id: "",
       fullName: prev.fullName,
-      preferredName: "",
+      preferredName: prev.preferredName,
       // Do not seed the signup/account email into extraction merges — that masked missing
       // contact.email and made import review look like the account address was extracted.
       email: "",

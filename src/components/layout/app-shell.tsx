@@ -129,13 +129,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setDisplayName(profile.fullName || profile.preferredName || "Account");
       setDisplayEmail(profile.email || "");
       setInitials(profile.avatarInitials || "?");
-    });
+    }).catch(() => { /* Keep the account menu available if profile loading fails. */ });
   }, []);
 
   useEffect(() => {
     const parts = pathname.split("/").filter(Boolean);
     const opportunityId = parts[0] === "app" && parts[1] === "opportunities" ? parts[2] : undefined;
-    if (!opportunityId || opportunityId === "new") {
+    if (!opportunityId || ["new", "track"].includes(opportunityId)) {
       setOpportunityCrumb(null);
       return;
     }
