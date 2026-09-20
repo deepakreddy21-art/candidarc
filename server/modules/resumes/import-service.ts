@@ -7,6 +7,7 @@ import { requireTenantMembership, requireTenantRole, requireUser } from "../../a
 import type { Repositories } from "../../database/repositories";
 
 import { newId } from "../../database/repositories";
+import { ResumeWorkStore, contentHash } from "../../database/resume-work-store";
 
 import { AppError } from "../../domain/types";
 
@@ -379,51 +380,33 @@ export class ResumeImportService {
     const draftBaseline =
       !confirmedBaseline && hasCareerContent(priorExtraction) ? wrapWithDraftBaseline(priorExtraction) : null;
 
-    const filePublicId = newId("sfp");
-
-    const storageKey = `uploads/${user.publicId}/${filePublicId}${input.filename.endsWith(".docx") ? ".docx" : ".pdf"}`;
-
     const checksum = createHash("sha256").update(input.buffer).digest("hex");
-
-    await this.storage.putObject({
-
-      tenantId,
-
-      key: storageKey,
-
-      body: input.buffer,
-
-      contentType: input.mimeType,
-
-      checksum,
-
-    });
-
-    const file = await this.repos.files.create({
-
-      id: newId("sf"),
-
-      publicId: filePublicId,
-
-      tenantId,
-
-      ownerUserId: user.id,
-
-      purpose: "resume-import",
-
-      storageKey,
-
-      mimeType: input.mimeType,
-
-      size: input.buffer.byteLength,
-
-      checksum,
-
-      scanStatus: "pending",
-
-      retentionState: "active",
-
-    });
+    const identity = contentHash({ tenantId, owner: user.id, checksum, mime: input.mimeType });
+    const filePublicId = `sfp-upload-${identity}`;
+    const storageKey = `uploads/${user.publicId}/${identity}${input.filename.toLowerCase().endsWith(".docx") ? ".docx" : ".pdf"}`;
+    const records = new ResumeWorkStore(this.repos, tenantId, user.id);
+    await records.put("upload", identity, { checksum, filePublicId, storageKey, protected: true });
+    const token = await records.claim("upload", identity);
+    if (!token) throw new AppError("UPLOAD_IN_PROGRESS", "This file is already being uploaded. Please retry shortly.", 409, undefined, true);
+    let file;
+    try {
+      file = await this.repos.files.getByPublicId(tenantId, filePublicId);
+      if (file?.deletedAt || (file && file.ownerUserId !== user.id)) {
+        throw new AppError("UPLOAD_UNAVAILABLE", "This upload is unavailable. Contact support to restore a deleted original.", 409);
+      }
+      if (file?.scanStatus === "infected") throw new AppError("MALWARE_DETECTED", "This file did not pass the security scan.", 422);
+      const stored = await this.storage.headObject(tenantId, storageKey);
+      if (stored?.checksum !== checksum || stored.size !== input.buffer.byteLength) {
+        await this.storage.putObject({ tenantId, key: storageKey, body: input.buffer, contentType: input.mimeType, checksum });
+      }
+      if (!file) file = await this.repos.files.create({ id: newId("sf"), publicId: filePublicId,
+        tenantId, ownerUserId: user.id, purpose: "resume-import", storageKey, mimeType: input.mimeType,
+        size: input.buffer.byteLength, checksum, scanStatus: "pending", retentionState: "active" });
+      if (file.scanStatus === "failed") file = await this.repos.files.update(tenantId, filePublicId, { scanStatus: "pending" });
+    } finally { await records.release("upload", identity, token); }
+    // Reuse bytes/metadata, but give an explicit re-import its own parse attempt.
+    // A completed old queue job must not leave this new attempt stuck pending_scan.
+    const importAttempt = newId("import");
 
     await this.repos.candidateProfiles.updateOnboarding(tenantId, user.id, existing.version, {
 
@@ -432,7 +415,7 @@ export class ResumeImportService {
       resumeImportStatus: "pending_scan",
 
       // Keep confirmed extraction baseline so a failed replacement cannot wipe career data.
-      resumeImportExtraction: confirmedBaseline ?? draftBaseline,
+      resumeImportExtraction: { ...(confirmedBaseline ?? draftBaseline ?? {}), __importAttempt: importAttempt },
 
     });
 
@@ -444,7 +427,7 @@ export class ResumeImportService {
 
       { tenantId, filePublicId: file.publicId },
 
-      { idempotencyKey: `scan:${file.publicId}` },
+      { idempotencyKey: `scan:${file.publicId}:${importAttempt}` },
 
     );
 
@@ -1058,7 +1041,7 @@ export class ResumeImportService {
       "document-parsing",
       "resume.extract",
       { tenantId, filePublicId },
-      { idempotencyKey: `extract:${filePublicId}` },
+      { idempotencyKey: `extract:${filePublicId}:${profile.resumeImportExtraction?.__importAttempt ?? "legacy"}` },
     );
   }
 
@@ -1188,4 +1171,3 @@ export class ResumeImportService {
     );
   }
 }
-

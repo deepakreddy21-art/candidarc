@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     ranker_artifact_checksum: str | None = Field(default=None, alias="RANKER_ARTIFACT_CHECKSUM")
     enable_cross_encoder: bool = Field(default=False, alias="ENABLE_CROSS_ENCODER")
 
+    database_pool_max: int = Field(default=5, ge=2, le=30, alias="PYTHON_DATABASE_POOL_MAX")
     database_url: str | None = Field(default=None, alias="DATABASE_URL")
     evidence_store: Literal["memory", "postgres"] = Field(default="memory", alias="EVIDENCE_STORE")
     evidence_store_timeout_ms: int = Field(default=5_000, ge=500, le=60_000, alias="EVIDENCE_STORE_TIMEOUT_MS")
@@ -108,10 +109,6 @@ class Settings(BaseSettings):
 
         if self.generation_provider == "openai" and not self.generation_api_key():
             errors.append("Generation role missing OpenAI API key")
-        if self.audit_provider == "anthropic" and not self.audit_api_key():
-            errors.append("Audit role missing Anthropic API key")
-        if self.final_review_provider == "openai" and not self.final_review_api_key():
-            errors.append("Final-review role missing OpenAI API key")
 
         # Production evidence store: fail closed — never silent memory fallback
         if self.evidence_store == "memory":

@@ -74,6 +74,7 @@ export default defineConfig({
           env: {
             ...process.env,
             CANDIDARC_DATA_MODE: "memory",
+            APP_URL: process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000",
             APP_MODE: "demo",
             AI_MODE: "mock",
             NEXT_PUBLIC_APP_MODE: "demo",

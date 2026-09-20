@@ -12,6 +12,7 @@ export const envSchema = z.object({
   WORKER_KIND: z.enum(["all", "general", "ingestion", "document"]).default("all"),
   CANDIDARC_DATA_MODE: z.enum(["memory", "postgres"]).default("memory"),
   DATABASE_URL: z.string().optional(),
+  DATABASE_POOL_MAX: z.coerce.number().int().min(2).max(30).default(5),
   REDIS_URL: z.string().default("redis://127.0.0.1:6379"),
   QUEUE_BACKEND: z.enum(["inprocess", "redis"]).default("inprocess"),
   SESSION_SECRET: z.string().optional(),
@@ -139,9 +140,6 @@ export function assertSafeRuntime(env: Env, scope: RuntimeScope = "app"): void {
   if (production || env.AI_MODE === "live") {
     const selected = [
       env.AI_GENERATION_PROVIDER,
-      env.AI_HR_AUDIT_PROVIDER,
-      env.AI_EM_AUDIT_PROVIDER,
-      env.AI_FINAL_REVIEW_PROVIDER,
     ];
     if (selected.includes("mock")) unsafe.push("mock AI provider selected in live runtime");
     if (selected.includes("openai") && !env.OPENAI_API_KEY) unsafe.push("OPENAI_API_KEY is required");

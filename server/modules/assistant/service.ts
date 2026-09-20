@@ -259,7 +259,8 @@ async function providerAnswer(
   snippets: ReturnType<typeof evidenceSnippets>,
   history: ThreadMessage[],
 ): Promise<{ content: string; citations: string[] } | null> {
-  if (getAiMode() !== "live") return null;
+  // Resume conversations use saved facts only; never a paid critic or rewrite backdoor.
+  if (input.contextType === "resume" || getAiMode() !== "live") return null;
   try {
     const result = await getGenerationProvider().generateStructured({
       prompt: { id: "assistant-answer", version: "1.0.0" },

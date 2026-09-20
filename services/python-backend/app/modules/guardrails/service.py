@@ -381,7 +381,14 @@ def collect_allowed_technologies(evidence: list[EvidenceItem], attested: list[st
 
 def _evidence_corpus(items: list[EvidenceItem]) -> str:
     parts: list[str] = []
+    def field_text(value: object) -> str:
+        if isinstance(value, dict):
+            return " ".join(field_text(v) for v in value.values())
+        if isinstance(value, list):
+            return " ".join(field_text(v) for v in value)
+        return str(value) if isinstance(value, str | int | float) else ""
     for item in items:
+        parts.append(field_text(item.details))
         parts.extend(
             [
                 item.title,
@@ -757,16 +764,14 @@ def validate_resume_claims(
                     violations.append("UNSUPPORTED_PUBLICATION")
             if item_blob.strip():
                 violations.extend(detect_injection_markers(item_blob, code_prefix="PROMPT_INJECTION"))
-                item_atoms = extract_claim_atoms(item_blob)
-                _append_atom_violations(
-                    item_atoms,
-                    corpus=item_corpus,
-                    allowed=collect_allowed_technologies(associated),
-                    research_techs=research_techs,
-                    evidence_orgs=item_orgs,
-                    violations=violations,
-                    org_code=org_code,
-                )
+                # Do not invent entities across field boundaries (e.g. "TX Jan").
+                for item_field in item_fields:
+                    item_atoms = extract_claim_atoms(item_field)
+                    _append_atom_violations(
+                        item_atoms, corpus=item_corpus,
+                        allowed=collect_allowed_technologies(associated), research_techs=research_techs,
+                        evidence_orgs=item_orgs, violations=violations, org_code=org_code,
+                    )
                 # Explicit education / cert grounding for employer/institution/title fields.
                 if section_types & {"experience", "projects"}:
                     if resume_item.heading and not _text_grounded_in_corpus(

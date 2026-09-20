@@ -56,6 +56,7 @@ async def create_evidence_store(
         embedding_dimensions=cfg.embedding_dimensions,
         statement_timeout_ms=cfg.evidence_store_timeout_ms,
         command_timeout=cfg.evidence_store_timeout_ms / 1000.0,
+        pool_max=cfg.database_pool_max,
     )
     try:
         await store.connect()

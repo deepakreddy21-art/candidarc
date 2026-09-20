@@ -70,10 +70,11 @@ export async function syncCareerEvidenceFromProfile(
     })),
     ...(extraction.skills.length ? [{ kind: "skills", title: "Career skills", text: [extraction.skills.join(", ")], technologies: extraction.skills }] : []),
   ];
+  const existingIds = new Set((await evidence.list(input.tenantId, { ownerUserId: input.userId })).map(item => item.publicId));
   let created = 0;
   for (const [index, entry] of entries.entries()) {
     const publicId = `evp_career_${createHash("sha256").update(`${input.userId}:${fingerprint}:${index}`).digest("hex").slice(0, 24)}`;
-    if (await evidence.getByPublicId(input.tenantId, publicId)) continue;
+    if (existingIds.has(publicId)) continue;
     const text = entry.text.filter((line) => line.trim());
     try { await evidence.create({
       id: newId("ev"), publicId, tenantId: input.tenantId, ownerUserId: input.userId,

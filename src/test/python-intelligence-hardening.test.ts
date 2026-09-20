@@ -49,6 +49,21 @@ describe("python intelligence production hardening", () => {
     expect(client.getCircuitState()).toBe("closed");
   });
 
+  it("accepts the single-request response envelope without weakening legacy response validation", async () => {
+    const client = new PythonIntelligenceClient("http://python.test", "token", 5_000);
+    const resume = { absolute_version: 0, cycle_step: 0, version_number: 0, score: 0,
+      score_breakdown: Object.fromEntries(["atsCompatibility", "jobAlignment", "recruiterReadability", "impact", "quantification", "technicalDepth", "competencyCoverage", "evidenceConfidence", "writingQuality", "formatIntegrity"].map(key => [key, 0])),
+      notes: "Initial", sections: [{ type: "summary", title: "Summary", order: 0, content: "Software engineer with reviewed experience." }] };
+    const response = { resume, provider: "mock", model: "mock", prompt_version: "v1", latency_ms: 1, usage: null,
+      local_validation: { passed: true, violations: [], latency_ms: 1, cpu_ms: 1, process_peak_rss_native_units: null, capabilities: { generative_model_available: false } } };
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, response)));
+    const input = { context: CONTEXT, absoluteVersion: 0, cycleStep: 0, jobDescription: "Example software engineer", evidence: [], allowedTechnologies: [] };
+    const mapped = await client.generateResumeOnce({ ...input, operationId: "operation-0123456789", researchSources: [] });
+    expect(mapped.localValidation.passed).toBe(true);
+    expect(mapped.resume.versionNumber).toBe(0);
+    await expect(client.generateResume(input)).rejects.toThrow(/local_validation/);
+  });
+
   it("parses top-level VALIDATION_ERROR envelopes from FastAPI", async () => {
     const client = new PythonIntelligenceClient("http://python.test", "token", 5_000);
     vi.stubGlobal(

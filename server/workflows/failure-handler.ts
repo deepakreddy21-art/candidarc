@@ -53,16 +53,26 @@ async function markApplicationFailed(
 ): Promise<void> {
   const app = await repos.applications.getByPublicId(tenantId, applicationPublicId);
   if (!app) return;
+  const single = app.metadata?.generationPolicy === "single-request-v1";
+  const priorFiles = app.metadata?.customerFiles as { pdfStorageKey?: string; docxStorageKey?: string } | undefined;
+  const usable = single && Boolean(priorFiles?.pdfStorageKey || priorFiles?.docxStorageKey);
+  const customerMessage = single && app.metadata?.localCorrectionRequired
+    ? "The saved draft needs factual corrections. Review your source details in Profile. No additional paid generation will run."
+    : single && opts.errorClass === "GENERATION_OUTCOME_UNCERTAIN"
+      ? "The initial request may still finish. We will not send a second paid request. Your inputs are saved; contact support if the result does not arrive."
+      : single && opts.failedAtStage === "FINAL_QA_RUNNING"
+        ? "A download could not be prepared. Your saved resume and completed formats are preserved; retry the failed download."
+        : opts.customerMessage;
   await repos.applications.update(tenantId, applicationPublicId, {
-    stage: "FAILED",
-    workflowStage: "FAILED",
-    status: "failed",
-    nextAction: "Retry Generation",
+    stage: usable ? "FINAL_READY" : "FAILED",
+    workflowStage: usable ? "FINAL_READY" : "FAILED",
+    status: usable ? "ready" : "failed",
+    nextAction: single ? "Review resume" : "Retry Generation",
     metadata: {
       ...app.metadata,
-      customerFiles: undefined,
-      documentRenderFailed: true,
-      customerError: opts.customerMessage,
+      customerFiles: single ? app.metadata?.customerFiles : undefined,
+      documentRenderFailed: single ? opts.failedAtStage === "FINAL_QA_RUNNING" : true,
+      customerError: customerMessage,
       documentRenderErrorClass: opts.errorClass,
       documentRenderFailedAt: nowIso(),
       failedAtStage: opts.failedAtStage,
@@ -90,6 +100,9 @@ export async function handleWorkflowJobExhausted(
       return;
     }
 
+    const application = await repos.applications.getByPublicId(tenantId, applicationPublicId);
+    const sourceVersion = payload.versionPublicId ?? payload.versionId;
+    if (application?.metadata?.generationPolicy === "single-request-v1" && sourceVersion && application.metadata.currentExportVersionId !== sourceVersion) return;
     let run =
       (payload.workflowRunId ? await repos.workflows.getById(payload.workflowRunId) : null) ??
       (workflowPublicId ? await repos.workflows.getByPublicId(tenantId, workflowPublicId) : null);

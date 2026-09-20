@@ -550,6 +550,7 @@ export class RadarService {
       const result = await this.customerGenerate.generate(ctx, {
         jobDescription: description,
         jobUrl: safeJobUrl,
+        team: job.department ?? undefined,
         company,
         role,
         location,

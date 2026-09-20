@@ -359,7 +359,7 @@ jobs:
           set -euo pipefail
           OUT="$(mktemp)"
           # pytest -q prints a short summary; capture full output for skip detection.
-          pytest tests/integration/test_evidence_store_postgres.py -v --tb=short | tee "$OUT"
+          pytest tests/integration/test_evidence_store_postgres.py tests/integration/test_single_request_postgres.py -v --tb=short | tee "$OUT"
           if grep -Eiq '(^|[ =])skipped([ =]|$)|SKIPPED' "$OUT"; then
             echo "pgvector tests skipped unexpectedly under RUN_PGVECTOR_TESTS=1"
             exit 1

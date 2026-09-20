@@ -22,7 +22,7 @@ export function getDb(): Db | null {
     throw new Error("DATABASE_URL is required when CANDIDARC_DATA_MODE=postgres");
   }
   client = postgres(env.DATABASE_URL, {
-    max: 10,
+    max: env.DATABASE_POOL_MAX,
     idle_timeout: 20,
     connect_timeout: 10,
   });

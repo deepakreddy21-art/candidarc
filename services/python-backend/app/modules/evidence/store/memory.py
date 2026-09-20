@@ -53,7 +53,7 @@ class MemoryEvidenceStore:
         existing = self._documents.get(key)
         if existing is not None:
             self._assert_scope(tenant_id, owner_user_id, existing.tenant_id, existing.owner_user_id)
-            if existing.content_hash == content_hash and existing.embedding_dimensions == embedding_dimensions:
+            if existing.content_hash == content_hash and existing.embedding_dimensions == embedding_dimensions and existing.embedding_model == embedding_model:
                 # Deduplicate unchanged document
                 return deepcopy(existing)
 

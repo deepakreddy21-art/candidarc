@@ -91,12 +91,13 @@ export class S3ObjectStorage implements ObjectStorage {
         }),
       );
       const body = await bodyToBuffer(response.Body);
-      const meta = (await this.headObject(tenantId, key)) ?? {
+      const meta = {
         key,
         tenantId,
         size: body.byteLength,
         contentType: response.ContentType ?? "application/octet-stream",
-        createdAt: new Date().toISOString(),
+        checksum: response.Metadata?.checksum,
+        createdAt: response.LastModified?.toISOString() ?? new Date().toISOString(),
       };
       return { body, meta };
     } catch {

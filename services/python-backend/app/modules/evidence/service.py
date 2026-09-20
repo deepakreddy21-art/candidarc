@@ -49,7 +49,7 @@ def scope_filter(items: list[EvidenceItem], tenant_id: str, owner_user_id: str) 
 
 
 def content_hash_for_item(item: EvidenceItem) -> str:
-    blob = evidence_text_blob(item)
+    blob = "\n".join(chunk_texts_for_item(item))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -74,8 +74,17 @@ async def index_evidence_items(
 ) -> int:
     """Upsert scoped evidence items into the EvidenceStore."""
     scoped = scope_filter(normalize_evidence(evidence), tenant_id, owner_user_id)
+    # One bounded lookup, not one query per item. A cache miss is safe to recompute.
+    existing = {row.document_id: row for row in await store.list_by_owner(
+        tenant_id=tenant_id, owner_user_id=owner_user_id, limit=1000)}
     indexed = 0
     for item in scoped:
+        prior = existing.get(item.id)
+        if (prior and prior.content_hash == content_hash_for_item(item)
+                and prior.embedding_model == embedder.model
+                and prior.embedding_dimensions == embedder.dimensions):
+            indexed += 1
+            continue
         texts = chunk_texts_for_item(item)
         embeddings = await embedder.embed_texts(texts, batch_size=batch_size)
         await store.upsert_document(

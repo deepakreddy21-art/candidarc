@@ -90,6 +90,28 @@ export const ResumeGenerateResponseSchema = z.object({
 }).strict();
 export type ResumeGenerateResponse = z.infer<typeof ResumeGenerateResponseSchema>;
 
+export const LocalResumeValidationSchema = z.object({
+  "capabilities": z.object({
+}),
+  "cpu_ms": z.number().int().min(0.0),
+  "latency_ms": z.number().int().min(0.0),
+  "passed": z.boolean(),
+  "process_peak_rss_native_units": z.number().int().nullable().optional(),
+  "violations": z.array(z.string()),
+}).strict();
+export type LocalResumeValidation = z.infer<typeof LocalResumeValidationSchema>;
+
+export const SingleRequestGenerateResponseSchema = z.object({
+  "latency_ms": z.number().int().min(0.0),
+  "local_validation": LocalResumeValidationSchema,
+  "model": z.string().min(1).max(512),
+  "prompt_version": z.string().min(1).max(512),
+  "provider": z.string().min(1).max(512),
+  "resume": ResumeDocumentSchema,
+  "usage": ProviderUsageSchema.nullable().optional(),
+}).strict();
+export type SingleRequestGenerateResponse = z.infer<typeof SingleRequestGenerateResponseSchema>;
+
 export const AuditFindingSchema = z.object({
   "before_text": z.string().max(4000),
   "edited_text": z.string().max(4000).nullable().optional(),
@@ -183,11 +205,21 @@ export const JobParseResponseSchema = z.object({
 export type JobParseResponse = z.infer<typeof JobParseResponseSchema>;
 
 export const ResearchFindingSchema = z.object({
+  "capabilities": z.array(z.string().min(1).max(512)).max(12).optional(),
   "category": z.string().min(1).max(512),
+  "caveat": z.string().max(1000).nullable().optional(),
   "confidence": z.enum(["high", "medium", "low"]),
+  "relationship": z.enum(["stack_usage", "product_capability", "job_requirement", "uncertain"]).optional(),
+  "scope": z.enum(["team", "product", "company", "role", "unknown"]).optional(),
   "source_ids": z.array(z.string().min(1).max(128)).max(50).optional(),
   "status": z.enum(["supported", "uncertain", "unavailable", "verified", "inferred", "unverified", "disputed"]).optional(),
+  "subject": z.string().min(1).max(512).nullable().optional(),
   "summary": z.string().min(1).max(4000),
+  "supporting_quotes": z.array(z.object({
+  "quote": z.string().min(12).max(2000),
+  "source_id": z.string().min(1).max(128),
+}).strict()).max(8).optional(),
+  "technologies": z.array(z.string().min(1).max(512)).max(20).optional(),
   "title": z.string().min(1).max(512),
 }).strict();
 export type ResearchFinding = z.infer<typeof ResearchFindingSchema>;
@@ -196,6 +228,7 @@ export const ResearchSynthesizeResponseSchema = z.object({
   "company_research_status": z.string().max(64).nullable().optional(),
   "findings": z.array(ResearchFindingSchema).max(100),
   "latency_ms": z.number().int().min(0.0),
+  "limitations": z.array(z.string().min(1).max(512)).max(20).optional(),
   "model": z.string().min(1).max(512),
   "overall_confidence": z.number().min(0.0).max(1.0),
   "provider": z.string().min(1).max(512),
@@ -204,8 +237,10 @@ export const ResearchSynthesizeResponseSchema = z.object({
   "classification": z.enum(["explicit", "inferred", "uncertain"]).optional(),
   "confidence": z.enum(["high", "medium", "low"]).optional(),
   "id": z.string().min(1).max(128),
+  "published_at": z.string().max(128).nullable().optional(),
   "relevance": z.number().min(0.0).max(1.0).optional(),
-  "supporting_text": z.string().min(1).max(4000),
+  "source_kind": z.enum(["job-posting", "job-description", "public-reference"]).optional(),
+  "supporting_text": z.string().min(1).max(12000),
   "title": z.string().min(1).max(512),
   "url": z.string().min(1).max(2083),
 }).strict()).max(50),
@@ -229,6 +264,17 @@ export const EvidenceMatchResponseSchema = z.object({
   "model": z.string().min(1).max(512),
   "provider": z.string().min(1).max(512),
   "ranking_method": z.string().max(128).optional(),
+  "resume_plan": z.array(z.object({
+  "basis": z.enum(["job_description", "team_research", "company_research", "role_practice"]),
+  "candidate_technologies": z.array(z.string().min(1).max(512)).max(30).optional(),
+  "capability": z.string().min(1).max(512),
+  "emphasis": z.string().max(1000),
+  "evidence_ids": z.array(z.string().min(1).max(128)).max(20).optional(),
+  "gap": z.string().max(1000).nullable().optional(),
+  "placement": z.enum(["experience", "projects", "skills", "interview_only"]),
+  "rationale": z.string().max(1000),
+  "research_source_ids": z.array(z.string().min(1).max(128)).max(20).optional(),
+}).strict()).max(12).optional(),
   "rows": z.array(EvidenceMatchRowSchema).max(200),
   "usage": ProviderUsageSchema.nullable().optional(),
 }).strict();
@@ -248,6 +294,8 @@ export const EvidenceItemSchema = z.object({
   "candidate_confirmation_status": z.string().min(1).max(512),
   "claim_text": z.string().max(4000).nullable().optional(),
   "confidence": z.enum(["high", "medium", "low"]),
+  "details": z.object({
+}).optional(),
   "employer_association": z.string().max(512).nullable().optional(),
   "id": z.string().min(1).max(128),
   "metrics": z.array(z.string().max(512)).max(50).optional(),
@@ -291,10 +339,12 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "HealthReadyResponse",
   "JobParseRequest",
   "JobParseResponse",
+  "LocalResumeValidation",
   "MistakeMemoryRule",
   "ProviderUsage",
   "RequestContext",
   "ResearchFinding",
+  "ResearchQuote",
   "ResearchSource",
   "ResearchSynthesizeRequest",
   "ResearchSynthesizeResponse",
@@ -315,9 +365,12 @@ export const PYTHON_OPENAPI_SCHEMA_NAMES = [
   "ResumeParseRequest",
   "ResumeParseResponse",
   "ResumeParseSkillGroup",
+  "ResumePlanItem",
   "ResumeSection-Input",
   "ResumeSection-Output",
   "ScoreBreakdown",
+  "SingleRequestGenerateRequest",
+  "SingleRequestGenerateResponse",
   "UserConfirmation",
   "ValidationError",
 ] as const;

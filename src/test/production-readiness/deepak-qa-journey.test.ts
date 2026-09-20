@@ -21,23 +21,21 @@ import { LocalFilesystemStorage } from "../../../server/storage/local";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type { WorkflowStage } from "../../../server/domain/types";
-import { AUDIT_SEQUENCE } from "../../../server/domain/types";
 import { hashPassword } from "../../../server/auth/password";
 import { resetEnvCache } from "../../../server/config/env";
 import { resetDbCache } from "../../../server/database/client";
 import { installMockPythonIntelligence } from "../helpers/mock-python-intelligence";
 
-const FORBIDDEN_PII = [
-  Buffer.from("MzEyLTQ1OS05ODY5", "base64").toString("utf8"),
-  Buffer.from("a2lsYXJ1ZGVlcGFrcmVkZHlAZ21haWwuY29t", "base64").toString("utf8"),
-  Buffer.from("bGlua2VkaW4uY29tL2luL2tpbGFydWRlZXBha3JlZGR5", "base64").toString("utf8"),
-];
-
+// Validate every contact against the fictional fixture instead of committing real
+// personal identifiers (including encoded ones) as a denylist.
 function assertNoPrivatePii(haystack: string) {
-  for (const token of FORBIDDEN_PII) {
-    expect(haystack.toLowerCase()).not.toContain(token.toLowerCase());
+  for (const email of haystack.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi) ?? []) {
+    expect(email.toLowerCase()).toBe(QA.email.toLowerCase());
   }
+  for (const phone of haystack.match(/(?<![\w-])(?:\+1[ -]?)?\d{3}[ -]\d{3}[ -]\d{4}(?![\w-])/g) ?? []) {
+    expect(phone.replace(/\D/g, "").slice(-10)).toBe(QA.phone.replace(/\D/g, "").slice(-10));
+  }
+  expect(haystack).not.toMatch(/\blinkedin\.com\/in\//i);
 }
 
 type WorkflowStatusProbe = {
@@ -486,52 +484,8 @@ describe("Deepak QA production readiness journey", () => {
       const app = await repos.applications.getByPublicId(payload.tenantId, payload.applicationId);
       const version = await repos.resumes.getVersion(payload.tenantId, payload.versionId);
       if (!app || !version) throw new Error("missing render source");
-      const { renderPdfAndDocx } = await import("../../../server/resumes/document-renderer");
-      const rendered = await renderPdfAndDocx({
-        resumeVersion: version,
-        candidateName: QA.name,
-        role: app.role,
-        company: app.company,
-        tenantId: payload.tenantId,
-        applicationId: app.publicId,
-        contact: {
-          name: QA.name,
-          email: QA.email,
-          phone: QA.phone,
-          location: QA.location,
-          linkedIn: QA.linkedIn,
-        },
-      });
-      expect(rendered.pdfBuffer).toBeTruthy();
-      expect(rendered.docxBuffer).toBeTruthy();
-      const pdfKey = `generated/${user.id}/${app.publicId}/${version.publicId}/resume.pdf`;
-      const docxKey = `generated/${user.id}/${app.publicId}/${version.publicId}/resume.docx`;
-      await storage.putObject({
-        tenantId: payload.tenantId,
-        key: pdfKey,
-        body: rendered.pdfBuffer!,
-        contentType: "application/pdf",
-      });
-      await storage.putObject({
-        tenantId: payload.tenantId,
-        key: docxKey,
-        body: rendered.docxBuffer!,
-        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      });
-      await repos.applications.update(payload.tenantId, app.publicId, {
-        status: "ready",
-        metadata: {
-          ...app.metadata,
-          customerFiles: {
-            pdfStorageKey: pdfKey,
-            docxStorageKey: docxKey,
-            pdfFileId: rendered.pdfFileId,
-            docxFileId: rendered.docxFileId,
-            pageCount: rendered.pageCount,
-          },
-          customerFinalVersions: [version.publicId],
-        },
-      });
+      const { renderCustomerArtifacts } = await import("../../../server/resumes/export-cache");
+      await renderCustomerArtifacts({ repos, storage }, payload.tenantId, app.publicId, version, ["pdf", "docx"]);
     });
     await queue.start();
 
@@ -631,9 +585,9 @@ describe("Deepak QA production readiness journey", () => {
     expect(JSON.stringify(finalStatus)).not.toMatch(/HR_AUDIT|EM_AUDIT|V0_GENERATING|prompt|queue job/i);
     assertNoPrivatePii(JSON.stringify(finalStatus));
 
-    const research = await repos.research.getLatest(tenant.id, generated.applicationId);
+    const research = (await repos.applications.getByPublicId(tenant.id, generated.applicationId))?.metadata?.researchCollection;
     const researchBlob = JSON.stringify(research ?? {});
-    expect(researchBlob).toMatch(/Company research unavailable|research unavailable/i);
+    expect(researchBlob).toMatch(/no live company research|research unavailable/i);
     expect(researchBlob).not.toMatch(/Series [A-Z]|raised \$|founded in|headcount/i);
 
     if (finalStatus.status === "failed") {
@@ -684,27 +638,10 @@ describe("Deepak QA production readiness journey", () => {
     assertNoPrivatePii(docXml);
     expect(pdf.body.byteLength).toBeGreaterThan(500);
 
-    // Audit sequence HR1 → EM1 → HR2 → EM2
-    expect(AUDIT_SEQUENCE.map((rule) => rule.lens)).toEqual(["hr-1", "em-1", "hr-2", "em-2"]);
+    // No obsolete audit stages or artificial V1–V4 versions are created.
     const runs = await repos.workflows.listByApplication(tenant.id, generated.applicationId);
-    const stages = runs.flatMap((run) =>
-      store.workflowEvents.filter((event) => event.workflowRunId === run.id).map((event) => event.stage),
-    );
-    const auditOrder = stages.filter((stage): stage is WorkflowStage =>
-      Boolean(stage && (String(stage).includes("HR_AUDIT") || String(stage).includes("EM_AUDIT"))),
-    );
-    const firstHr = auditOrder.findIndex((s) => String(s).includes("HR_AUDIT_1"));
-    const firstEm = auditOrder.findIndex((s) => String(s).includes("EM_AUDIT_1"));
-    const secondHr = auditOrder.findIndex((s) => String(s).includes("HR_AUDIT_2"));
-    const secondEm = auditOrder.findIndex((s) => String(s).includes("EM_AUDIT_2"));
-    expect(firstHr).toBeGreaterThanOrEqual(0);
-    expect(firstEm).toBeGreaterThanOrEqual(0);
-    expect(secondHr).toBeGreaterThanOrEqual(0);
-    expect(secondEm).toBeGreaterThanOrEqual(0);
-    expect(firstHr).toBeLessThan(firstEm);
-    expect(firstEm).toBeLessThan(secondHr);
-    expect(secondHr).toBeLessThan(secondEm);
-
+    const stages = runs.flatMap(run => store.workflowEvents.filter(event => event.workflowRunId === run.id).map(event => event.stage));
+    expect(stages.filter(stage => /HR_AUDIT|EM_AUDIT|V[1-4]_GENERATING/.test(String(stage)))).toEqual([]);
     // Peer cannot access owner workflow / download / evidence
     await expect(service.getCustomerWorkflow(peerCtx, generated.workflowId)).rejects.toMatchObject({
       code: "FORBIDDEN_OWNERSHIP",
@@ -722,37 +659,10 @@ describe("Deepak QA production readiness journey", () => {
       code: "FORBIDDEN_OWNERSHIP",
     });
 
-    // Enhancement after completion — new cycle must complete without schema violations
-    const enhanced = await service.createEnhancedVersion(ctx, generated.workflowId);
-    expect(enhanced.workflowId).not.toBe(generated.workflowId);
-    await waitForWorkflowStatus(
-      () => service.getCustomerWorkflow(ctx, enhanced.workflowId),
-      (status) => status.status === "completed",
-      90_000,
-    );
-    const enhancedReady = await service.getCustomerWorkflow(ctx, enhanced.workflowId);
-    expect(enhancedReady.status).toBe("completed");
-    const enhancedResume = await repos.resumes.getByApplication(tenant.id, generated.applicationId);
-    const enhancedVersions = enhancedResume
-      ? await repos.resumes.listVersions(tenant.id, enhancedResume.publicId)
-      : [];
-    expect(enhancedVersions.some((version) => version.versionNumber >= 5)).toBe(true);
-    expect(enhancedVersions.every((version) => version.versionNumber >= 0)).toBe(true);
-
-    // Worker crash recovery: expire claim lease and recover incomplete
-    const activeRun = await repos.workflows.getByPublicId(tenant.id, enhanced.workflowId);
-    if (activeRun && activeRun.status !== "completed" && activeRun.stage !== "FINAL_READY") {
-      const claimKey = `claimed:${activeRun.stage}`;
-      await repos.workflows.updateRun(activeRun.id, {
-        payload: {
-          ...activeRun.payload,
-          [claimKey]: buildStageClaimLease(1, Date.now() - STAGE_CLAIM_LEASE_MS - 2_000),
-        },
-      });
-      expect(isStageClaimActive((await repos.workflows.getById(activeRun.id))!.payload[claimKey])).toBe(false);
-      const recovered = await engine.recoverIncomplete();
-      expect(recovered).toBeGreaterThanOrEqual(0);
-    }
+    // Missing local generative capability cannot start another paid request.
+    await expect(service.createEnhancedVersion(ctx, generated.workflowId)).rejects.toMatchObject({ code: "LOCAL_REWRITE_UNAVAILABLE" });
+    const savedResume = await repos.resumes.getByApplication(tenant.id, generated.applicationId);
+    expect(await repos.resumes.listVersions(tenant.id, savedResume!.publicId)).toHaveLength(1);
 
     // Titles remain Software Engineer unless explicitly confirmed otherwise
     const latestApp = await repos.applications.getByPublicId(tenant.id, generated.applicationId);

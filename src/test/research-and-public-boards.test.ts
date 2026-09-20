@@ -25,7 +25,9 @@ describe("real source boundaries", () => {
     expect(sources[0]).toMatchObject({ type: "public-reference", url: "https://engineering.example/article", confidence: "medium" });
     expect(sources[0].excerpt).toContain("PostgreSQL");
     expect(mocks.fetch.mock.calls[0][1].headers["X-Subscription-Token"]).toBe("test-search-key");
-    expect(mocks.fetch.mock.calls[1]).toEqual(["https://engineering.example/article"]);
+    expect(mocks.fetch.mock.calls[1][0]).toBe("https://engineering.example/article");
+    expect(mocks.fetch.mock.calls[1][1]).not.toHaveProperty("headers");
+    expect(mocks.fetch.mock.calls[1][1]).toMatchObject({ timeoutMs: 5000, maxRedirects: 1 });
   });
   it("rejects non-HTTP placeholder sources at the collector boundary", async () => {
     const sources = await collectFromResearchAdapters(context, [{ name: "old", collect: async () => [{ url: "search://roles/acme", title: "fake", excerpt: "would search", confidence: "low", accessedAt: "today", type: "search" }] }]);

@@ -63,7 +63,7 @@ export class FilesService {
   async signedDownload(ctx: AuthContext, filePublicId: string) {
     const tenantId = this.tenantId(ctx);
     const file = await this.files.getByPublicId(tenantId, filePublicId);
-    if (!file) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
+    if (!file || file.ownerUserId !== requireUser(ctx).id) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
     if (file.deletedAt) throw new AppError("FILE_DELETED", "File has been deleted", 410);
 
     const signed = await this.storage.getSignedDownloadUrl(tenantId, file.storageKey, { expiresInSeconds: 900 });
@@ -73,6 +73,8 @@ export class FilesService {
   async softDelete(ctx: AuthContext, filePublicId: string) {
     const tenantId = this.tenantId(ctx);
     requireTenantRole(ctx, tenantId, ["owner", "admin", "member"]);
+    const owned = await this.files.getByPublicId(tenantId, filePublicId);
+    if (!owned || owned.ownerUserId !== requireUser(ctx).id) throw new AppError("FILE_NOT_FOUND", "File not found", 404);
     const physicalDeleteAt = new Date(Date.now() + RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const file = await this.files.softDelete(tenantId, filePublicId, physicalDeleteAt);
 

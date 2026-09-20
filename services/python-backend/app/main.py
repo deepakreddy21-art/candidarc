@@ -88,6 +88,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Fail closed in production — readiness will report not_ready
             pass
 
+    from app.core.single_request import SingleRequestLedger
+    # Reuse the evidence pool; do not add a second database or pool per request.
+    pool = getattr(getattr(app.state, "evidence_store", None), "_pool", None)
+    app.state.single_request_ledger = SingleRequestLedger(pool, allow_memory=settings.ai_mode == "mock" and settings.app_mode != "production" and settings.evidence_store == "memory")
+    app.state.allowance_schema_error = None
+    if pool is not None:
+        try:
+            async with pool.acquire() as conn:
+                if not await conn.fetchval("SELECT to_regclass('public.resume_work_records') IS NOT NULL"):
+                    app.state.allowance_schema_error = "Apply migration 0018 before generation"
+        except Exception:  # noqa: BLE001
+            app.state.allowance_schema_error = "Generation allowance database is unavailable"
+    elif settings.ai_mode == "live":
+        app.state.allowance_schema_error = "Live generation requires the shared PostgreSQL allowance store"
+
+
     yield
 
     await close_evidence_store()
@@ -142,6 +158,8 @@ def create_app() -> FastAPI:
     async def health_ready(request: Request) -> HealthReadyResponse | JSONResponse:
         runtime_settings = getattr(request.app.state, "settings", None) or get_settings()
         errors = runtime_settings.ready_errors()
+        if getattr(request.app.state, "allowance_schema_error", None):
+            errors.append(request.app.state.allowance_schema_error)
         store_err = getattr(request.app.state, "evidence_store_error", None)
         store = getattr(request.app.state, "evidence_store", None)
         # Production always requires a healthy store; postgres-backed demo/smoke must too.

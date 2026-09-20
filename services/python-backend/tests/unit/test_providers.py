@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -10,7 +11,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.errors import MISSING_CREDENTIALS, PROVIDER_OUTPUT_INVALID, ProviderError
-from app.domain.schemas import FinalQaFailedCheck, FinalQaRepairDirective, ResumeDocument
+from app.domain.schemas import FinalQaFailedCheck, FinalQaRepairDirective, ResumeDocument, ResumePlanItem
 from app.main import create_app
 from app.modules.generation.service import generate_grounded_resume
 from app.providers.anthropic_provider import AnthropicProvider
@@ -121,11 +122,15 @@ async def test_openai_parse_called_and_usage_returned() -> None:
         evidence=evidence,
         allowed_technologies=["Python", "PyTorch", "OpenSearch"],
         job_description="Python platform engineer",
+        resume_plan=[ResumePlanItem(capability="Service delivery", rationale="Relevant to this role",
+            basis="role_practice", evidence_ids=["ev-1"], placement="experience",
+            emphasis="Use the candidate's service delivery experience.")],
     )
     assert resume.absolute_version == 0
     client.beta.chat.completions.parse.assert_awaited()
     request = client.beta.chat.completions.parse.call_args.kwargs
     assert "Choose the most accurate, natural action verb" in request["messages"][0]["content"]
+    assert json.loads(request["messages"][1]["content"])["resume_plan"][0]["evidence_ids"] == ["ev-1"]
     assert usage.input_tokens == 11
     assert usage.output_tokens == 22
     assert usage.provider_request_id == "resp-1"
@@ -193,13 +198,8 @@ async def test_local_research_reports_deterministic_zero_cost(provider_kind: str
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_kind", ["mock", "openai"])
-async def test_local_evidence_match_reports_deterministic_zero_cost(provider_kind: str) -> None:
-    provider = (
-        MockProvider()
-        if provider_kind == "mock"
-        else OpenAIProvider(_settings(), role="generation", client=MagicMock())
-    )
+async def test_mock_evidence_match_reports_deterministic_zero_cost() -> None:
+    provider = MockProvider()
     result, latency, usage = await provider.match_evidence(
         requirements=["Python platform engineering"],
         evidence=qa_evidence(),

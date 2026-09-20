@@ -1,6 +1,5 @@
 /** Shared deterministic Python intelligence mock for Vitest (no live FastAPI). */
 import { vi } from "vitest";
-import { nowIso } from "../../../server/database/repositories";
 import * as pythonClient from "../../../server/intelligence/python-client";
 
 function sanitizeVisibleTech(text: string): string {
@@ -240,6 +239,13 @@ export function installMockPythonIntelligence(opts?: { evidenceId?: string }) {
           retry_count: 0,
         },
       };
+    }),
+    generateResumeOnce: vi.fn(async (input: { evidence?: Array<Record<string, unknown>> }) => {
+      calls.push("generate-once");
+      return { resume: resumeDocFixture(0, (input.evidence ?? []) as never),
+        provider: "mock", model: "mock", promptVersion: "single-test", latencyMs: 1,
+        usage: { inputTokens: 100, outputTokens: 100, estimatedCostCents: 0, costUnknown: false },
+        localValidation: { passed: true, violations: [], latency_ms: 1 } };
     }),
     generateResume: vi.fn(async (input: {
       evidence?: Array<Record<string, unknown>>;
