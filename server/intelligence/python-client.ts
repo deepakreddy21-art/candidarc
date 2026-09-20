@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { z } from "zod";
-import { resumeSchema } from "../ai/schemas";
+import { resumeSchema, resumePlanItemSchema } from "../ai/schemas";
 import { getEnv } from "../config/env";
 import { AppError } from "../domain/types";
 import { logger } from "../observability/logger";
@@ -233,7 +233,7 @@ export function toSnakeEvidence(item: Record<string, unknown>): EvidenceItem {
     result: (item.result as string | null | undefined) ?? null,
     metrics: metricStrings(item.metrics ?? payload.metrics),
     technologies: Array.isArray(item.technologies) ? (item.technologies as string[]) : [],
-    source_type: (item.sourceType ?? item.source_type ?? null) as string | null,
+    source_type: (item.sourceType ?? item.source_type ?? (payload.source === "career-profile" ? payload.kind : null) ?? null) as string | null,
     verification_status: String(item.verificationStatus ?? item.verification_status ?? "user_attested"),
     candidate_confirmation_status: String(
       item.candidateConfirmationStatus ?? item.candidate_confirmation_status ?? "confirmed",
@@ -241,8 +241,10 @@ export function toSnakeEvidence(item: Record<string, unknown>): EvidenceItem {
     confidence,
     privacy_classification: String(item.privacyLevel ?? item.privacy_classification ?? "share-safe"),
     claim_text: (item.claimText ?? item.claim_text ?? null) as string | null,
-    employer_association: (item.employerAssociation ?? item.employer_association ?? null) as string | null,
-    project_association: (item.projectAssociation ?? item.project_association ?? null) as string | null,
+    employer_association: (item.employerAssociation ?? item.employer_association ??
+      (payload.source === "career-profile" && payload.kind === "employment" ? item.organization : null) ?? null) as string | null,
+    project_association: (item.projectAssociation ?? item.project_association ??
+      (payload.source === "career-profile" && payload.kind === "project" ? item.title : null) ?? null) as string | null,
   };
   return EvidenceItemSchema.parse(mapped);
 }
@@ -365,6 +367,13 @@ export function toSnakeResearchFinding(finding: Record<string, unknown>) {
     confidence: (finding.confidence ?? "medium") as "high" | "medium" | "low",
     status: finding.status ?? "supported",
     source_ids: (finding.sourceIds ?? finding.source_ids ?? []) as string[],
+    scope: finding.scope ?? "unknown",
+    relationship: finding.relationship ?? "uncertain",
+    subject: finding.subject ?? null,
+    technologies: finding.technologies ?? [],
+    capabilities: finding.capabilities ?? [],
+    supporting_quotes: finding.supportingQuotes ?? finding.supporting_quotes ?? [],
+    caveat: finding.caveat ?? null,
   };
 }
 
@@ -497,6 +506,13 @@ export function mapPythonResearchToTs(py: {
     confidence: "high" | "medium" | "low";
     status?: string;
     source_ids?: string[];
+    scope?: "team" | "product" | "company" | "role" | "unknown";
+    relationship?: "stack_usage" | "product_capability" | "job_requirement" | "uncertain";
+    subject?: string | null;
+    technologies?: string[];
+    capabilities?: string[];
+    supporting_quotes?: Array<{ source_id: string; quote: string }>;
+    caveat?: string | null;
   }>;
   sources: Array<{
     id: string;
@@ -507,9 +523,12 @@ export function mapPythonResearchToTs(py: {
     confidence?: "high" | "medium" | "low";
     classification?: "explicit" | "inferred" | "uncertain";
     relevance?: number;
+    source_kind?: string;
+    published_at?: string | null;
   }>;
   overall_confidence: number;
   company_research_status?: string | null;
+  limitations?: string[];
 }) {
   const statusMap: Record<string, "verified" | "inferred" | "unverified" | "disputed"> = {
     verified: "verified",
@@ -534,6 +553,13 @@ export function mapPythonResearchToTs(py: {
       confidence: f.confidence,
       status: statusMap[String(f.status ?? "inferred")] ?? "inferred",
       sourceIds: f.source_ids ?? [],
+      scope: f.scope,
+      relationship: f.relationship,
+      subject: f.subject,
+      technologies: f.technologies ?? [],
+      capabilities: f.capabilities ?? [],
+      supportingQuotes: f.supporting_quotes ?? [],
+      caveat: f.caveat,
     })),
     sources: py.sources.map((s) => ({
       id: s.id,
@@ -543,6 +569,8 @@ export function mapPythonResearchToTs(py: {
       supportingText: s.supporting_text,
       confidence: s.confidence ?? "medium",
       classification: s.classification ?? "explicit",
+      sourceKind: s.source_kind,
+      publishedAt: s.published_at,
       relevance:
         typeof s.relevance === "number"
           ? `relevance=${s.relevance.toFixed(2)}`
@@ -551,11 +579,13 @@ export function mapPythonResearchToTs(py: {
     overallConfidence: Math.round(Math.min(1, Math.max(0, py.overall_confidence)) * 100),
     companyResearchStatus:
       py.company_research_status === "unavailable" ? ("unavailable" as const) : ("available" as const),
+    limitations: py.limitations ?? [],
   };
 }
 
 /** Map Python evidence match response into the TypeScript evidenceMatchSchema shape. */
 export function mapPythonEvidenceMatchToTs(py: {
+  resume_plan?: z.infer<typeof EvidenceMatchResponseSchema>["resume_plan"];
   evidence_coverage: number;
   rows: Array<{
     requirement: string;
@@ -586,6 +616,10 @@ export function mapPythonEvidenceMatchToTs(py: {
       coverageGap: row.coverage_gap ?? undefined,
     })),
     evidenceCoverage: Math.round(Math.min(1, Math.max(0, py.evidence_coverage)) * 100),
+    resumePlan: (py.resume_plan ?? []).map((item) => resumePlanItemSchema.parse({
+      ...item, evidence_ids: item.evidence_ids ?? [], research_source_ids: item.research_source_ids ?? [],
+      candidate_technologies: item.candidate_technologies ?? [], gap: item.gap ?? null,
+    })),
   };
 }
 
@@ -656,6 +690,7 @@ export type GenerateResumeInput = {
   finalQaRepair?: FinalQaRepairDirective | null;
   jobRequirements?: string[];
   evidenceMatches?: Array<Record<string, unknown>>;
+  resumePlan?: Array<Record<string, unknown>>;
   userConfirmations?: Array<Record<string, unknown>>;
   idempotencyKey?: string;
 };
@@ -739,6 +774,7 @@ function buildGenerateBody(input: GenerateResumeInput) {
       : null,
     job_requirements: input.jobRequirements ?? [],
     evidence_matches: (input.evidenceMatches ?? []).map((row) => toSnakeEvidenceMatch(row)),
+    resume_plan: input.resumePlan ?? [],
     user_confirmations: (input.userConfirmations ?? []).map((item) => ({
       // Provenance fields for tenant/owner isolation
       id: (item.id ?? null) as string | null,
@@ -985,6 +1021,10 @@ export class PythonIntelligenceClient {
     role: string;
     jobDescription: string;
     sources?: Array<Record<string, unknown>>;
+    team?: string;
+    product?: string;
+    businessUnit?: string;
+    idempotencyKey?: string;
   }) {
     const data = await this.post(PYTHON_BACKEND_PATHS.researchSynthesize, {
       context: toSnakeContext(input.context),
@@ -992,7 +1032,10 @@ export class PythonIntelligenceClient {
       role: input.role,
       job_description: input.jobDescription,
       sources: input.sources ?? [],
-    });
+      team: input.team ?? null,
+      product: input.product ?? null,
+      business_unit: input.businessUnit ?? null,
+    }, input.idempotencyKey);
     const parsed = ResearchSynthesizeResponseSchema.parse(data);
     const usage = mapProviderUsage(parsed.usage);
     const latencyMs = parsed.latency_ms ?? usage.latencyMs ?? 0;
@@ -1010,7 +1053,7 @@ export class PythonIntelligenceClient {
         latency_ms: latencyMs,
         estimated_cost_cents: usage.estimatedCostCents,
         provider_request_id: usage.providerRequestId ?? null,
-        retry_count: 0,
+        retry_count: usage.retryCount ?? 0,
       },
     };
   }
@@ -1057,15 +1100,22 @@ export class PythonIntelligenceClient {
   async matchEvidence(input: {
     context: RequestContext;
     requirements: string[];
+    jobDescription?: string;
+    role?: string;
+    company?: string;
     evidence: Array<Record<string, unknown>>;
     researchFindings?: Array<Record<string, unknown>>;
+    idempotencyKey?: string;
   }) {
     const data = await this.post(PYTHON_BACKEND_PATHS.evidenceMatch, {
       context: toSnakeContext(input.context),
       requirements: input.requirements,
+      job_description: input.jobDescription ?? "",
+      role: input.role ?? null,
+      company: input.company ?? null,
       evidence: input.evidence.map((item) => toSnakeEvidence(item)),
       research_findings: (input.researchFindings ?? []).map((finding) => toSnakeResearchFinding(finding)),
-    });
+    }, input.idempotencyKey);
     const parsed = EvidenceMatchResponseSchema.parse(data);
     const usage = mapProviderUsage(parsed.usage);
     const latencyMs = parsed.latency_ms ?? usage.latencyMs ?? 0;
@@ -1083,7 +1133,7 @@ export class PythonIntelligenceClient {
         latency_ms: latencyMs,
         estimated_cost_cents: usage.estimatedCostCents,
         provider_request_id: usage.providerRequestId ?? null,
-        retry_count: 0,
+        retry_count: usage.retryCount ?? 0,
       },
     };
   }

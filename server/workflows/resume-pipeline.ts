@@ -1,6 +1,7 @@
 import { CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
 import { selectCareerEvidence } from "../modules/profile/career-evidence";
 import { createHash } from "crypto";
+import { getEnv } from "../config/env";
 import {
   auditSchema,
   evidenceMatchSchema,
@@ -9,7 +10,8 @@ import {
   resumeSchema,
 } from "../ai/schemas";
 import type { StructuredGenerationResult } from "../ai/types";
-import { collectResearchSources } from "../ai/research-collector";
+import { teamResearchCollector, type ResearchCollection } from "../research/team-collector";
+import { extractTeamContext, researchCacheKey, TEAM_RESEARCH_VERSION } from "../research/team-context";
 import { addMistakeMemoryRule, listActiveMistakeMemory } from "../ai/mistake-memory";
 import { adjudicateFindings, buildAdjudicationContext } from "../resumes/audit-adjudication";
 import type {
@@ -555,15 +557,33 @@ export class ResumePipeline {
     const jobUrl = typeof application.metadata?.jobUrl === "string" ? application.metadata.jobUrl : undefined;
     const researchDepth = typeof application.metadata?.researchDepth === "string"
       ? application.metadata.researchDepth
-      : "standard";
+      : "deep-team";
+    const teamContext = extractTeamContext(jobDescription, {
+      team: typeof application.metadata?.researchTeam === "string" ? application.metadata.researchTeam : undefined,
+      product: typeof application.metadata?.researchProduct === "string" ? application.metadata.researchProduct : undefined,
+      businessUnit: typeof application.metadata?.researchBusinessUnit === "string" ? application.metadata.researchBusinessUnit : undefined,
+    });
     // Public source collection stays in TypeScript — Python never fetches arbitrary URLs.
-    const collectedSources = await collectResearchSources({
+    const researchInput = {
       company: application.company,
       role: application.role,
       jobUrl,
       jobDescription,
       researchDepth,
+      ...teamContext,
+    };
+    const savedCollection = application.metadata?.researchCollection as ResearchCollection | undefined;
+    // Freeze the exact inputs across stage retries, including source timestamps.
+    const collection = savedCollection?.key === researchCacheKey(researchInput)
+      && (savedCollection.status === "demo") === (getEnv().AI_MODE === "mock")
+      ? savedCollection
+      : await teamResearchCollector.collect(researchInput, run.tenantId, application.ownerUserId ?? "unknown");
+    application = await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
+      metadata: { ...application.metadata, researchCollection: collection, researchPhase: "analyzing" },
     });
+    const collectedSources = collection.sources.map((source) => ({ ...source,
+      id: `src-${createHash("sha256").update(source.url).digest("hex").slice(0, 12)}`,
+    }));
 
     let result: {
       data: z.infer<typeof researchSchema>;
@@ -595,6 +615,8 @@ export class ResumePipeline {
         company: application.company,
         role: application.role,
         jobDescription,
+        ...teamContext,
+        idempotencyKey: `${run.publicId}:research:${TEAM_RESEARCH_VERSION}:${createHash("sha256").update(JSON.stringify([collection.key, collectedSources])).digest("hex")}`,
         sources: collectedSources.map((source) => ({
           id: source.id,
           url: source.url,
@@ -603,6 +625,8 @@ export class ResumePipeline {
           supporting_text: source.excerpt,
           confidence: source.confidence,
           classification: source.type === "public-reference" ? "inferred" : "explicit",
+          source_kind: source.type,
+          published_at: source.publishedAt ?? null,
         })),
       });
       const mapped = mapPythonResearchToTs(py);
@@ -639,6 +663,9 @@ export class ResumePipeline {
         jobRequirements,
         researchFindings: result.data.findings,
         researchSourceCount: result.data.sources.length,
+        researchLimitations: result.data.limitations ?? [],
+        researchReferences: collectedSources.map((source) => ({ id: source.id, url: source.url })),
+        researchPhase: "planning",
         excludedTechnologies: [],
       },
     });
@@ -661,39 +688,6 @@ export class ResumePipeline {
     await this.recordProviderUsage(run, usageKey, result, { billable: false });
 
     const existing = await this.deps.research.getLatest(run.tenantId, run.applicationPublicId);
-    if (existing && existing.status === "completed") {
-      await this.commit(usageKey, this.commitCostCents(result.usage.estimatedCostCents), {
-        tenantId: run.tenantId,
-        billable: false,
-      });
-      const pauseForTech = this.shouldPauseForTechConfirmation(run, techQuestions);
-      await this.deps.engine.transition(run.id, "RESEARCH_COMPLETED", {
-        status: pauseForTech ? "waiting_review" : undefined,
-        message: pauseForTech
-          ? "Waiting for technology confirmation before evidence matching"
-          : "Research already completed (idempotent)",
-      });
-      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-        stage: "RESEARCH_COMPLETED",
-        workflowStage: "RESEARCH_COMPLETED",
-        researchConfidence: result.data.overallConfidence,
-        status: "evidence",
-        nextAction: pauseForTech ? "Confirm technologies" : "Match evidence",
-      });
-      if (pauseForTech) {
-        return;
-      }
-      await this.deps.applications.update(run.tenantId, run.applicationPublicId, {
-        stage: "EVIDENCE_MATCHING_RUNNING",
-        workflowStage: "EVIDENCE_MATCHING_RUNNING",
-        nextAction: "Match evidence",
-      });
-      await this.deps.engine.transition(run.id, "EVIDENCE_MATCHING_RUNNING", {
-        message: "Evidence matching started automatically",
-      });
-      return;
-    }
-
     const researchPublicId = existing?.publicId ?? newId("rr");
     if (!existing) {
       await this.deps.research.createRun({
@@ -703,7 +697,7 @@ export class ResumePipeline {
         applicationId: run.applicationId,
         applicationPublicId: run.applicationPublicId,
         status: "completed",
-        depth: "standard",
+        depth: researchDepth,
         confidence: result.data.overallConfidence,
         findings: result.data.findings,
         sources: result.data.sources,
@@ -805,7 +799,10 @@ export class ResumePipeline {
           workflowRunId: run.publicId,
           requestId: run.id,
         },
-        requirements: requirements.length ? requirements : ["general platform engineering"],
+        requirements: requirements.length ? requirements : [application?.role ?? "Professional responsibilities"],
+        jobDescription: String(application?.metadata?.jobDescription ?? ""),
+        role: application?.role,
+        company: application?.company,
         evidence: evidence.map((item) => ({
           id: item.publicId,
           tenantId: item.tenantId,
@@ -831,6 +828,7 @@ export class ResumePipeline {
         researchFindings: Array.isArray(research?.findings)
           ? (research!.findings as Array<Record<string, unknown>>)
           : [],
+        idempotencyKey: `${run.publicId}:plan:${TEAM_RESEARCH_VERSION}:${createHash("sha256").update(JSON.stringify([requirements, evidence, research?.findings, application?.metadata?.jobDescription, application?.role, application?.company])).digest("hex")}`,
       });
       const mapped = mapPythonEvidenceMatchToTs(py);
       const usage = mapProviderUsage(py.usage);
@@ -858,6 +856,8 @@ export class ResumePipeline {
         evidenceMatches: result.data.rows,
         evidenceCoverage: result.data.evidenceCoverage,
         jobRequirements: requirements,
+        resumePlan: result.data.resumePlan ?? [],
+        researchPhase: "complete",
       },
       evidenceCoverage: result.data.evidenceCoverage,
     });
@@ -1257,6 +1257,8 @@ export class ResumePipeline {
           })(),
           jobRequirements,
           evidenceMatches,
+          resumePlan: Array.isArray(application?.metadata?.resumePlan)
+            ? application.metadata.resumePlan as Array<Record<string, unknown>> : [],
           // Positive confirmations are persisted as ordinary scoped evidence before
           // pipeline resume; never reconstruct ephemeral confirmation identities here.
           userConfirmations: [],

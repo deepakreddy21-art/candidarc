@@ -7,6 +7,8 @@ import { ErrorState } from "@/components/ui/feedback";
 import type { ResumeDocument } from "@/types/resume-document";
 import { CreatingState } from "@/components/resumes/creating-state";
 import { ResumeReady } from "@/components/resumes/resume-ready";
+import { ResearchSummary } from "@/components/resumes/research-summary";
+import type { ResumeResearch } from "@/types/resume-research";
 import { TechConfirmCard } from "@/components/resumes/tech-confirm-card";
 
 type WorkflowData = {
@@ -33,6 +35,7 @@ type WorkflowData = {
   };
   enhancementAvailable?: boolean;
   refinementNotice?: string;
+  research?: ResumeResearch;
   error?: string;
 };
 
@@ -110,6 +113,7 @@ export default function CustomerResumePage({ params }: { params: Promise<{ workf
         elapsedMs={data?.elapsedMs}
         needsInput={data?.status === "needs_input"}
       >
+        <ResearchSummary research={data?.research} />
         {data?.status === "needs_input" && data?.techQuestions?.length ? (
           <TechConfirmCard workflowId={workflowId} questions={data.techQuestions} />
         ) : null}

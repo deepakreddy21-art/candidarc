@@ -206,14 +206,15 @@ async def jobs_parse(body: JobParseRequest) -> JobParseResponse:
     return JobParseResponse(**parsed)
 
 
-@router.post("/research/synthesize", response_model=ResearchSynthesizeResponse)
-async def research_synthesize(request: Request, body: ResearchSynthesizeRequest) -> ResearchSynthesizeResponse:
+async def _research_handler(request: Request, body: ResearchSynthesizeRequest) -> ResearchSynthesizeResponse:
     try:
         provider = get_provider("generation", request)
         result, latency, usage = await provider.synthesize_research(
             company=body.company,
             role=body.role,
             sources=body.sources,
+            job_description=body.job_description,
+            team=body.team, product=body.product, business_unit=body.business_unit,
         )
     except Exception as exc:
         _raise_provider(exc)
@@ -233,6 +234,14 @@ async def research_synthesize(request: Request, body: ResearchSynthesizeRequest)
             "usage": usage,
         }
     )
+
+
+@router.post("/research/synthesize", response_model=ResearchSynthesizeResponse)
+async def research_synthesize(request: Request, body: ResearchSynthesizeRequest,
+                              idempotency_key: str | None = Header(default=None)) -> Any:
+    return await _with_idempotency(request, operation="research", tenant_id=body.context.tenant_id,
+        user_id=body.context.user_id, idempotency_key=idempotency_key, body_dict=body.model_dump(mode="json"),
+        handler=lambda: _research_handler(request, body))
 
 
 def _store_backend(request: Request) -> Literal["memory", "postgres"]:
@@ -321,16 +330,18 @@ async def evidence_search(request: Request, body: EvidenceSearchRequest) -> Evid
     )
 
 
-@router.post("/evidence/match", response_model=EvidenceMatchResponse)
-async def evidence_match(request: Request, body: EvidenceMatchRequest) -> EvidenceMatchResponse:
+async def _evidence_match_handler(request: Request, body: EvidenceMatchRequest) -> EvidenceMatchResponse:
     """Authoritative request-scoped match. Optionally enrich notes via store search (non-authoritative)."""
     _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
-    _ = body.research_findings  # intentionally ignored for claim formation
     try:
         provider = get_provider("generation", request)
         result, latency, usage = await provider.match_evidence(
             requirements=body.requirements,
             evidence=body.evidence,
+            research_findings=body.research_findings,
+            job_description=body.job_description,
+            role=body.role,
+            company=body.company,
         )
     except Exception as exc:
         _raise_provider(exc)
@@ -344,6 +355,15 @@ async def evidence_match(request: Request, body: EvidenceMatchRequest) -> Eviden
             "usage": usage,
         }
     )
+
+
+@router.post("/evidence/match", response_model=EvidenceMatchResponse)
+async def evidence_match(request: Request, body: EvidenceMatchRequest,
+                         idempotency_key: str | None = Header(default=None)) -> Any:
+    _assert_evidence_scope(body.context.tenant_id, body.context.user_id, body.evidence)
+    return await _with_idempotency(request, operation="resume-plan", tenant_id=body.context.tenant_id,
+        user_id=body.context.user_id, idempotency_key=idempotency_key, body_dict=body.model_dump(mode="json"),
+        handler=lambda: _evidence_match_handler(request, body))
 
 
 async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> ResumeGenerateResponse:
@@ -369,6 +389,7 @@ async def _generate_handler(request: Request, body: ResumeGenerateRequest) -> Re
             user_confirmations=body.user_confirmations,
             refinement_instruction=body.refinement_instruction,
             evidence_matches=body.evidence_matches,
+            resume_plan=body.resume_plan,
             final_qa_repair=body.final_qa_repair,
         )
     except Exception as exc:

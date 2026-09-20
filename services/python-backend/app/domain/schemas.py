@@ -388,10 +388,12 @@ class ResearchSource(StrictModel):
     url: HttpUrl
     title: StrShort
     accessed_at: StrShort
-    supporting_text: StrMed
+    supporting_text: str = Field(min_length=1, max_length=12_000)
     confidence: Confidence = "medium"
     classification: Literal["explicit", "inferred", "uncertain"] = "explicit"
     relevance: float = Field(ge=0, le=1, default=0.5)
+    source_kind: Literal["job-posting", "job-description", "public-reference"] = "public-reference"
+    published_at: str | None = Field(default=None, max_length=128)
 
 
 class ResearchSynthesizeRequest(StrictModel):
@@ -400,6 +402,14 @@ class ResearchSynthesizeRequest(StrictModel):
     role: StrShort
     job_description: StrLong
     sources: list[ResearchSource] = Field(default_factory=list, max_length=50)
+    team: StrShort | None = None
+    product: StrShort | None = None
+    business_unit: StrShort | None = None
+
+
+class ResearchQuote(StrictModel):
+    source_id: StrId
+    quote: str = Field(min_length=12, max_length=2_000)
 
 
 class ResearchFinding(StrictModel):
@@ -409,6 +419,13 @@ class ResearchFinding(StrictModel):
     confidence: Confidence
     status: Literal["supported", "uncertain", "unavailable", "verified", "inferred", "unverified", "disputed"] = "supported"
     source_ids: list[StrId] = Field(default_factory=list, max_length=50)
+    scope: Literal["team", "product", "company", "role", "unknown"] = "unknown"
+    relationship: Literal["stack_usage", "product_capability", "job_requirement", "uncertain"] = "uncertain"
+    subject: StrShort | None = None
+    technologies: list[StrShort] = Field(default_factory=list, max_length=20)
+    capabilities: list[StrShort] = Field(default_factory=list, max_length=12)
+    supporting_quotes: list[ResearchQuote] = Field(default_factory=list, max_length=8)
+    caveat: str | None = Field(default=None, max_length=1_000)
 
 
 class ResearchSynthesizeResponse(StrictModel):
@@ -420,6 +437,19 @@ class ResearchSynthesizeResponse(StrictModel):
     model: StrShort
     latency_ms: int = Field(ge=0)
     usage: ProviderUsage | None = None
+    limitations: list[StrShort] = Field(default_factory=list, max_length=20)
+
+
+class ResumePlanItem(StrictModel):
+    capability: StrShort
+    rationale: str = Field(max_length=1_000)
+    basis: Literal["job_description", "team_research", "company_research", "role_practice"]
+    research_source_ids: list[StrId] = Field(default_factory=list, max_length=20)
+    evidence_ids: list[StrId] = Field(default_factory=list, max_length=20)
+    candidate_technologies: list[StrShort] = Field(default_factory=list, max_length=30)
+    placement: Literal["experience", "projects", "skills", "interview_only"]
+    emphasis: str = Field(max_length=1_000)
+    gap: str | None = Field(default=None, max_length=1_000)
 
 
 class EvidenceIndexRequest(StrictModel):
@@ -455,6 +485,9 @@ class EvidenceSearchResponse(StrictModel):
 
 
 class EvidenceMatchRequest(StrictModel):
+    job_description: str = Field(default="", max_length=100_000)
+    role: StrShort | None = None
+    company: StrShort | None = None
     context: RequestContext
     requirements: list[Annotated[str, Field(max_length=2_000)]] = Field(max_length=200)
     evidence: list[EvidenceItem] = Field(max_length=500)
@@ -482,6 +515,7 @@ class EvidenceMatchResponse(StrictModel):
     model: StrShort
     latency_ms: int = Field(ge=0)
     usage: ProviderUsage | None = None
+    resume_plan: list[ResumePlanItem] = Field(default_factory=list, max_length=12)
 
 
 class MistakeMemoryRule(StrictModel):
@@ -646,6 +680,7 @@ class ResumeGenerateRequest(StrictModel):
     final_qa_repair: FinalQaRepairDirective | None = None
     job_requirements: list[Annotated[str, Field(max_length=2_000)]] = Field(default_factory=list, max_length=200)
     evidence_matches: list[EvidenceMatchRow] = Field(default_factory=list, max_length=200)
+    resume_plan: list[ResumePlanItem] = Field(default_factory=list, max_length=12)
     user_confirmations: list[UserConfirmation] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")

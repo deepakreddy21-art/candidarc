@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { customerResearchSummary } from "../../resumes/research-summary";
 import { languageReviewForVersion } from "../../../src/lib/resume-writing-review";
 import { z } from "zod";
 import type { AuthContext } from "../../auth/guards";
@@ -43,6 +44,9 @@ export const customerGenerateInputSchema = z.object({
   company: z.preprocess(emptyToUndefined, z.string().min(1).max(120).optional()),
   role: z.preprocess(emptyToUndefined, z.string().min(1).max(160).optional()),
   location: z.preprocess(emptyToUndefined, z.string().max(160).optional()),
+  team: z.preprocess(emptyToUndefined, z.string().max(160).optional()),
+  product: z.preprocess(emptyToUndefined, z.string().max(160).optional()),
+  businessUnit: z.preprocess(emptyToUndefined, z.string().max(160).optional()),
   idempotencyKey: z.string().min(8).max(128).optional(),
 }).refine((input) => input.jobDescription || input.jobUrl, {
   message: "A job description or job URL is required",
@@ -169,7 +173,8 @@ export class CustomerGenerateService {
     }
 
     const sourceHash = createHash("sha256")
-      .update(`${input.jobUrl ?? ""}\n${jobDescription ?? ""}`)
+      .update(JSON.stringify([input.jobUrl ?? "", jobDescription ?? "", input.company, input.role,
+        input.team, input.product, input.businessUnit, profile ? careerFingerprint(profile) : null]))
       .digest("hex");
     const idempotencyKey = `customer:${user.id}:${sourceHash}:${input.idempotencyKey ?? sourceHash}`;
     const existing = await this.repos.workflows.findByIdempotency(tenantId, idempotencyKey);
@@ -218,6 +223,10 @@ export class CustomerGenerateService {
         ...contactSnapshot,
         jobDescription,
         jobUrl: input.jobUrl,
+        researchDepth: "deep-team",
+        researchTeam: input.team,
+        researchProduct: input.product,
+        researchBusinessUnit: input.businessUnit,
         sourceHash,
         idempotencyKey: input.idempotencyKey,
         techQuestions: [],
@@ -344,7 +353,13 @@ export class CustomerGenerateService {
       elapsedMs: mapped.elapsedMs,
       downloads: { pdfReady, docxReady },
       documentRetryAvailable: previewable && !documentsAreReady,
+      research: customerResearchSummary(currentApp.metadata),
     };
+    if (mapped.pipelineStage === "understanding" && mapped.status !== "needs_input") {
+      const phase = currentApp.metadata?.researchPhase;
+      response.pipelineLabel = phase === "planning" ? "Connecting the role to your experience"
+        : phase === "analyzing" ? "Reviewing company and team sources" : "Researching the role and its team";
+    }
     if (typeof currentApp.metadata?.refinementNotice === "string") response.refinementNotice = currentApp.metadata.refinementNotice;
     // Optional tech confirmation only while generation is waiting on input — hide after advance.
     if (mapped.status === "needs_input" && questions.length) {

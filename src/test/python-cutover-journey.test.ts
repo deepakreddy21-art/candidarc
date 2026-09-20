@@ -25,6 +25,7 @@ const TENANT = "ten_cutover_journey";
 const USER = "user_cutover_journey";
 
 describe("python cutover application journey", () => {
+  let pythonMock: ReturnType<typeof installMockPythonIntelligence>;
   let providerSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -35,7 +36,14 @@ describe("python cutover application journey", () => {
     vi.stubEnv("CANDIDARC_DATA_MODE", "memory");
     vi.stubEnv("RESUME_INTELLIGENCE_BACKEND", "python");
     resetEnvCache();
-    installMockPythonIntelligence({ evidenceId: "ev_cutover_1" });
+    pythonMock = installMockPythonIntelligence({ evidenceId: "ev_cutover_1" });
+    const match = pythonMock.client.matchEvidence.getMockImplementation()!;
+    pythonMock.client.matchEvidence.mockImplementation(async (input) => ({
+      ...await match(input),
+      resume_plan: [{ capability: "Reliable delivery", rationale: "Relevant engineering work", basis: "role_practice",
+        evidence_ids: ["ev_cutover_1"], research_source_ids: [], candidate_technologies: ["Python"],
+        placement: "experience", emphasis: "Highlight the candidate's deployment work.", gap: null }],
+    }));
     providerSpy = vi.spyOn(aiIndex, "getProviderForRole") as ReturnType<typeof vi.spyOn>;
   });
 
@@ -185,6 +193,14 @@ describe("python cutover application journey", () => {
     const final = await engine.getStatus(TENANT, run.publicId);
     expect(final?.stage).toBe("FINAL_READY");
     expect(providerSpy).not.toHaveBeenCalled();
+    const savedApp = await repos.applications.getByPublicId(TENANT, app.publicId);
+    expect(savedApp?.metadata?.resumePlan).toEqual(expect.arrayContaining([expect.objectContaining({ capability: "Reliable delivery" })]));
+    expect(savedApp?.metadata?.researchCollection).toMatchObject({ status: "demo" });
+    expect(pythonMock.client.synthesizeResearch).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: expect.stringContaining(":research:") }));
+    expect(pythonMock.client.matchEvidence).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: expect.stringContaining(":plan:") }));
+    expect(pythonMock.client.generateResume).toHaveBeenCalledWith(expect.objectContaining({ resumePlan: savedApp?.metadata?.resumePlan }));
+    expect(pythonMock.client.regenerateResume).toHaveBeenCalledWith(expect.objectContaining({ resumePlan: savedApp?.metadata?.resumePlan }));
+
 
     const events = await repos.workflows.listEvents(TENANT, run.publicId);
     const metaOps = events

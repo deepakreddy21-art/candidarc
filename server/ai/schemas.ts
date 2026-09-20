@@ -30,6 +30,8 @@ export const researchSourceSchema = z.object({
   confidence: confidenceSchema,
   classification: z.enum(["explicit", "inferred", "uncertain"]),
   relevance: z.string(),
+  sourceKind: z.string().optional(),
+  publishedAt: z.string().nullable().optional(),
 });
 
 export const researchSchema = z.object({
@@ -41,11 +43,32 @@ export const researchSchema = z.object({
       confidence: confidenceSchema,
       status: z.enum(["verified", "inferred", "unverified", "disputed"]),
       sourceIds: z.array(z.string()),
+      scope: z.enum(["team", "product", "company", "role", "unknown"]).optional(),
+      relationship: z.enum(["stack_usage", "product_capability", "job_requirement", "uncertain"]).optional(),
+      subject: z.string().nullable().optional(),
+      technologies: z.array(z.string()).optional(),
+      capabilities: z.array(z.string()).optional(),
+      supportingQuotes: z.array(z.object({ source_id: z.string(), quote: z.string() })).optional(),
+      caveat: z.string().nullable().optional(),
     }),
   ),
   sources: z.array(researchSourceSchema),
   overallConfidence: z.number().min(0).max(100),
   companyResearchStatus: z.enum(["available", "unavailable"]).optional(),
+  limitations: z.array(z.string()).optional(),
+});
+
+// Preserve the Python plan's wire shape through persistence and generation.
+export const resumePlanItemSchema = z.object({
+  capability: z.string(),
+  rationale: z.string(),
+  basis: z.enum(["job_description", "team_research", "company_research", "role_practice"]),
+  research_source_ids: z.array(z.string()),
+  evidence_ids: z.array(z.string()),
+  candidate_technologies: z.array(z.string()),
+  placement: z.enum(["experience", "projects", "skills", "interview_only"]),
+  emphasis: z.string(),
+  gap: z.string().nullable(),
 });
 
 export const evidenceMatchSchema = z.object({
@@ -60,6 +83,7 @@ export const evidenceMatchSchema = z.object({
     }),
   ),
   evidenceCoverage: z.number().min(0).max(100),
+  resumePlan: z.array(resumePlanItemSchema).optional(),
 });
 
 export const resumeBulletSchema = z.object({

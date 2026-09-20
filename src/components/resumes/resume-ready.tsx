@@ -14,6 +14,8 @@ import { RefinePanel } from "./refine-panel";
 import { ResumeComparison } from "./resume-comparison";
 import { VersionHistory } from "./version-history";
 import { QualityReport } from "./quality-report";
+import { ResearchSummary } from "./research-summary";
+import type { ResumeResearch } from "@/types/resume-research";
 import { AskPanel } from "@/components/assistant/ask-panel";
 import type { WritingReview } from "@/lib/resume-writing-review";
 
@@ -47,6 +49,7 @@ type ReadyData = {
   documentRetryAvailable?: boolean;
   enhancementAvailable?: boolean;
   refinementNotice?: string;
+  research?: ResumeResearch;
 };
 
 export function ResumeReady({
@@ -178,6 +181,7 @@ export function ResumeReady({
         <ResumeComparison workflowId={data.workflowId} versionId={compareId} current={resumeDoc} onClose={() => setCompareId(undefined)} />
       ) : null}
       <AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />
+      <ResearchSummary research={data.research} />
       <QualityReport report={data.qualityReport} onReviewText={(text) => {
         setSelectedText(text);
         const editor = globalThis.document.getElementById("refinement");

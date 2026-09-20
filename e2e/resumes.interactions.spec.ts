@@ -41,6 +41,8 @@ Requirements: 5+ years experience, strong ownership.`);
     await waitForResumeReady(page);
     await expect(page.getByRole("link", { name: /download pdf/i })).toBeVisible();
     await expect(page.getByRole("link", { name: /download docx/i })).toBeVisible();
+    await page.getByText("Research and résumé approach", { exact: true }).click();
+    await expect(page.getByTestId("resume-research")).toContainText("no live company research was performed");
   });
 
   test("PDF download contains readable resume text", async ({ page }) => {

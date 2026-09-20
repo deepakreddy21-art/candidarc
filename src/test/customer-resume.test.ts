@@ -17,6 +17,8 @@ import {
 import { getStorage } from "../../server/storage";
 import { DbWorkflowEngine } from "../../server/workflows/engine";
 import { InProcessQueueAdapter } from "../../server/workflows/queues";
+import { RadarService } from "../../server/radar/service";
+import { getSharedCatalog, seedDemoCatalog } from "../../server/radar/catalog";
 
 function makeService(repos: Repositories) {
   return new CustomerGenerateService(repos, new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter()), getStorage());
@@ -56,6 +58,23 @@ async function seedOwnedEvidence(repos: Repositories, tenantId: string, userId: 
 }
 
 describe("customer resume generation", () => {
+  it("routes Radar tailoring through the same deep team research defaults", async () => {
+    const { repos, userId, tenantId } = await ensureDemoUser(createEmptyMemoryStore());
+    await seedOwnedEvidence(repos, tenantId, userId);
+    seedDemoCatalog();
+    const catalog = getSharedCatalog();
+    const job = [...catalog.canonicalJobs.values()][0]!;
+    const originalDepartment = job.department;
+    job.department = "Payments";
+    try {
+      const result = await new RadarService(catalog, undefined, repos, makeService(repos)).tailorResume(context(userId, tenantId, repos), job.publicId);
+      const app = await repos.applications.getByPublicId(tenantId, result.applicationId);
+      expect(app?.metadata).toMatchObject({ researchDepth: "deep-team", researchTeam: "Payments", customerFacing: true });
+      expect(app?.company).toBe(job.companyName);
+      expect(app?.role).toBe(job.title);
+    } finally { job.department = originalDepartment; }
+  });
+
   it("is idempotent so double-submit does not create duplicate workflows", async () => {
     const store = createEmptyMemoryStore();
     const { repos, userId, tenantId } = await ensureDemoUser(store);
@@ -68,6 +87,7 @@ describe("customer resume generation", () => {
     expect(second).toEqual(first);
     const apps = await repos.applications.list(tenantId);
     expect(apps.filter((app) => app.metadata?.sourceHash)).toHaveLength(1);
+    expect(apps.find((app) => app.publicId === first.applicationId)?.metadata?.researchDepth).toBe("deep-team");
   });
 
   it("restores an existing workflow after reload without depending on the browser", async () => {

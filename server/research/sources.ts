@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { logger } from "../observability/logger";
 import { getEnv } from "../config/env";
 import { htmlToPlainText, ssrfFetch } from "../security/ssrf-fetch";
+import type { TeamContext } from "./team-context";
 
 export type ResearchSourceRecord = {
   url: string;
@@ -10,14 +11,16 @@ export type ResearchSourceRecord = {
   type: string;
   excerpt: string;
   confidence: "high" | "medium" | "low";
+  publishedAt?: string;
 };
 
-export type ResearchCollectContext = {
+export type ResearchCollectContext = TeamContext & {
   company: string;
   role: string;
   jobUrl?: string;
   jobDescription?: string;
   researchDepth?: string;
+  signal?: AbortSignal;
 };
 
 export interface ResearchSourceAdapter {
@@ -95,26 +98,34 @@ export class ConfiguredSearchAdapter implements ResearchSourceAdapter {
     const limits = depthLimits(context.researchDepth);
     const apiKey = getEnv().BRAVE_SEARCH_API_KEY;
     if (!limits.includeSearch || !apiKey) return [];
-    const query = `"${context.company.replaceAll('"', '')}" ${context.role} engineering team technology`;
+    const query = researchQueries(context)[0];
+    return this.search(context, query, limits.maxSources);
+  }
+
+  async search(context: ResearchCollectContext, query: string, limit = 5): Promise<ResearchSourceRecord[]> {
+    const apiKey = getEnv().BRAVE_SEARCH_API_KEY;
+    if (!apiKey) return [];
     const url = new URL("https://api.search.brave.com/res/v1/web/search");
     url.searchParams.set("q", query.slice(0, 400));
-    url.searchParams.set("count", String(limits.maxSources));
+    url.searchParams.set("count", String(limit));
     const response = await ssrfFetch(url.toString(), {
       maxRedirects: 0,
       headers: { "X-Subscription-Token": apiKey, Accept: "application/json" },
       timeoutMs: 8_000,
       maxBytes: 300_000,
+      signal: context.signal,
     });
     const body = JSON.parse(response.body.toString("utf8")) as { web?: { results?: Array<{ url?: string; title?: string }> } };
-    const candidates = (body.web?.results ?? []).filter((row) => typeof row.url === "string").slice(0, limits.maxSources);
+    const candidates = (body.web?.results ?? []).filter((row) => typeof row.url === "string").slice(0, limit);
     const results = await Promise.all(candidates.map(async (row): Promise<ResearchSourceRecord | null> => {
       try {
         // The search token is never forwarded to result pages. SSRF checks apply to every URL/redirect.
-        const page = await ssrfFetch(row.url!);
+        const page = await ssrfFetch(row.url!, { signal: context.signal, timeoutMs: 5_000, maxRedirects: 1 });
         const excerpt = htmlToPlainText(page.body.toString("utf8")).slice(0, MAX_EXCERPT).trim();
         if (!excerpt) return null;
-        return { url: page.url, title: row.title?.slice(0, 300) || context.company,
-          accessedAt: new Date().toISOString(), type: "public-reference", excerpt, confidence: "medium" };
+        return { url: page.url, title: row.title?.slice(0, 300) || new URL(page.url).hostname,
+          accessedAt: new Date().toISOString(), type: "public-reference", excerpt, confidence: "medium",
+          publishedAt: publishedDate(page.body.toString("utf8")) };
       } catch { return null; }
     }));
     return results.filter((row): row is ResearchSourceRecord => row !== null);
@@ -136,7 +147,7 @@ export class UrlFetchResearchAdapter implements ResearchSourceAdapter {
       unique.map(async (raw, index): Promise<ResearchSourceRecord | null> => {
         const accessedAt = new Date().toISOString();
         try {
-          const fetched = await ssrfFetch(raw);
+          const fetched = await ssrfFetch(raw, { signal: context.signal, timeoutMs: 5_000, maxRedirects: 1 });
           const excerpt = htmlToPlainText(fetched.body.toString("utf8")).slice(0, MAX_EXCERPT);
           if (!excerpt.trim()) return null;
           return {
@@ -146,6 +157,7 @@ export class UrlFetchResearchAdapter implements ResearchSourceAdapter {
             type: "job-posting",
             excerpt,
             confidence: "high",
+            publishedAt: publishedDate(fetched.body.toString("utf8")),
           };
         } catch {
           // Fetch diagnostics are not source content or employer facts.
@@ -155,6 +167,25 @@ export class UrlFetchResearchAdapter implements ResearchSourceAdapter {
     );
     return results.filter((row): row is ResearchSourceRecord => row !== null);
   }
+}
+
+export function researchQueries(context: ResearchCollectContext): string[] {
+  const company = `"${context.company.replaceAll('"', '').slice(0, 120)}"`;
+  const team = [context.team, context.product, context.businessUnit].filter(Boolean).join(" ");
+  const engineering = /engineer|developer|software|platform|infrastructure|data|security|devops|sre/i.test(context.role);
+  return [
+    `${company} ${team || context.role} ${engineering ? "engineering architecture technology" : "team work responsibilities"}`,
+    `${company} ${team || context.role} ${engineering ? "engineering testing deployment reliability observability" : "projects practices operations"}`,
+    `${company} ${team || context.role} careers team responsibilities`,
+  ].map((query) => query.slice(0, 400));
+}
+
+function publishedDate(html: string): string | undefined {
+  // A retrieval date is never presented as a publication date.
+  const raw = html.match(/<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished|date)["'][^>]+content=["']([^"']+)/i)?.[1]
+    ?? html.match(/"datePublished"\s*:\s*"([^"']+)"/i)?.[1];
+  const timestamp = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
 }
 
 export async function collectFromResearchAdapters(

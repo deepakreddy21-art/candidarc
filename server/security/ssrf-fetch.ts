@@ -9,6 +9,7 @@ export class SsrfBlockedError extends Error {
 }
 
 export type SsrfFetchOptions = {
+  signal?: AbortSignal;
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
@@ -147,9 +148,11 @@ export async function ssrfFetch(urlString: string, options: SsrfFetchOptions = {
 
   let current = new URL(urlString);
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    options.signal?.throwIfAborted();
     assertAllowedProtocol(current);
     assertAllowedPort(current);
     await assertPublicHostname(current.hostname, resolveDns);
+    options.signal?.throwIfAborted();
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -158,39 +161,38 @@ export async function ssrfFetch(urlString: string, options: SsrfFetchOptions = {
       response = await fetchImpl(current.toString(), {
         method: "GET",
         redirect: "manual",
-        signal: controller.signal,
+        signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
         headers: {
           "user-agent": "CandidArcSsrfFetch/1.0",
           ...(options.headers ?? {}),
         },
       });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) throw new SsrfBlockedError("Redirect missing location");
+        if (hop >= maxRedirects) throw new SsrfBlockedError("Too many redirects");
+        current = new URL(location, current);
+        continue;
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const { body, contentType } = await readLimitedBody(response, maxBytes);
+      if (!allowedContentTypes.test(contentType.split(";")[0]?.trim() ?? "")) {
+        throw new SsrfBlockedError(`Blocked content type: ${contentType}`);
+      }
+
+      return {
+        url: current.toString(),
+        status: response.status,
+        contentType,
+        body,
+      };
     } finally {
       clearTimeout(timeout);
     }
-
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) throw new SsrfBlockedError("Redirect missing location");
-      if (hop >= maxRedirects) throw new SsrfBlockedError("Too many redirects");
-      current = new URL(location, current);
-      continue;
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const { body, contentType } = await readLimitedBody(response, maxBytes);
-    if (!allowedContentTypes.test(contentType.split(";")[0]?.trim() ?? "")) {
-      throw new SsrfBlockedError(`Blocked content type: ${contentType}`);
-    }
-
-    return {
-      url: current.toString(),
-      status: response.status,
-      contentType,
-      body,
-    };
   }
 
   throw new SsrfBlockedError("Too many redirects");
