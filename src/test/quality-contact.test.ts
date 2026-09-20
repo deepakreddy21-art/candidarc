@@ -38,9 +38,9 @@ describe("quality contact completeness", () => {
     });
     const absent = computeCandidArcQualityScore({ sections });
 
-    expect(populated.checks.find((check) => check.id === "contact")?.detail).toMatch(/4\/4/);
-    expect(partial.checks.find((check) => check.id === "contact")?.detail).toMatch(/2\/4/);
-    expect(absent.checks.find((check) => check.id === "contact")?.detail).toMatch(/0\/4/);
+    expect(populated.checks.find((check) => check.id === "contact")?.detail).toMatch(/3\/3/);
+    expect(partial.checks.find((check) => check.id === "contact")?.detail).toMatch(/2\/3/);
+    expect(absent.checks.find((check) => check.id === "contact")?.detail).toMatch(/0\/3/);
     expect(populated.checks.find((check) => check.id === "contact")?.passed).toBe(true);
     expect(absent.checks.find((check) => check.id === "contact")?.passed).toBe(false);
   });
@@ -55,7 +55,7 @@ describe("quality contact completeness", () => {
       location: "Austin, TX",
     });
     const report = computeCandidArcQualityScore({ sections, contact });
-    expect(report.checks.find((check) => check.id === "contact")?.detail).toMatch(/4\/4/);
+    expect(report.checks.find((check) => check.id === "contact")?.detail).toMatch(/3\/3/);
   });
 
   it("invalidates a persisted quality report after version or contact changes", () => {
@@ -80,7 +80,7 @@ describe("quality contact completeness", () => {
     expect(selectFreshQualityReport(staleContact, fresh).contactFingerprint).toBe(fresh.contactFingerprint);
     expect(selectFreshQualityReport(fresh, fresh)).toBe(fresh);
     expect(selectFreshQualityReport({ score: 99 }, fresh).checks.find((check) => check.id === "contact")?.detail).toMatch(
-      /2\/4/,
+      /2\/3/,
     );
   });
 

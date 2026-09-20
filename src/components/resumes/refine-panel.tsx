@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label, Textarea } from "@/components/ui/input";
 
 const quickActions = [
+  "Use more precise action verbs",
   "Make it more technical",
   "Strengthen impact",
   "Improve role alignment",

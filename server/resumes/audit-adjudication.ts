@@ -3,6 +3,8 @@
  * Grammar/clarity/structure may auto-accept; factual/tech claims need evidence.
  */
 
+import writingPolicy from "../../services/python-backend/app/prompts/resume-writing-policy.json";
+
 export type AdjudicationDecision = "accepted" | "rejected" | "needs_user";
 
 export type AdjudicableFinding = {
@@ -22,6 +24,7 @@ export type AdjudicationContext = {
   knownTechnologies: string[];
   /** Lowercased tech tokens already present in evidence / attested list */
   evidenceTextBlob: string;
+  evidenceActionsById?: Record<string, string[]>;
 };
 
 const STYLE_KEYWORDS =
@@ -68,6 +71,16 @@ export function adjudicateFinding(
   const evidenceBlob = ctx.evidenceTextBlob.toLowerCase();
   const knownTech = new Set(ctx.knownTechnologies.map(normalizeTech));
   const knownEvidence = new Set(ctx.knownEvidenceIds);
+
+  // A stronger opening can add a factual responsibility claim even when the
+  // provider labels its suggestion as a minor wording fix.
+  const citedActions = ctx.evidenceActionsById?.[finding.evidenceSource ?? ""] ?? [];
+  for (const group of writingPolicy.responsibilityGroups) {
+    if (!new RegExp(group.opening, "i").test(suggested.trim())) continue;
+    const sameClaim = citedActions.some((action) => action.trim().toLowerCase() === suggested.trim().toLowerCase());
+    const supported = citedActions.some((action) => !/\b(assisted|supported|helped|collaborated|our team|the team)\b/i.test(action) && new RegExp(group.support, "i").test(action));
+    if (!sameClaim && !supported) return { decision: "rejected", reason: "Stronger responsibility verb is not supported by the cited candidate actions" };
+  }
 
   if (STYLE_KEYWORDS.test(haystack) && !FACTUAL_KEYWORDS.test(haystack) && !TECH_CLAIM_KEYWORDS.test(suggested)) {
     return { decision: "accepted", reason: "Style/clarity improvement" };
@@ -166,5 +179,8 @@ export function buildAdjudicationContext(input: {
         .join(" "),
     )
     .join("\n");
-  return { knownEvidenceIds, knownTechnologies, evidenceTextBlob };
+  const evidenceActionsById = Object.fromEntries(input.evidence.map((item) => [item.publicId,
+    Array.isArray(item.actions) ? item.actions : typeof item.actions === "string" ? [item.actions] : [],
+  ]));
+  return { knownEvidenceIds, knownTechnologies, evidenceTextBlob, evidenceActionsById };
 }

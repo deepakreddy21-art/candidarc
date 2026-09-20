@@ -373,7 +373,8 @@ export class CustomerGenerateService {
           knownTechnologies: Array.isArray(currentApp.metadata?.knownTechnologies)
             ? (currentApp.metadata.knownTechnologies as unknown[]).filter((item): item is string => typeof item === "string")
             : [],
-          preferredLength: "one-page",
+          pageCount: pdfReady ? files.pageCount : undefined,
+          preferredLength: "two-page",
           aiRoleAlignment: breakdown.jobAlignment ?? current.score,
           aiAtsReadability: breakdown.atsCompatibility,
         });
@@ -423,6 +424,7 @@ export class CustomerGenerateService {
           aiEstimates: qualityReport.aiEstimates,
           nextSteps: qualityReport.nextSteps,
           checks: qualityReport.checks,
+          writingReview: qualityReport.writingReview,
         };
       }
       if (currentApp.metadata?.enhancementAvailable === true) response.enhancementAvailable = true;
@@ -767,6 +769,7 @@ export class CustomerGenerateService {
         customerFiles: undefined,
         refinementNotice: undefined,
         refinementInstruction: instruction,
+        qualityReport: undefined,
         enhancementAvailable: false,
         customerWorkflowPublicId: workflow.publicId,
       },

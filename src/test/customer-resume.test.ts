@@ -201,11 +201,12 @@ describe("customer resume generation", () => {
     const resume = await repos.resumes.createResume({ id: newId("res"), publicId: newId("resp"), tenantId, applicationId: app!.id, applicationPublicId: app!.publicId, title: "Resume", templateId: "clean", length: "one-page", currentVersionPublicId: null });
     const old = await repos.resumes.appendVersion({ id: newId("rv"), publicId: newId("rvp"), tenantId, resumeId: resume.id, versionNumber: 4, versionLabel: "V4", score: 80, scoreBreakdown: {}, notes: "", triggeredBy: "initial", sections: [], idempotencyKey: "old" });
     await expect(service.refine(ctx, generated.workflowId, { instruction: "Emphasize leadership" })).rejects.toMatchObject({ code: "RESUME_NOT_READY" });
-    await repos.applications.update(tenantId, generated.applicationId, { workflowStage: "FINAL_READY" });
+    await repos.applications.update(tenantId, generated.applicationId, { workflowStage: "FINAL_READY", metadata: { ...app!.metadata, qualityReport: { versionPublicId: old.publicId, score: 99 } } });
     const refined = await service.refine(ctx, generated.workflowId, { instruction: "Emphasize leadership" });
     expect((await repos.resumes.getVersion(tenantId, old.publicId))?.publicId).toBe(old.publicId);
     const run = await repos.workflows.getByPublicId(tenantId, refined.workflowId);
     expect(run?.payload.cycleBase).toBe(5);
+    expect((await repos.applications.getByPublicId(tenantId, generated.applicationId))?.metadata?.qualityReport).toBeUndefined();
   });
 
   it("compares only checked versions owned by the requesting candidate", async () => {

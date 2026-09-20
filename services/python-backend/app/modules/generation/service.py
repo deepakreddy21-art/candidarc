@@ -24,6 +24,7 @@ from app.modules.evidence.service import normalize_evidence
 from app.modules.guardrails.service import build_grounded_resume, validate_resume_claims
 from app.modules.quality.service import REPAIRABLE_CHECK_CODES, verify_repair_fixed_checks
 from app.modules.scoring.service import score_resume
+from app.prompts.writing_policy import precise_action_opening
 
 # Disallowed free-form refinement patterns — fabrication / unsupported claims.
 # "without inventing" is handled by requiring word-boundary invent as a verb of fabrication,
@@ -183,17 +184,9 @@ def _dedupe_whitespace(text: str) -> str:
 
 
 def _shorten_verbose(text: str) -> str:
-    updated = _dedupe_whitespace(text)
-    if len(updated) <= 160:
-        return updated
-    # Drop parenthetical asides and redundant "in order to"
-    updated = re.sub(r"\s*\([^)]*\)", "", updated)
-    updated = re.sub(r"\bin order to\b", "to", updated, flags=re.I)
-    updated = _dedupe_whitespace(updated)
-    parts = re.split(r"(?<=[.!;])\s+", updated)
-    if len(parts) > 1 and len(parts[0]) >= 40:
-        return parts[0][:220]
-    return updated[:220]
+    # Parentheses and later sentences can contain essential evidence. Do not
+    # truncate achievements or metrics just to satisfy a length preference.
+    return _dedupe_whitespace(re.sub(r"\bin order to\b", "to", text, flags=re.I))
 
 
 def _safe_wording(text: str) -> str:
@@ -256,25 +249,36 @@ def apply_visible_refinement(
 
     No customer-facing test markers. No ownership inflation without evidence.
     """
-    lower = instruction.lower()
+    selection = re.fullmatch(
+        r"Improve only this selected text .*? Selected text:\n(.+?)\n\nInstruction: (.+)",
+        instruction, re.S,
+    )
+    selected_text = selection.group(1).strip() if selection else None
+    requested = selection.group(2) if selection else instruction
+    lower = requested.lower()
     evidence_techs = {t.lower() for item in evidence for t in item.technologies}
-    emphasis = _extract_emphasis_token(instruction, evidence_techs)
+    emphasis = _extract_emphasis_token(requested, evidence_techs)
     want_concise = bool(re.search(r"\b(concise|tighten|shorten|brief|remove\s+repetition)\b", lower))
-    want_wording = bool(re.search(r"\b(paraphrase|reword|clearer|wording)\b", lower)) or want_concise
+    want_verbs = bool(re.search(r"\b(?:action verbs?|strong(?:er)? verbs?|precise verbs?|reduce repetition)\b", lower))
+    want_wording = bool(re.search(r"\b(paraphrase|reword|clearer|wording)\b", lower)) or want_concise or want_verbs
 
     if emphasis and emphasis not in evidence_techs and not any(emphasis in t or t in emphasis for t in evidence_techs):
         if emphasis not in {"skills", "experience", "impact", "results", "achievements", "reliability"}:
             raise ValueError(f"GUARDRAIL_VIOLATION:Cannot emphasize '{emphasis}' not found in evidence")
 
     def rewrite_text(text: str) -> str:
-        updated = text
+        if selected_text and selected_text not in text:
+            return text
+        updated = selected_text or text
+        if want_verbs:
+            updated = precise_action_opening(updated)
         if want_wording or want_concise:
             updated = _safe_wording(updated)
         if want_concise:
             updated = _shorten_verbose(updated)
         # Remove duplicated consecutive phrases
         updated = re.sub(r"\b(\w+(?:\s+\w+){0,3})\s+\1\b", r"\1", updated, flags=re.I)
-        return updated[:3900]
+        return text.replace(selected_text, updated, 1) if selected_text else updated
 
     def bullet_score(bullet: ResumeBullet) -> float:
         if not emphasis:
@@ -287,7 +291,7 @@ def apply_visible_refinement(
         new_bullets = None
         if section.bullets is not None:
             rewritten = [b.model_copy(update={"text": rewrite_text(b.text)}) for b in section.bullets]
-            if emphasis and section.type in {"summary", "skills", "experience"}:
+            if emphasis and not selected_text and section.type in {"summary", "skills", "experience"}:
                 rewritten = sorted(rewritten, key=lambda b: (-bullet_score(b), rewritten.index(b)))
                 if section.type == "skills" and rewritten:
                     skill_bullet = rewritten[0]
@@ -311,7 +315,7 @@ def apply_visible_refinement(
             new_items = []
             for item in section.items:
                 item_bullets = [b.model_copy(update={"text": rewrite_text(b.text)}) for b in item.bullets]
-                if emphasis:
+                if emphasis and not selected_text:
                     item_bullets = sorted(item_bullets, key=lambda b: (-bullet_score(b), item_bullets.index(b)))
                 new_items.append(item.model_copy(update={"bullets": item_bullets}))
 
@@ -967,7 +971,11 @@ def generate_grounded_resume(
     if previous_resume is not None:
         if actionable:
             updated = apply_accepted_findings(previous_resume, actionable, mistake_memory=mistake_memory)
-        elif refinement_instruction or final_qa_repair is not None:
+        elif refinement_instruction:
+            # Preserve the reviewed version and unrelated edits. Rebuilding
+            # from profile evidence here used to discard prior refinements.
+            updated = previous_resume
+        elif final_qa_repair is not None:
             updated = build_grounded_resume(
                 absolute_version=absolute_version,
                 cycle_step=cycle_step,

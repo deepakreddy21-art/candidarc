@@ -124,6 +124,8 @@ async def test_openai_parse_called_and_usage_returned() -> None:
     )
     assert resume.absolute_version == 0
     client.beta.chat.completions.parse.assert_awaited()
+    request = client.beta.chat.completions.parse.call_args.kwargs
+    assert "Prefer context-specific verbs over Built, Developed" in request["messages"][0]["content"]
     assert usage.input_tokens == 11
     assert usage.output_tokens == 22
     assert usage.provider_request_id == "resp-1"

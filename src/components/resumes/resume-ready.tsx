@@ -15,6 +15,7 @@ import { ResumeComparison } from "./resume-comparison";
 import { VersionHistory } from "./version-history";
 import { QualityReport } from "./quality-report";
 import { AskPanel } from "@/components/assistant/ask-panel";
+import type { WritingReview } from "@/lib/resume-writing-review";
 
 type ReadyData = {
   workflowId: string;
@@ -32,6 +33,7 @@ type ReadyData = {
   };
   versions?: Array<{ id: string; label: string; createdAt: string }>;
   qualityReport?: {
+    writingReview?: WritingReview;
     summary?: string;
     score?: number;
     roleAlignment?: number;
@@ -175,7 +177,12 @@ export function ResumeReady({
         <ResumeComparison workflowId={data.workflowId} versionId={compareId} current={resumeDoc} onClose={() => setCompareId(undefined)} />
       ) : null}
       <AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />
-      <QualityReport report={data.qualityReport} />
+      <QualityReport report={data.qualityReport} onReviewText={(text) => {
+        setSelectedText(text);
+        const editor = globalThis.document.getElementById("refinement");
+        editor?.scrollIntoView({ block: "center", behavior: "auto" });
+        editor?.focus({ preventScroll: true });
+      }} />
     </div>
   );
 }

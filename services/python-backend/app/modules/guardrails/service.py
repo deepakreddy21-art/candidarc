@@ -17,6 +17,7 @@ from app.domain.schemas import (
     UserConfirmation,
 )
 from app.modules.scoring.service import score_resume
+from app.prompts.writing_policy import unsupported_responsibility_upgrade
 
 PERCENT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*%")
 DOLLAR_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s*(?:k|m|b|million|billion))?", re.I)
@@ -822,6 +823,10 @@ def validate_resume_claims(
                 if evidence_id not in evidence_ids:
                     violations.append("UNKNOWN_EVIDENCE_ID")
             cited = _cited_evidence(bullet, evidence_by_id)
+            if unsupported_responsibility_upgrade(bullet.text, [
+                action for item in cited for action in [*(item.actions or []), item.claim_text or ""] if action
+            ]):
+                violations.append("UNSUPPORTED_OWNERSHIP")
             corpus = _evidence_corpus(cited) if cited else ""
             atoms = extract_claim_atoms(bullet.text, bullet.technologies)
             cited_allowed = collect_allowed_technologies(cited)

@@ -2038,7 +2038,8 @@ export class ResumePipeline {
               ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
               : [],
             knownTechnologies,
-            pageCount: result.estimatedPages,
+            // Page estimates are not measured export results. Refresh after rendering.
+            preferredLength: "two-page",
             aiRoleAlignment: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.jobAlignment ?? latest.score),
             aiAtsReadability: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.atsCompatibility),
           }),
