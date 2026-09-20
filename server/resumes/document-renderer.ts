@@ -1,7 +1,11 @@
 import {
   Document,
   ExternalHyperlink,
-  HeadingLevel,
+  AlignmentType,
+  BorderStyle,
+  LevelFormat,
+  LineRuleType,
+  TabStopType,
   Packer,
   Paragraph,
   TextRun,
@@ -9,7 +13,6 @@ import {
 import { chromium } from "playwright";
 import { newId } from "../database/repositories";
 import type { ResumeDocument, ResumeDocumentSection } from "@/types/resume-document";
-import { CANDIDARC_ATS_V1_TEMPLATE } from "@/types/resume-document";
 import {
   analyzeRenderedPdf,
   buildResumeDocument,
@@ -19,7 +22,8 @@ import {
   verifyPdfContainsCanonicalContent,
 } from "./resume-document";
 import { renderResumeDocumentHtml } from "./resume-html-renderer";
-import { createExtractableTextPdf } from "./extractable-pdf";
+import { RESUME_TEMPLATE as T, RESUME_FONT_FACES, resumeContactLinks, resumeLink } from "@/lib/resume-template";
+import { loadResumeFonts, resumeFontDataUrls } from "./template-fonts";
 import { AppError } from "../domain/types";
 
 type ResumeVersionLike = { publicId: string; sections: unknown[] };
@@ -27,7 +31,7 @@ type ResumeVersionLike = { publicId: string; sections: unknown[] };
 export { buildResumeDocument, resumeDocumentPlainText, validateResumeLayout, verifyPdfContainsCanonicalContent };
 export { createExtractableTextPdf, wrapPdfLines, toPdfSafeText } from "./extractable-pdf";
 export { analyzeRenderedPdf, measurePdfPageCount } from "./resume-document";
-export { CANDIDARC_ATS_V1_TEMPLATE, CANDIDARC_ATS_V1_TEMPLATE_ID } from "@/types/resume-document";
+export { CANDIDARC_CLASSIC_V1_TEMPLATE, CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
 
 /** Typed, retryable Chromium/PDF print failure — never silently swapped for crude text PDF. */
 export class PdfRenderFailedError extends AppError {
@@ -54,106 +58,120 @@ export async function createMinimalDocx(lines: string[]): Promise<Buffer> {
   return renderDocxFromDocument(legacyDocument(lines));
 }
 
+const twips = (points: number) => Math.round(points * 20);
+const halfPoints = (points: number) => Math.round(points * 2);
+const contentWidth = T.page.width - T.page.left - T.page.right;
+
+function bulletParagraph(text: string, skills = false): Paragraph {
+  const colon = skills ? text.indexOf(":") : -1;
+  return new Paragraph({
+    children: colon > 0 && colon < 70
+      ? [new TextRun({ text: text.slice(0, colon + 1), bold: true }), new TextRun(text.slice(colon + 1))]
+      : [new TextRun(text)],
+    numbering: { reference: "resume-bullets", level: 0 },
+    alignment: AlignmentType.JUSTIFIED,
+    spacing: { after: twips(T.bulletGap) },
+  });
+}
+
+/** Two ordinary text paragraphs, not tables/textboxes: robust ATS reading order. */
+function entryRow(left: string, right: string | undefined, italic = false, before = 0): Paragraph {
+  // Long headings wrap independently, with the right field on the next line.
+  // The tab stop handles typical entries without splitting dates across columns.
+  const stacked = left.length + (right?.length ?? 0) > 90;
+  return new Paragraph({
+    children: [
+      new TextRun({ text: left, bold: !italic, italics: italic }),
+      ...(right ? [new TextRun({ text: stacked ? right : `\t${right}`, break: stacked ? 1 : undefined, bold: !italic, italics: italic })] : []),
+    ],
+    spacing: { before: twips(before), line: twips(T.bodySize), lineRule: LineRuleType.AT_LEAST },
+    tabStops: [{ type: TabStopType.RIGHT, position: twips(contentWidth) }],
+    keepNext: true,
+    keepLines: true,
+  });
+}
+
 function sectionParagraphs(section: ResumeDocumentSection): Paragraph[] {
-  const blocks: Paragraph[] = [
-    new Paragraph({ text: section.title, heading: HeadingLevel.HEADING_2, spacing: { before: 180, after: 80 } }),
-  ];
-  if (section.content) {
-    blocks.push(new Paragraph({ children: [new TextRun(section.content)], spacing: { after: 80 } }));
-  }
-  for (const bullet of section.bullets ?? []) {
-    blocks.push(new Paragraph({ text: bullet, bullet: { level: 0 }, spacing: { after: 40 } }));
-  }
-  for (const entry of section.entries ?? []) {
-    blocks.push(
-      new Paragraph({
-        children: [
-          new TextRun({ text: entry.heading, bold: true }),
-          ...(entry.subheading ? [new TextRun({ text: ` — ${entry.subheading}` })] : []),
-        ],
-        spacing: { before: 80, after: 20 },
-      }),
-    );
-    const meta = [entry.location, entry.dates].filter(Boolean).join(" · ");
-    if (meta) blocks.push(new Paragraph({ children: [new TextRun({ text: meta, italics: true })], spacing: { after: 40 } }));
-    for (const bullet of entry.bullets) {
-      blocks.push(new Paragraph({ text: bullet, bullet: { level: 0 }, spacing: { after: 40 } }));
-    }
+  const blocks: Paragraph[] = [new Paragraph({
+    children: [new TextRun({ text: section.title.toUpperCase(), bold: true, size: halfPoints(T.headingSize) })],
+    alignment: AlignmentType.CENTER,
+    spacing: { before: twips(T.sectionGap), after: twips(section.entries?.length && !section.content && !section.bullets?.length ? 0 : T.headingGap) },
+    keepNext: true,
+    keepLines: true,
+  })];
+  if (section.content) blocks.push(new Paragraph({
+    children: [new TextRun({ text: section.content, bold: section.type === "certifications" })],
+    alignment: section.type === "certifications" ? AlignmentType.CENTER : AlignmentType.JUSTIFIED,
+    indent: section.type === "summary" ? { firstLine: twips(T.summaryIndent) } : undefined,
+  }));
+  for (const bullet of section.bullets ?? []) blocks.push(bulletParagraph(bullet, section.type === "skills"));
+  for (const [i, entry] of (section.entries ?? []).entries()) {
+    const header = entryRow(entry.heading, entry.dates, false, i > 0 ? T.entryGap : 0);
+    blocks.push(header);
+    if (entry.subheading || entry.location) blocks.push(entryRow(entry.subheading ?? "", entry.location, true));
+    for (const bullet of entry.bullets) blocks.push(bulletParagraph(bullet));
   }
   return blocks;
 }
 
-function contactRuns(doc: ResumeDocument): TextRun[] {
-  const parts = [
-    doc.contact.email,
-    doc.contact.phone,
-    doc.contact.location,
-    doc.contact.linkedIn,
-    doc.contact.github,
-    doc.contact.portfolio,
-  ].filter(Boolean) as string[];
-  return parts.length ? [new TextRun({ text: parts.join(" · "), size: 20 })] : [];
-}
-
-function linkParagraph(label: string, url?: string): Paragraph | null {
-  if (!url) return null;
-  const href = url.startsWith("http") ? url : `https://${url}`;
-  return new Paragraph({
-    children: [
-      new ExternalHyperlink({
-        children: [new TextRun({ text: label, style: "Hyperlink", size: 20 })],
-        link: href,
-      }),
-    ],
-    spacing: { after: 40 },
-  });
-}
-
 export async function renderDocxFromDocument(doc: ResumeDocument): Promise<Buffer> {
-  const children: Paragraph[] = [
-    new Paragraph({
-      children: [new TextRun({ text: doc.contact.name, bold: true, size: 32 })],
-      spacing: { after: 60 },
+  const centered = { alignment: AlignmentType.CENTER, keepNext: true } as const;
+  const links = resumeContactLinks(doc.contact);
+  const contact = [doc.contact.location, doc.contact.phone, doc.contact.email].filter(Boolean).join(" | ");
+  const rule = { bottom: { style: BorderStyle.SINGLE, size: Math.round(T.rule * 8), color: "000000", space: 5 } };
+  const children: Paragraph[] = [new Paragraph({
+    ...centered,
+    border: !doc.contact.headline && !contact && !links.length ? rule : undefined,
+    children: [new TextRun({ text: doc.contact.name, bold: true, size: halfPoints(T.nameSize) })],
+    spacing: { after: twips(T.nameGap), line: twips(T.nameSize * 1.05), lineRule: LineRuleType.AT_LEAST },
+  })];
+  if (doc.contact.headline) children.push(new Paragraph({ ...centered, text: doc.contact.headline, border: !contact && !links.length ? rule : undefined }));
+  if (contact) children.push(new Paragraph({ ...centered, border: !links.length ? rule : undefined, children: [new TextRun({ text: contact, size: halfPoints(T.contactSize) })] }));
+  if (links.length) children.push(new Paragraph({
+    ...centered, border: rule,
+    children: links.flatMap(({ label, value }, i): Array<TextRun | ExternalHyperlink> => {
+      const href = resumeLink(value);
+      const runs = [new TextRun({ text: `${label}: `, bold: true, size: halfPoints(T.contactSize) }), new TextRun({ text: value, size: halfPoints(T.contactSize) })];
+      return [...(i ? [new TextRun(" | ")] : []), ...(href ? [new ExternalHyperlink({ children: runs, link: href })] : runs)];
     }),
-  ];
-  if (doc.contact.headline) {
-    children.push(new Paragraph({ children: [new TextRun({ text: doc.contact.headline, size: 22 })], spacing: { after: 60 } }));
-  }
-  if (contactRuns(doc).length) {
-    children.push(new Paragraph({ children: contactRuns(doc), spacing: { after: 60 } }));
-  }
-  for (const link of [
-    linkParagraph("LinkedIn", doc.contact.linkedIn),
-    linkParagraph("GitHub", doc.contact.github),
-    linkParagraph("Portfolio", doc.contact.portfolio),
-  ]) {
-    if (link) children.push(link);
-  }
-  // Target role/company intentionally omitted from résumé body (CandidArc ATS v1).
+  }));
   for (const section of doc.sections) children.push(...sectionParagraphs(section));
-
+  const fontData = await loadResumeFonts();
   const document = new Document({
-    creator: CANDIDARC_ATS_V1_TEMPLATE,
-    title: `${doc.contact.name} — ${CANDIDARC_ATS_V1_TEMPLATE}`,
-    sections: [
-      {
-        properties: { page: { margin: { top: 720, right: 720, bottom: 720, left: 720 } } },
-        children,
-      },
-    ],
+    creator: T.name,
+    title: `${doc.contact.name} — ${T.name}`,
+    fonts: fontData.map((data) => ({ name: T.fontFamily, data })),
+    styles: { default: { document: {
+      run: { font: T.fontFamily, size: halfPoints(T.bodySize), color: "000000" },
+      paragraph: { spacing: { line: twips(T.leading), lineRule: LineRuleType.AT_LEAST, before: 0, after: 0 } },
+    } } },
+    numbering: { config: [{ reference: "resume-bullets", levels: [{
+      level: 0, format: LevelFormat.BULLET, text: "•", alignment: AlignmentType.LEFT,
+      style: { paragraph: { indent: { left: twips(T.bulletIndent), hanging: twips(T.bulletIndent - 3) } }, run: { font: T.fontFamily, size: halfPoints(T.contactSize) } },
+    }] }] },
+    sections: [{ properties: { page: {
+      size: { width: twips(T.page.width), height: twips(T.page.height) },
+      margin: { top: twips(T.page.top), right: twips(T.page.right), bottom: twips(T.page.bottom), left: twips(T.page.left) },
+    } }, children }],
   });
-
-  return Buffer.from(await Packer.toBuffer(document));
+  // docx embeds four font files; explicitly map all faces into one font family.
+  const faces = document.FontTable.fontOptionsWithKey.map(({ fontKey }, i) =>
+    `<w:${RESUME_FONT_FACES[i].embed} r:id="rId${i + 1}" w:fontKey="{${fontKey}}"/>`,
+  ).join("");
+  const fontTable = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:font w:name="${T.fontFamily}"><w:altName w:val="Times New Roman"/><w:family w:val="roman"/>${faces}</w:font></w:fonts>`;
+  return Buffer.from(await Packer.toBuffer(document, false, [{ path: "word/fontTable.xml", data: fontTable }]));
 }
 
 export async function renderPdfFromHtml(html: string): Promise<Buffer> {
   const browser = await chromium.launch({
+    executablePath: process.env.RESUME_PDF_BROWSER_PATH || undefined,
     headless: true,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--font-render-hinting=none"],
   });
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "load" });
+    await page.evaluate(() => document.fonts.ready);
     const bodyText = (await page.locator("body").innerText()).trim();
     if (bodyText.length < 8) {
       throw new PdfRenderFailedError("Resume HTML rendered empty before PDF export");
@@ -162,7 +180,7 @@ export async function renderPdfFromHtml(html: string): Promise<Buffer> {
       format: "Letter",
       printBackground: true,
       tagged: true,
-      margin: { top: "0.55in", right: "0.6in", bottom: "0.55in", left: "0.6in" },
+      preferCSSPageSize: true,
     });
     return Buffer.from(pdf);
   } catch (error) {
@@ -176,31 +194,17 @@ export async function renderPdfFromHtml(html: string): Promise<Buffer> {
   }
 }
 
-/**
- * Render CandidArc ATS v1 PDF via Chromium.
- * On Chromium failure, attempt a verified text-layer fallback that must pass
- * the same canonical content checks — never return an unverified crude PDF.
- */
+/** Never substitute a different template when the approved PDF cannot be rendered. */
 export async function renderPdfFromDocument(doc: ResumeDocument): Promise<Buffer> {
-  const html = renderResumeDocumentHtml(doc, { preview: false });
   try {
+    const html = renderResumeDocumentHtml(doc, { fontSources: await resumeFontDataUrls() });
     const pdf = await renderPdfFromHtml(html);
     const analysis = await analyzeRenderedPdf(pdf, doc);
-    if (analysis.ok && analysis.missing.length === 0) return pdf;
-    throw new Error(
-      `Chromium PDF failed content verification: ${analysis.missing.slice(0, 5).join(", ") || analysis.warnings.join("; ")}`,
-    );
-  } catch (chromiumError) {
-    const plain = resumeDocumentPlainText(doc);
-    const fallback = await createExtractableTextPdf(plain);
-    const analysis = await analyzeRenderedPdf(fallback, doc);
-    if (analysis.ok && analysis.missing.length === 0) {
-      return fallback;
-    }
-    throw new PdfRenderFailedError(
-      chromiumError instanceof Error ? chromiumError.message : "PDF render failed",
-      { chromiumError, fallbackMissing: analysis.missing, fallbackWarnings: analysis.warnings },
-    );
+    if (analysis.ok) return pdf;
+    throw new PdfRenderFailedError("PDF content verification failed", { missing: analysis.missing, warnings: analysis.warnings });
+  } catch (error) {
+    if (error instanceof PdfRenderFailedError) throw error;
+    throw new PdfRenderFailedError(error instanceof Error ? error.message : "PDF render failed");
   }
 }
 

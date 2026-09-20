@@ -9,14 +9,16 @@ import {
 } from "./types";
 
 type Props = {
+  section?: "all" | "required" | "optional";
   form: OnboardingFormState;
   onChange: (patch: Partial<OnboardingFormState>) => void;
   errors: Partial<Record<string, string>>;
 };
 
-export function StepCareerDirection({ form, onChange, errors }: Props) {
+export function StepCareerDirection({ form, onChange, errors, section = "all" }: Props) {
   return (
     <div className="space-y-6">
+      {section !== "optional" && <>
       <ChipInput
         id="target-roles"
         label="Target job titles"
@@ -27,7 +29,7 @@ export function StepCareerDirection({ form, onChange, errors }: Props) {
         error={errors.targetRoles}
       />
 
-      <fieldset className="space-y-2">
+      <fieldset className="space-y-2" tabIndex={-1} aria-invalid={Boolean(errors.seniority)}>
         <legend className="text-sm font-medium text-foreground">Seniority level</legend>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {SENIORITY_OPTIONS.map((option) => {
@@ -56,6 +58,8 @@ export function StepCareerDirection({ form, onChange, errors }: Props) {
         ) : null}
       </fieldset>
 
+      </>}
+      {section !== "required" && <>
       <ChipInput
         id="target-companies"
         label="Target companies"
@@ -74,6 +78,7 @@ export function StepCareerDirection({ form, onChange, errors }: Props) {
         placeholder="Add an industry"
         optional
       />
+      </>}
     </div>
   );
 }

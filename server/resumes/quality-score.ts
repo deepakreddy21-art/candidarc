@@ -1,10 +1,8 @@
-/**
- * CandidArc Quality Score — deterministic checks + clearly labeled AI estimates.
- * Never claims or guarantees a VMock score.
- */
+/** Local writing review, evidence-link checks, and separately labeled AI estimates. */
+import { createHash } from "node:crypto";
+import { collectReviewBullets, reviewResumeWriting, type WritingReview } from "../../src/lib/resume-writing-review";
 
-export type QualityCheckKind = "verified" | "ai_estimate";
-
+export type QualityCheckKind = "verified" | "heuristic" | "ai_estimate" | "not_evaluated";
 export type QualityCheck = {
   id: string;
   label: string;
@@ -12,221 +10,106 @@ export type QualityCheck = {
   passed: boolean;
   detail: string;
   weight: number;
-  score: number; // 0-100 contribution basis
+  score: number;
 };
-
 export type CandidArcQualityReport = {
   name: "CandidArc Quality Score";
+  rubricVersion: string;
+  inputFingerprint: string;
   score: number;
   summary: string;
   checks: QualityCheck[];
+  writingReview: WritingReview;
   passed: string[];
   missing: string[];
   verifiedConclusions: string[];
   aiEstimates: string[];
   nextSteps: string[];
-  /** @deprecated alias for UI compatibility */
   roleAlignment?: number;
   atsReadability?: number;
+  /** Compatibility field: evidence-linked bullets, not independently verified facts. */
   verifiedClaims?: number;
   remainingSkillGaps?: string[];
 };
 
-const STRONG_VERBS =
-  /\b(led|built|designed|implemented|architected|shipped|reduced|increased|improved|automated|migrated|launched|optimized|delivered|owned)\b/i;
-const PASSIVE_FILLER =
-  /\b(responsible for|helped with|worked on|various|numerous|utilize|leveraged synergies|in order to)\b/i;
-const REPEATED_WORD_THRESHOLD = 4;
-
-function bulletsFromSections(sections: Array<Record<string, unknown>>): string[] {
-  const bullets: string[] = [];
-  for (const section of sections) {
-    const items = Array.isArray(section.items) ? section.items : [];
-    for (const item of items) {
-      const record = item as Record<string, unknown>;
-      const list = Array.isArray(record.bullets) ? record.bullets : [];
-      for (const bullet of list) {
-        const text =
-          typeof bullet === "string"
-            ? bullet
-            : typeof (bullet as { text?: string }).text === "string"
-              ? (bullet as { text: string }).text
-              : "";
-        if (text) bullets.push(text);
-      }
-    }
-  }
-  return bullets;
-}
-
-function wordCounts(text: string): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const word of text.toLowerCase().match(/[a-z]{4,}/g) ?? []) {
-    map.set(word, (map.get(word) ?? 0) + 1);
-  }
-  return map;
+function check(id: string, label: string, kind: QualityCheckKind, passed: boolean, score: number, detail: string, weight = 1): QualityCheck {
+  return { id, label, kind, passed, score, detail, weight };
 }
 
 export function computeCandidArcQualityScore(input: {
   sections: Array<Record<string, unknown>>;
-  contact?: {
-    email?: string | null;
-    phone?: string | null;
-    location?: string | null;
-    linkedIn?: string | null;
-  };
+  contact?: QualityContact;
   jobRequirements?: string[];
   knownTechnologies?: string[];
+  /** Actual exported PDF pages only; omit when not yet rendered. */
   pageCount?: number;
   preferredLength?: "one-page" | "two-page" | string;
   aiRoleAlignment?: number;
   aiAtsReadability?: number;
 }): CandidArcQualityReport {
-  const bullets = bulletsFromSections(input.sections);
-  const allText = bullets.join("\n");
-  const requirements = (input.jobRequirements ?? []).map((r) => r.toLowerCase());
-  const hasRequirements = requirements.length > 0;
-  const tech = new Set((input.knownTechnologies ?? []).map((t) => t.toLowerCase()));
-
-  const covered = hasRequirements
-    ? requirements.filter((req) => allText.toLowerCase().includes(req)).length
-    : 0;
-  const coverage = hasRequirements ? Math.round((covered / requirements.length) * 100) : 0;
-
-  let verifiedClaimCount = 0;
-  let unsupportedClaimCount = 0;
-  let quantified = 0;
-  let strongVerb = 0;
-  let passive = 0;
-  let longBullets = 0;
-
-  for (const section of input.sections) {
-    const items = Array.isArray(section.items) ? section.items : [];
-    for (const item of items) {
-      const record = item as Record<string, unknown>;
-      const list = Array.isArray(record.bullets) ? record.bullets : [];
-      for (const bullet of list) {
-        const b = bullet as Record<string, unknown>;
-        const text = typeof bullet === "string" ? bullet : String(b.text ?? "");
-        const unsupported = b.unsupported === true || b.claimRisk === "high";
-        const hasEvidence =
-          Array.isArray(b.evidenceIds) && b.evidenceIds.length > 0
-            ? true
-            : Array.isArray(b.matchedRequirements) && b.matchedRequirements.length > 0;
-        if (unsupported) unsupportedClaimCount += 1;
-        else if (hasEvidence) verifiedClaimCount += 1;
-        if (/\d/.test(text)) quantified += 1;
-        if (STRONG_VERBS.test(text)) strongVerb += 1;
-        if (PASSIVE_FILLER.test(text)) passive += 1;
-        if (text.split(/\s+/).length > 40) longBullets += 1;
-        for (const token of text.match(/\b[A-Za-z][A-Za-z0-9.+#]{1,}\b/g) ?? []) {
-          if (TECH_LIKE.test(token) && tech.size && !tech.has(token.toLowerCase())) {
-            unsupportedClaimCount += 1;
-          }
-        }
-      }
+  const writingReview = reviewResumeWriting(input);
+  const bullets = collectReviewBullets(input.sections);
+  const requirements = [...new Set((input.jobRequirements ?? []).map((value) => value.trim().toLowerCase()).filter(Boolean))];
+  const allText = [
+    ...bullets.map((bullet) => bullet.text),
+    ...input.sections.map((section) => typeof section.content === "string" ? section.content : ""),
+  ].join("\n").toLowerCase();
+  const remainingSkillGaps = requirements.filter((requirement) => !allText.includes(requirement));
+  const linked = bullets.filter(({ source }) => Array.isArray(source.evidenceIds) && source.evidenceIds.length > 0).length;
+  const flagged = bullets.filter(({ source }) => source.unsupported === true || source.claimRisk === "high").length;
+  const contactFields = [input.contact?.email, input.contact?.phone, input.contact?.location].filter((value) => value?.trim()).length;
+  const measured = Number.isInteger(input.pageCount) && (input.pageCount ?? 0) > 0;
+  const checks: QualityCheck[] = writingReview.criteria.slice(0, 5).map((criterion) => {
+    const count = writingReview.findings.filter((finding) => finding.criterion === criterion.id).length;
+    const evaluated = criterion.status !== "not_evaluated";
+    return check(criterion.id, criterion.label, evaluated ? "heuristic" : "not_evaluated", criterion.status === "clear",
+      evaluated ? Math.max(0, 100 - Math.round(count / Math.max(1, writingReview.bulletCount) * 100)) : 0,
+      criterion.detail, evaluated && criterion.id !== "length" ? 1 : 0);
+  });
+  checks.push(
+    check("job_coverage", "Job wording coverage", requirements.length ? "heuristic" : "not_evaluated", remainingSkillGaps.length === 0, 0,
+      requirements.length ? `${requirements.length - remainingSkillGaps.length}/${requirements.length} supplied phrases occur in the text. This does not prove qualification or ATS ranking.` : "Not evaluated — no job requirements supplied.", 0),
+    check("verified_claims", "Evidence links", "verified", linked === bullets.length && bullets.length > 0, 0,
+      `${linked}/${bullets.length} bullets cite evidence IDs. Links alone do not establish factual support.`, 0),
+    check("unsupported", "Claims flagged for review", "verified", flagged === 0, 0,
+      flagged ? `${flagged} bullet(s) carry an unsupported/high-risk flag.` : "No stored unsupported/high-risk flags. Factual checks run separately in the generation pipeline.", 0),
+    check("page_count", "Rendered PDF length", measured ? "verified" : "not_evaluated", measured, 0,
+      measured ? `${input.pageCount} page(s), measured from the PDF. Word pagination may differ.` : "Not measured — no rendered PDF page count available.", 0),
+    check("contact", "Required contact details", "verified", contactFields === 3, contactFields / 3 * 100,
+      `${contactFields}/3 required contact fields present (email, phone, location). LinkedIn, GitHub, and portfolio are optional.`),
+    check("ats_order", "External ATS parsing", "not_evaluated", false, 0, "Not tested against an external ATS or VMock parser.", 0),
+    check("dates", "Date consistency", "not_evaluated", false, 0, "Not established by this writing review; verify dates against the source profile.", 0),
+    check("formatting", "Document integrity", "not_evaluated", false, 0, "PDF/DOCX extraction and layout checks run separately during export.", 0),
+  );
+  for (const [id, label, value] of [
+    ["ai_role_alignment", "Role alignment", input.aiRoleAlignment],
+    ["ai_ats", "ATS readability", input.aiAtsReadability],
+  ] as const) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const score = Math.min(100, Math.max(0, value));
+      checks.push(check(id, label, "ai_estimate", score >= 70, score, `AI estimate: ${score}/100; not an external ATS result.`, 0));
     }
   }
-
-  const totalClaims = Math.max(1, verifiedClaimCount + unsupportedClaimCount);
-  const verifiedPct = Math.round((verifiedClaimCount / totalClaims) * 100);
-  const quantifiedPct = bullets.length ? Math.round((quantified / bullets.length) * 100) : 0;
-  const strongVerbPct = bullets.length ? Math.round((strongVerb / bullets.length) * 100) : 0;
-
-  const repeats = [...wordCounts(allText).entries()].filter(([, n]) => n >= REPEATED_WORD_THRESHOLD);
-  const contactFields = [
-    input.contact?.email,
-    input.contact?.phone,
-    input.contact?.location,
-    input.contact?.linkedIn,
-  ].filter(Boolean).length;
-  const contactCompleteness = Math.round((contactFields / 4) * 100);
-  const pageCount = input.pageCount ?? (input.preferredLength === "two-page" ? 2 : 1);
-  const lengthOk =
-    input.preferredLength === "two-page" ? pageCount <= 2 : pageCount <= 1 || bullets.length <= 18;
-
-  const checks: QualityCheck[] = [
-    hasRequirements
-      ? check("job_coverage", "Job-requirement coverage", true, coverage >= 60, coverage, `${covered}/${requirements.length} requirements reflected`)
-      : {
-          id: "job_coverage",
-          label: "Job-requirement coverage",
-          kind: "verified" as const,
-          passed: true,
-          detail: "Not evaluated — no job requirements supplied",
-          weight: 0,
-          score: 0,
-        },
-    check("verified_claims", "Verified-claim percentage", true, verifiedPct >= 70, verifiedPct, `${verifiedClaimCount} verified / ${unsupportedClaimCount} unsupported`),
-    check("unsupported", "Unsupported claims", true, unsupportedClaimCount === 0, unsupportedClaimCount === 0 ? 100 : Math.max(0, 100 - unsupportedClaimCount * 15), unsupportedClaimCount === 0 ? "None detected" : `${unsupportedClaimCount} unsupported claim(s)`),
-    check("quantified", "Quantified-result coverage", true, quantifiedPct >= 40, quantifiedPct, `${quantifiedPct}% of bullets include numbers`),
-    check("action_verbs", "Strong action verbs", true, strongVerbPct >= 50, strongVerbPct, `${strongVerbPct}% of bullets start with strong verbs`),
-    check("repetition", "Repeated words", true, repeats.length === 0, repeats.length === 0 ? 100 : Math.max(0, 100 - repeats.length * 10), repeats.length ? `Repeated: ${repeats.slice(0, 5).map(([w]) => w).join(", ")}` : "No heavy repetition"),
-    check("passive", "Passive/filler language", true, passive === 0, passive === 0 ? 100 : Math.max(0, 100 - passive * 12), passive === 0 ? "Clean" : `${passive} filler phrase(s)`),
-    check("bullet_length", "Bullet length", true, longBullets === 0, longBullets === 0 ? 100 : Math.max(0, 100 - longBullets * 10), longBullets === 0 ? "Within limits" : `${longBullets} overly long bullet(s)`),
-    check("resume_length", "Resume length", true, lengthOk, lengthOk ? 100 : 55, lengthOk ? "Within preferred length" : "May exceed preferred length"),
-    check("page_count", "Page count", true, pageCount >= 1 && pageCount <= 2, pageCount <= 2 ? 100 : 40, `${pageCount} page(s)`),
-    check("ats_order", "ATS parsing order", true, true, 100, "Single-column contact → summary → experience → education → skills"),
-    check("contact", "Contact completeness", true, contactCompleteness >= 50, contactCompleteness, `${contactFields}/4 contact fields present`),
-    check("dates", "Date consistency", true, true, 90, "No obvious inverted ranges detected in structured sections"),
-    check("tech_evidence", "Technology evidence", true, unsupportedClaimCount === 0, unsupportedClaimCount === 0 ? 100 : 50, "Technologies checked against evidence/attestation"),
-    check("formatting", "Formatting safety", true, true, 100, "No invisible keywords or hidden ATS manipulation"),
-  ];
-
-  if (typeof input.aiRoleAlignment === "number") {
-    checks.push({
-      id: "ai_role_alignment",
-      label: "Role alignment",
-      kind: "ai_estimate",
-      passed: input.aiRoleAlignment >= 70,
-      detail: `AI estimate: ${input.aiRoleAlignment}/100`,
-      weight: 0.5,
-      score: input.aiRoleAlignment,
-    });
-  }
-  if (typeof input.aiAtsReadability === "number") {
-    checks.push({
-      id: "ai_ats",
-      label: "ATS readability",
-      kind: "ai_estimate",
-      passed: input.aiAtsReadability >= 70,
-      detail: `AI estimate: ${input.aiAtsReadability}/100`,
-      weight: 0.5,
-      score: input.aiAtsReadability,
-    });
-  }
-
-  const verifiedChecks = checks.filter((c) => c.kind === "verified" && c.weight > 0);
-  const weightSum = verifiedChecks.reduce((sum, c) => sum + c.weight, 0) || 1;
-  const score = verifiedChecks.length
-    ? Math.round(verifiedChecks.reduce((sum, c) => sum + c.score * c.weight, 0) / weightSum)
-    : Math.round(
-        checks.filter((c) => c.kind === "verified" && c.id !== "job_coverage").reduce((sum, c) => sum + c.score * c.weight, 0) /
-          (checks.filter((c) => c.kind === "verified" && c.id !== "job_coverage").reduce((sum, c) => sum + c.weight, 0) || 1),
-      );
-
-  const passed = checks.filter((c) => c.passed).map((c) => c.label);
-  const missing = checks.filter((c) => !c.passed).map((c) => `${c.label}: ${c.detail}`);
-  const verifiedConclusions = checks.filter((c) => c.kind === "verified").map((c) => `${c.label} — ${c.detail}`);
-  const aiEstimates = checks.filter((c) => c.kind === "ai_estimate").map((c) => `${c.label} — ${c.detail}`);
-  const nextSteps = missing.length
-    ? missing.slice(0, 5).map((m) => `Improve: ${m}`)
-    : ["Download PDF/Word, or refine with natural-language instructions."];
-
+  const scored = checks.filter((item) => item.weight > 0);
+  const weight = scored.reduce((sum, item) => sum + item.weight, 0);
+  const score = weight ? Math.round(scored.reduce((sum, item) => sum + item.score * item.weight, 0) / weight) : 0;
+  const evaluated = checks.filter((item) => item.kind !== "not_evaluated");
   return {
     name: "CandidArc Quality Score",
+    rubricVersion: writingReview.rubricVersion,
+    inputFingerprint: createHash("sha256").update(JSON.stringify(input)).digest("hex"),
     score,
-    summary: `CandidArc Quality Score ${score}/100. Deterministic checks are Verified; model judgments are labeled AI estimate. This is not a VMock score.`,
-    checks,
-    passed,
-    missing,
-    verifiedConclusions,
-    aiEstimates,
-    nextSteps,
+    summary: "Local writing and contact checks only; suggestions are advisory. Competency wording is not proof of ability. This is not a VMock score or a prediction of hiring success.",
+    checks, writingReview,
+    passed: evaluated.filter((item) => item.passed).map((item) => item.label),
+    missing: evaluated.filter((item) => !item.passed).map((item) => `${item.label}: ${item.detail}`),
+    verifiedConclusions: checks.filter((item) => item.kind === "verified").map((item) => `${item.label} — ${item.detail}`),
+    aiEstimates: checks.filter((item) => item.kind === "ai_estimate").map((item) => `${item.label} — ${item.detail}`),
+    nextSteps: [...new Set(writingReview.findings.map((finding) => finding.message))].slice(0, 5),
     roleAlignment: input.aiRoleAlignment,
     atsReadability: input.aiAtsReadability,
-    verifiedClaims: verifiedClaimCount,
-    remainingSkillGaps: requirements.filter((req) => !allText.toLowerCase().includes(req)).slice(0, 8),
+    verifiedClaims: linked,
+    remainingSkillGaps: remainingSkillGaps.slice(0, 8),
   };
 }
 
@@ -284,28 +167,8 @@ export function selectFreshQualityReport(
 ): PersistedQualityReport {
   if (!persisted || typeof persisted !== "object") return fresh;
   const row = persisted as Record<string, unknown>;
+  if (row.rubricVersion !== fresh.rubricVersion || row.inputFingerprint !== fresh.inputFingerprint) return fresh;
   if (row.versionPublicId !== fresh.versionPublicId) return fresh;
   if (row.contactFingerprint !== fresh.contactFingerprint) return fresh;
   return persisted as PersistedQualityReport;
-}
-
-const TECH_LIKE = /^(kubernetes|k8s|terraform|aws|gcp|azure|react|python|java|golang|typescript|kafka|spark|docker|helm|graphql)$/i;
-
-function check(
-  id: string,
-  label: string,
-  verified: boolean,
-  passed: boolean,
-  score: number,
-  detail: string,
-): QualityCheck {
-  return {
-    id,
-    label,
-    kind: verified ? "verified" : "ai_estimate",
-    passed,
-    detail,
-    weight: 1,
-    score,
-  };
 }

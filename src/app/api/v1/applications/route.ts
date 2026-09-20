@@ -33,6 +33,10 @@ export async function POST(request: Request) {
       requireUser(ctx);
       const body = await parseJsonBody(request, createApplicationInputSchema);
       const runtime = await getRuntime();
+      if (body.trackingOnly) {
+        const application = await runtime.services.applications.createTracked(ctx, body);
+        return jsonOk({ application: mapApplicationToUi(application) }, { status: 201 });
+      }
       const result = await runtime.services.applications.create(ctx, body);
       return jsonOk(
         {

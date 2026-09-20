@@ -70,8 +70,8 @@ export class AppError extends Error {
 }
 
 export const createApplicationInputSchema = z.object({
-  company: z.string().min(1).max(120),
-  role: z.string().min(1).max(160).optional(),
+  company: z.string().trim().min(1).max(120),
+  role: z.string().trim().min(1).max(160).optional(),
   title: z.string().min(1).max(160).optional(),
   location: z.string().max(160).optional(),
   employmentType: z.string().max(64).optional(),
@@ -85,6 +85,9 @@ export const createApplicationInputSchema = z.object({
   excludedEvidenceIds: z.array(z.string()).optional(),
   resumeLength: z.enum(["one-page", "two-page"]).optional(),
   experienceLevel: z.string().max(80).optional(),
+  trackingOnly: z.boolean().optional(),
+  candidateStatus: z.enum(["Saved", "Applied"]).optional(),
+  appliedAt: z.string().date().optional(),
   idempotencyKey: z.string().min(8).max(128).optional(),
 }).refine((input) => input.role || input.title, { message: "role or title is required" })
   .transform((input) => ({ ...input, role: input.role ?? input.title! }));

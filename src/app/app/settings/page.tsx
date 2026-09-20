@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { product } from "@/config/product";
 
 const sections = [
+  { href: "/app/settings/job-preferences", title: "Job preferences", description: "Target roles, locations and working arrangements." },
   { href: "/app/profile", title: "Profile", description: "Canonical career record, re-import, and identity." },
   { href: "/app/settings/preferences", title: "Preferences", description: "Theme, resume defaults, and notification cadence." },
   { href: "/app/settings/integrations", title: "Integrations", description: "Connected accounts and optional job-source credentials." },

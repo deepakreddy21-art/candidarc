@@ -559,6 +559,20 @@ describe("Final QA response authority", () => {
     };
   }
 
+  it("blocks semantic failures without guessing a repair; phrasing alone remains advisory", () => {
+    const payload = authorizedPayload();
+    payload.passed = false;
+    payload.checks.push({ code: "MEANING_PRESERVATION", status: "fail", blocking: true });
+    const result = validateAuthorizedFinalQaResult(payload);
+    expect(result.valid).toBe(true);
+    expect(result.blockingFailures.map((check) => check.code)).toEqual(["MEANING_PRESERVATION"]);
+    expect(FINAL_QA_CHECK_REGISTRY.MEANING_PRESERVATION.repairable).toBe(false);
+    const phrasing = authorizedPayload();
+    phrasing.checks.push({ code: "NATURAL_PHRASING", status: "warn", blocking: false });
+    expect(validateAuthorizedFinalQaResult(phrasing).blockingFailures).toEqual([]);
+    expect(validateAuthorizedFinalQaResult(phrasing).valid).toBe(true);
+  });
+
   it.each([
     ["empty checks", (payload: ReturnType<typeof authorizedPayload>) => { payload.checks = []; }],
     ["duplicate codes", (payload: ReturnType<typeof authorizedPayload>) => { payload.checks.push({ ...payload.checks[0]! }); }],

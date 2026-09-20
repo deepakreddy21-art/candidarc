@@ -15,6 +15,7 @@ import { ResumeComparison } from "./resume-comparison";
 import { VersionHistory } from "./version-history";
 import { QualityReport } from "./quality-report";
 import { AskPanel } from "@/components/assistant/ask-panel";
+import type { WritingReview } from "@/lib/resume-writing-review";
 
 type ReadyData = {
   workflowId: string;
@@ -32,6 +33,8 @@ type ReadyData = {
   };
   versions?: Array<{ id: string; label: string; createdAt: string }>;
   qualityReport?: {
+    languageReview?: import("@/lib/resume-writing-review").LanguageReviewCheck[];
+    writingReview?: WritingReview;
     summary?: string;
     score?: number;
     roleAlignment?: number;
@@ -111,29 +114,32 @@ export function ResumeReady({
         <div>
           <p className="focus-ready-eyebrow"><Check aria-hidden />Ready for your review</p>
           <h1 className="text-3xl font-semibold">Your tailored resume</h1>
+          <p className="mt-1 font-medium text-foreground-secondary">{[data.resume?.role, data.resume?.company].filter(Boolean).join(" · ")}</p>
           <p className="mt-2 text-sm text-foreground-secondary">Review. Download. Make your next move.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button asChild disabled={!data.downloads.pdfReady}>
+          {data.downloads.pdfReady ? <Button asChild>
             <a href={`/api/v1/resumes/workflows/${data.workflowId}/download?format=pdf`}>
               <Download className="h-4 w-4" />
               Download PDF
             </a>
           </Button>
-          <Button asChild variant="secondary" disabled={!data.downloads.docxReady}>
+          : <Button disabled><Download className="h-4 w-4" />Download PDF</Button>}
+          {data.downloads.docxReady ? <Button asChild variant="secondary">
             <a href={`/api/v1/resumes/workflows/${data.workflowId}/download?format=docx`}>
               <FileText className="h-4 w-4" />
               Download DOCX
             </a>
           </Button>
-          {data.documentRetryAvailable && !data.downloads.pdfReady ? (
+          : <Button disabled variant="secondary"><FileText className="h-4 w-4" />Download DOCX</Button>}
+          {data.documentRetryAvailable && (!data.downloads.pdfReady || !data.downloads.docxReady) ? (
             <Button
               type="button"
               variant="secondary"
               onClick={() => onRetryDocuments?.()}
               disabled={retryingDocuments || !onRetryDocuments}
             >
-              {retryingDocuments ? "Retrying PDF…" : "Retry PDF"}
+              {retryingDocuments ? "Retrying…" : !data.downloads.pdfReady ? "Retry PDF" : "Retry DOCX"}
             </Button>
           ) : null}
           <Button asChild variant="ghost">
@@ -147,14 +153,7 @@ export function ResumeReady({
         </CardHeader>
         <CardContent className="focus-ready-stage">
           {resumeDoc ? (
-            <div
-              onMouseUp={() => {
-                const text = window.getSelection()?.toString().trim() ?? "";
-                if (text.length >= 8) setSelectedText(text);
-              }}
-            >
-              <ResumePreview document={resumeDoc} />
-            </div>
+            <ResumePreview document={resumeDoc} onSelectionChange={setSelectedText} />
           ) : data.resume?.previewHtml ? (
             <iframe
               title="Resume preview"
@@ -168,7 +167,7 @@ export function ResumeReady({
         </CardContent>
       </Card>
       <div className="grid gap-5 lg:grid-cols-2">
-        <RefinePanel workflowId={data.workflowId} selectedText={selectedText} />
+        <RefinePanel workflowId={data.workflowId} selectedText={selectedText} onClearSelection={() => setSelectedText("")} />
         <VersionHistory
           versions={data.versions ?? []}
           currentId={data.resume?.versionId ?? data.versions?.[0]?.id}
@@ -179,7 +178,12 @@ export function ResumeReady({
         <ResumeComparison workflowId={data.workflowId} versionId={compareId} current={resumeDoc} onClose={() => setCompareId(undefined)} />
       ) : null}
       <AskPanel contextType="resume" contextId={data.workflowId} role={data.resume?.role} company={data.resume?.company} />
-      <QualityReport report={data.qualityReport} />
+      <QualityReport report={data.qualityReport} onReviewText={(text) => {
+        setSelectedText(text);
+        const editor = globalThis.document.getElementById("refinement");
+        editor?.scrollIntoView({ block: "center", behavior: "auto" });
+        editor?.focus({ preventScroll: true });
+      }} />
     </div>
   );
 }

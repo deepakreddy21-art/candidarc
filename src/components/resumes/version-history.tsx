@@ -21,7 +21,7 @@ export function VersionHistory({
                 {currentId === version.id ? " · current" : ""}
               </span>
               <span className="flex items-center gap-2">
-                <time className="text-foreground-muted">{new Date(version.createdAt).toLocaleDateString()}</time>
+                <time dateTime={version.createdAt} className="text-foreground-muted">{new Date(version.createdAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</time>
                 {onCompare && currentId !== version.id ? (
                   <button type="button" className="text-accent hover:underline" onClick={() => onCompare(version.id)}>
                     Compare

@@ -1114,3 +1114,12 @@
     height:32px
   }
 }
+
+/* Give imported records the space they need while keeping the approved artwork. */
+@media (min-width: 1024px) {
+  .focus-onboarding[data-reviewing=true] { grid-template-columns: minmax(260px, 30%) minmax(0, 1fr); }
+  .focus-onboarding[data-reviewing=true] .focus-onboarding-content { padding-inline: 5%; }
+  .focus-onboarding[data-reviewing=true] .focus-onboarding-message h2 { font-size: clamp(1.6rem, 2.5vw, 2.4rem); }
+}
+.focus-review-record > div:first-child strong { font-weight: 600; }
+.focus-review-record > div:first-child p { color: var(--foreground-secondary); font-size: .875rem; }

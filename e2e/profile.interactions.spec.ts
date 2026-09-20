@@ -2,36 +2,38 @@ import { expect, test } from "@playwright/test";
 import { seedOnboardedUser } from "./helpers/session";
 
 test.describe("profile interactions", () => {
-  test("saving identity persists after reload", async ({ page }) => {
+  test("one contact editor autosaves headline and preferred name after reload", async ({ page }) => {
     await seedOnboardedUser(page, "profile-save");
     await page.goto("/app/profile");
-    await page.locator("#identity-headline").fill("Staff platform engineer");
-    await page.getByRole("button", { name: /save identity/i }).click();
-    await expect(page.getByText(/identity saved/i)).toBeVisible();
+    await expect(page.getByLabel("Full name", { exact: true })).toHaveCount(1);
+    await page.locator("#headline").fill("Staff platform engineer");
+    await page.locator("#preferred-name").fill("Jordan");
+    await expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
     await page.reload();
-    await expect(page.locator("#identity-headline")).toHaveValue("Staff platform engineer");
+    await expect(page.locator("#headline")).toHaveValue("Staff platform engineer");
+    await expect(page.locator("#preferred-name")).toHaveValue("Jordan");
   });
 
-  test("cancel restores the last saved identity", async ({ page }) => {
-    await seedOnboardedUser(page, "profile-cancel");
+  test("removing a populated role can be undone and survives reload", async ({ page }) => {
+    await seedOnboardedUser(page, "profile-undo");
     await page.goto("/app/profile");
-    const original = await page.locator("#identity-fullName").inputValue();
-    await page.locator("#identity-fullName").fill("Temporary Name");
-    await page.getByRole("button", { name: /^cancel$/i }).click();
-    await expect(page.locator("#identity-fullName")).toHaveValue(original);
+    const original = await page.getByLabel("Employer 1", { exact: true }).inputValue();
+    await page.getByRole("button", { name: "Remove role 1", exact: true }).click();
+    await page.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(page.getByLabel("Employer 1", { exact: true })).toHaveValue(original);
+    await expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
     await page.reload();
-    await expect(page.locator("#identity-fullName")).toHaveValue(original);
+    await expect(page.getByLabel("Employer 1", { exact: true })).toHaveValue(original);
   });
 
-  test("external professional fields are editable links-in-waiting", async ({ page }) => {
+  test("optional professional links persist through the shared editor", async ({ page }) => {
     await seedOnboardedUser(page, "profile-links");
     await page.goto("/app/profile");
-    await page.locator("#identity-github").fill("github.com/audit-tester");
-    await page.locator("#identity-portfolio").fill("https://example.com/portfolio");
-    await page.getByRole("button", { name: /save identity/i }).click();
-    await expect(page.getByText(/identity saved/i)).toBeVisible();
+    await page.locator("#github").fill("github.com/audit-tester");
+    await page.locator("#portfolio").fill("https://example.com/portfolio");
+    await expect(page.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
     await page.reload();
-    await expect(page.locator("#identity-github")).toHaveValue("github.com/audit-tester");
-    await expect(page.locator("#identity-portfolio")).toHaveValue("https://example.com/portfolio");
+    await expect(page.locator("#github")).toHaveValue("github.com/audit-tester");
+    await expect(page.locator("#portfolio")).toHaveValue("https://example.com/portfolio");
   });
 });

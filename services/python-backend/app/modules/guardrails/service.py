@@ -13,9 +13,11 @@ from app.domain.schemas import (
     ResumeBullet,
     ResumeDocument,
     ResumeSection,
+    SectionType,
     UserConfirmation,
 )
 from app.modules.scoring.service import score_resume
+from app.prompts.writing_policy import unsupported_responsibility_upgrade
 
 PERCENT_RE = re.compile(r"\b\d+(?:\.\d+)?\s*%")
 DOLLAR_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?(?:\s*(?:k|m|b|million|billion))?", re.I)
@@ -691,6 +693,11 @@ def validate_resume_claims(
         elif section_types & {"certifications", "awards"}:
             org_code = "UNSUPPORTED_CERTIFICATION"
 
+        if section.type == "publications" and section.content:
+            publication_corpus = _evidence_corpus([item for item in evidence if item.source_type == "publication"])
+            if not publication_corpus or not _text_grounded_in_corpus(section.content, publication_corpus, set()):
+                violations.append("UNSUPPORTED_PUBLICATION")
+
         # Section content (summary / skills / education body / cert text)
         if section.content:
             violations.extend(detect_injection_markers(section.content, code_prefix="PROMPT_INJECTION"))
@@ -742,6 +749,12 @@ def validate_resume_claims(
                 resume_item.dates or "",
             ]
             item_blob = " ".join(part for part in item_fields if part)
+            if section.type == "publications":
+                publication_corpus = _evidence_corpus([item for item in associated if item.source_type == "publication"])
+                if not publication_corpus or any(
+                    field and not _text_grounded_in_corpus(field, publication_corpus, set()) for field in item_fields
+                ):
+                    violations.append("UNSUPPORTED_PUBLICATION")
             if item_blob.strip():
                 violations.extend(detect_injection_markers(item_blob, code_prefix="PROMPT_INJECTION"))
                 item_atoms = extract_claim_atoms(item_blob)
@@ -810,6 +823,10 @@ def validate_resume_claims(
                 if evidence_id not in evidence_ids:
                     violations.append("UNKNOWN_EVIDENCE_ID")
             cited = _cited_evidence(bullet, evidence_by_id)
+            if unsupported_responsibility_upgrade(bullet.text, [
+                action for item in cited for action in [*(item.actions or []), item.claim_text or ""] if action
+            ]):
+                violations.append("UNSUPPORTED_OWNERSHIP")
             corpus = _evidence_corpus(cited) if cited else ""
             atoms = extract_claim_atoms(bullet.text, bullet.technologies)
             cited_allowed = collect_allowed_technologies(cited)
@@ -826,6 +843,10 @@ def validate_resume_claims(
             _append_metric_semantic_violations(bullet.text, cited, violations)
 
             source_types = {(item.source_type or "").lower() for item in cited}
+            if section.type == "publications":
+                publication_corpus = _evidence_corpus([item for item in cited if item.source_type == "publication"])
+                if not publication_corpus or not _text_grounded_in_corpus(bullet.text, publication_corpus, set()):
+                    violations.append("UNSUPPORTED_PUBLICATION")
             if section_types & {"education"} and "education" not in source_types:
                 violations.append("UNSUPPORTED_EDUCATION")
             if section_types & {"certifications", "awards"} and not source_types.intersection(
@@ -885,6 +906,11 @@ def adjudicate_finding(
                 return False, "UNKNOWN_EVIDENCE_ID"
 
     scoped = [evidence_by_id[eid] for eid in (evidence_ids or []) if eid in evidence_by_id] or evidence
+    if unsupported_responsibility_upgrade(
+        finding_suggested_text,
+        [action for item in scoped for action in [*(item.actions or []), item.claim_text or ""] if action],
+    ):
+        return False, "UNSUPPORTED_OWNERSHIP"
     corpus = _evidence_corpus(scoped)
     scoped_allowed = collect_allowed_technologies(scoped)
 
@@ -1130,6 +1156,21 @@ def build_grounded_resume(
                 bullets=[bullet_from(item) for item in education],
             )
         )
+
+    optional_sections: list[tuple[str, SectionType, str]] = [
+        ("project", "projects", "Project Experience"),
+        ("certification", "certifications", "Certifications"),
+        ("publication", "publications", "Publications"),
+    ]
+    for source_type, section_type, title in optional_sections:
+        supported = [item for item in augmented if item.source_type == source_type]
+        if supported:
+            sections.append(ResumeSection(
+                type=section_type,
+                title=title,
+                order=len(sections),
+                bullets=[bullet_from(item) for item in supported],
+            ))
 
     scored = score_resume(
         sections=sections,

@@ -46,7 +46,7 @@ export const ResumeSectionSchema = z.object({
   "items": z.array(ResumeItemSchema).max(50).nullable().optional(),
   "order": z.number().int().min(0.0).max(100.0).optional(),
   "title": z.string().min(1).max(512),
-  "type": z.enum(["summary", "skills", "experience", "projects", "education", "certifications"]),
+  "type": z.enum(["summary", "skills", "experience", "projects", "education", "certifications", "publications"]),
 }).strict();
 export type ResumeSection = z.infer<typeof ResumeSectionSchema>;
 
@@ -123,7 +123,7 @@ export type AuditResponse = z.infer<typeof AuditResponseSchema>;
 
 export const FinalQaCheckSchema = z.object({
   "blocking": z.boolean(),
-  "code": z.enum(["PRIMARY_TECHNOLOGY_EMPHASIS", "HAS_SUMMARY", "HAS_SKILLS", "HAS_EXPERIENCE", "DUPLICATE_BULLETS", "REQUIRED_SECTIONS", "ATS_FORMAT", "LENGTH_REDUCE", "UNSUPPORTED_CLAIM", "EVIDENCE_LINKED", "TECHNOLOGY_CLAIMS", "SCORE_RUBRIC_PRESENT", "SECTION_COUNT", "CRITICAL_FINDINGS", "EVIDENCE_REFERENCES", "EDUCATION", "CONTACT_INFORMATION", "CHRONOLOGY", "PAGE_LENGTH", "UNKNOWN"]),
+  "code": z.enum(["PRIMARY_TECHNOLOGY_EMPHASIS", "HAS_SUMMARY", "HAS_SKILLS", "HAS_EXPERIENCE", "DUPLICATE_BULLETS", "REQUIRED_SECTIONS", "ATS_FORMAT", "LENGTH_REDUCE", "UNSUPPORTED_CLAIM", "MEANING_PRESERVATION", "NATURAL_PHRASING", "EVIDENCE_LINKED", "TECHNOLOGY_CLAIMS", "SCORE_RUBRIC_PRESENT", "SECTION_COUNT", "CRITICAL_FINDINGS", "EVIDENCE_REFERENCES", "EDUCATION", "CONTACT_INFORMATION", "CHRONOLOGY", "PAGE_LENGTH", "UNKNOWN"]),
   "detail": z.string().max(2000),
   "label": z.string().min(1).max(512),
   "status": z.enum(["pass", "warn", "fail", "warning", "pending"]),
@@ -135,7 +135,7 @@ export const FinalQaFailedCheckSchema = z.object({
   "blocking": z.boolean().optional(),
   "bullet_id": z.string().max(128).nullable().optional(),
   "claim_id": z.string().max(128).nullable().optional(),
-  "code": z.enum(["PRIMARY_TECHNOLOGY_EMPHASIS", "HAS_SUMMARY", "HAS_SKILLS", "HAS_EXPERIENCE", "DUPLICATE_BULLETS", "REQUIRED_SECTIONS", "ATS_FORMAT", "LENGTH_REDUCE", "UNSUPPORTED_CLAIM", "EVIDENCE_LINKED", "TECHNOLOGY_CLAIMS", "SCORE_RUBRIC_PRESENT", "SECTION_COUNT", "CRITICAL_FINDINGS", "EVIDENCE_REFERENCES", "EDUCATION", "CONTACT_INFORMATION", "CHRONOLOGY", "PAGE_LENGTH", "UNKNOWN"]),
+  "code": z.enum(["PRIMARY_TECHNOLOGY_EMPHASIS", "HAS_SUMMARY", "HAS_SKILLS", "HAS_EXPERIENCE", "DUPLICATE_BULLETS", "REQUIRED_SECTIONS", "ATS_FORMAT", "LENGTH_REDUCE", "UNSUPPORTED_CLAIM", "MEANING_PRESERVATION", "NATURAL_PHRASING", "EVIDENCE_LINKED", "TECHNOLOGY_CLAIMS", "SCORE_RUBRIC_PRESENT", "SECTION_COUNT", "CRITICAL_FINDINGS", "EVIDENCE_REFERENCES", "EDUCATION", "CONTACT_INFORMATION", "CHRONOLOGY", "PAGE_LENGTH", "UNKNOWN"]),
   "detail": z.string().max(4000).optional(),
   "expected_postcondition": z.string().max(1000).nullable().optional(),
   "label": z.string().min(1).max(512),

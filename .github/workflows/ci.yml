@@ -393,6 +393,8 @@ jobs:
           .venv/bin/pip install --require-hashes -r requirements.txt
           .venv/bin/pip install --no-deps -e .
           .venv/bin/pip install --require-hashes -r requirements-dev.txt
+      - name: Install approved PDF renderer
+        run: npx playwright install --with-deps chromium
       - run: npm run test:python-mode
         env:
           APP_MODE: demo

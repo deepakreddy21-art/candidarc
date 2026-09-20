@@ -37,6 +37,10 @@ export default function OpportunitiesPage() {
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [dueOnly, setDueOnly] = useState(false);
+  const pendingIds = useRef(new Set<string>());
+  const [pending, setPending] = useState<Record<string, boolean>>({});
+  const [statusErrors, setStatusErrors] = useState<Record<string, string | undefined>>({});
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const requestId = useRef(0);
@@ -89,12 +93,16 @@ export default function OpportunitiesPage() {
     return visible.filter((app) => {
       const q = query.trim().toLowerCase();
       if (q && !`${app.company} ${app.role}`.toLowerCase().includes(q)) return false;
-      if (statusFilter !== "all" && app.candidateStatus !== statusFilter) return false;
+      if (statusFilter !== "all" && app.candidateStatus !== statusFilter && !pending[app.id] && !statusErrors[app.id]) return false;
+      if (dueOnly && (!app.followUpAt || new Date(app.followUpAt).getTime() > Date.now())) return false;
       return true;
     });
-  }, [visible, query, statusFilter]);
+  }, [visible, query, statusFilter, dueOnly, pending, statusErrors]);
 
   async function updateStatus(id: string, candidateStatus: CandidateApplicationStatus) {
+    if (pendingIds.current.has(id) || statusErrors[id]) return;
+    pendingIds.current.add(id);
+    setPending((prev) => ({ ...prev, [id]: true }));
     const current = apps.find((a) => a.id === id);
     const previousStatus = current?.candidateStatus;
     setApps((prev) => prev.map((a) => (a.id === id ? { ...a, candidateStatus } : a)));
@@ -119,47 +127,56 @@ export default function OpportunitiesPage() {
       );
       toast.success("Status updated");
     } catch (err) {
-      // Keep the candidate's selection visible; offer reload on conflict.
-      if (err instanceof ApiError && err.status === 409) {
-        // Retain the candidate's unsaved selection; offer reload of server version.
-        toast.error("Status changed in another tab. Your selection is kept — reload then retry.", {
-          action: {
-            label: "Reload",
-            onClick: () => {
-              void api.listApplications().then((items) => {
-                setApps(
-                  items.map((a) => ({
-                    ...a,
-                    candidateStatus: defaultCandidateStatus({
-                      ...a,
-                      candidateStatus: a.candidateStatus,
-                    }),
-                  })),
-                );
-              });
-            },
-          },
-        });
-        return;
-      }
-      setApps((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, candidateStatus: previousStatus ?? a.candidateStatus } : a)),
-      );
-      toast.error(err instanceof Error ? err.message : "Could not update status");
+      const conflict = err instanceof ApiError && err.status === 409;
+      if (!conflict) setApps((prev) => prev.map((a) => a.id === id ? { ...a, candidateStatus: previousStatus ?? a.candidateStatus } : a));
+      setStatusErrors((prev) => ({ ...prev, [id]: conflict
+        ? "Not saved. Status changed in another tab. Your selection is shown below."
+        : "Status was not saved. Load the saved status and try again." }));
+    } finally {
+      pendingIds.current.delete(id);
+      setPending((prev) => ({ ...prev, [id]: false }));
     }
   }
 
+  async function reloadStatus(id: string) {
+    if (pendingIds.current.has(id)) return;
+    pendingIds.current.add(id);
+    setPending((prev) => ({ ...prev, [id]: true }));
+    try {
+      const saved = await api.getApplication(id);
+      if (!saved) throw new Error("Application no longer available");
+      setApps((prev) => prev.map((a) => a.id === id ? { ...saved, candidateStatus: defaultCandidateStatus(saved) } : a));
+      setStatusErrors((prev) => ({ ...prev, [id]: undefined }));
+    } catch {
+      setStatusErrors((prev) => ({ ...prev, [id]: "Could not load saved status. Your selection is still here; try again." }));
+    } finally {
+      pendingIds.current.delete(id);
+      setPending((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  function statusFeedback(id: string) {
+    return <div aria-live="polite" className="mt-1 max-w-xs text-xs">
+      {pending[id] && <p>Saving…</p>}
+      {statusErrors[id] && <><p role="alert" className="text-destructive">{statusErrors[id]}</p><button type="button" disabled={pending[id]} className="mt-1 min-h-9 text-accent underline" onClick={() => void reloadStatus(id)}>Load saved status</button></>}
+    </div>;
+  }
+
   async function archiveId(id: string) {
-    await api.archiveApplications([id]);
-    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, archived: true } : a)));
-    setConfirmId(null);
-    toast.success("Application archived");
+    try {
+      await api.archiveApplications([id]);
+      setApps((prev) => prev.map((a) => (a.id === id ? { ...a, archived: true } : a)));
+      setConfirmId(null);
+      toast.success("Application archived");
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Could not archive application"); }
   }
 
   async function restoreId(id: string) {
-    await api.restoreApplication(id);
-    setApps((prev) => prev.map((a) => (a.id === id ? { ...a, archived: false } : a)));
-    toast.success("Application restored");
+    try {
+      await api.restoreApplication(id);
+      setApps((prev) => prev.map((a) => (a.id === id ? { ...a, archived: false } : a)));
+      toast.success("Application restored");
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Could not restore application"); }
   }
 
   return (
@@ -178,6 +195,7 @@ export default function OpportunitiesPage() {
             >
               {showArchived ? "Show active" : "Show archived"}
             </Button>
+            <Link href="/app/opportunities/track" className={buttonVariants({ size: "sm", variant: "secondary" })}>Add application</Link>
             <Link href="/app/radar" className={buttonVariants({ size: "sm" })}>
               Browse jobs
             </Link>
@@ -185,13 +203,12 @@ export default function OpportunitiesPage() {
         }
       />
 
-      <dl className="grid gap-2 text-sm sm:grid-cols-5">
-        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Saved</dt><dd className="font-medium">{counts.saved}</dd></div>
-        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Applied</dt><dd className="font-medium">{counts.applied}</dd></div>
-        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Interviewing</dt><dd className="font-medium">{counts.interviewing}</dd></div>
-        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Offers</dt><dd className="font-medium">{counts.offers}</dd></div>
-        <div className="rounded-md border border-border p-3"><dt className="text-xs text-foreground-muted">Follow-ups due</dt><dd className="font-medium">{counts.followUpsDue}</dd></div>
-      </dl>
+      <div className="flex flex-wrap gap-2" aria-label="Application shortcuts">
+        {([["Saved", counts.saved], ["Applied", counts.applied], ["Interviewing", counts.interviewing], ["Offer", counts.offers]] as const).map(([status, count]) => (
+          <Button key={status} type="button" size="sm" variant="secondary" aria-pressed={statusFilter === status && !dueOnly} onClick={() => { setShowArchived(false); setDueOnly(false); setStatusFilter(statusFilter === status ? "all" : status); }}>{status === "Offer" ? "Offers" : status} <span className="ml-2 tabular-nums">{count}</span></Button>
+        ))}
+        <Button type="button" size="sm" variant="secondary" aria-pressed={dueOnly} onClick={() => { setShowArchived(false); setStatusFilter("all"); setDueOnly((value) => !value); }}>Follow-ups due <span className="ml-2 tabular-nums">{counts.followUpsDue}</span></Button>
+      </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end" role="search" aria-label="Filter applications">
         <div className="min-w-0 flex-1 space-y-1.5">
@@ -240,13 +257,11 @@ export default function OpportunitiesPage() {
             visible.length === 0
               ? showArchived
                 ? "Archived applications will appear here."
-                : "Open a job and tailor your resume — applications you start will show up here."
+                : "Add an application you already started, or find a job to apply for."
               : "Try another status or search term."
           }
           action={
-            <Link href="/app/radar" className={buttonVariants()}>
-              Go to Jobs
-            </Link>
+            visible.length > 0 ? <Button type="button" onClick={() => { setQuery(""); setStatusFilter("all"); setDueOnly(false); }}>Clear filters</Button> : <Link href={showArchived ? "/app/radar" : "/app/opportunities/track"} className={buttonVariants()}>{showArchived ? "Go to Jobs" : "Add application"}</Link>
           }
         />
       ) : (
@@ -275,6 +290,7 @@ export default function OpportunitiesPage() {
                           {app.role}
                         </Link>
                         <p className="text-foreground-secondary">{app.company}</p>
+                        {app.followUpAt && <p className="mt-1 text-xs text-foreground-muted">Follow up: {app.followUpAt}</p>}
                       </td>
                       <td className="px-3 py-3">
                         <span className="rounded-md border border-border px-2 py-0.5 text-xs">{resume}</span>
@@ -284,6 +300,7 @@ export default function OpportunitiesPage() {
                         <select
                           aria-label={`Status for ${app.role}`}
                           className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+                          disabled={pending[app.id] || Boolean(statusErrors[app.id])}
                           value={app.candidateStatus}
                           onChange={(e) => void updateStatus(app.id, e.target.value as CandidateApplicationStatus)}
                         >
@@ -293,6 +310,7 @@ export default function OpportunitiesPage() {
                             </option>
                           ))}
                         </select>
+                        {statusFeedback(app.id)}
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex flex-wrap gap-2">
@@ -349,6 +367,7 @@ export default function OpportunitiesPage() {
                       {app.role}
                     </Link>
                     <p className="text-sm text-foreground-secondary">{app.company}</p>
+                    {app.followUpAt && <p className="text-xs text-foreground-muted">Follow up: {app.followUpAt}</p>}
                   </div>
                   <div className="flex flex-wrap gap-2 text-xs">
                     <span className="rounded-md border border-border px-2 py-0.5">Resume: {resume}</span>
@@ -360,6 +379,7 @@ export default function OpportunitiesPage() {
                   <select
                     id={`m-status-${app.id}`}
                     className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm"
+                    disabled={pending[app.id] || Boolean(statusErrors[app.id])}
                     value={app.candidateStatus}
                     onChange={(e) => void updateStatus(app.id, e.target.value as CandidateApplicationStatus)}
                   >
@@ -369,6 +389,7 @@ export default function OpportunitiesPage() {
                       </option>
                     ))}
                   </select>
+                  {statusFeedback(app.id)}
                   <div className={cn("flex flex-wrap gap-3 text-sm")}>
                     <span className="text-foreground-secondary">{next}</span>
                     {resumeHref ? (

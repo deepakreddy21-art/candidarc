@@ -114,10 +114,12 @@ export function JobCard({
       )}
     >
       <div className="flex items-start gap-3">
-        <button
-          type="button"
+        <Link
+          href={`/app/radar/jobs/${job.id}`}
           className="min-w-0 flex-1 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-          onClick={() => onSelect?.(job.id)}
+          onClick={(event) => {
+            if (!navigateOnSelect && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onSelect?.(job.id); }
+          }}
         >
           <div className="flex flex-wrap items-center gap-2">
             {fit ? (
@@ -129,13 +131,7 @@ export function JobCard({
             {freshness ? <span className="text-[11px] text-foreground-muted">{formatRelative(freshness)}</span> : null}
           </div>
           <h3 className="mt-1 text-[15px] font-semibold text-foreground">
-            {navigateOnSelect ? (
-              <Link href={`/app/radar/jobs/${job.id}`} className="hover:text-accent">
-                {job.title}
-              </Link>
-            ) : (
-              job.title
-            )}
+            {job.title}
           </h3>
           <p className="text-sm text-foreground-secondary">
             {job.company}
@@ -152,7 +148,7 @@ export function JobCard({
               ))}
             </ul>
           ) : null}
-        </button>
+        </Link>
         <div className="flex shrink-0 flex-col items-end gap-1">
           {onSave ? (
             <Button

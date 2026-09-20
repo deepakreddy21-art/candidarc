@@ -31,9 +31,10 @@ describe("approved visual workflows", () => {
     expect(screen.getByTestId("import-summary")).toHaveTextContent("Imported 1 role, 1 education entry and 1 project");
     expect(screen.queryByText("Jordan Lee")).not.toBeInTheDocument();
     expect(screen.getByText("Real Employer")).toBeInTheDocument();
-    await user.click(screen.getByText("Edit role 1", { exact: true }));
+    await user.click(screen.getByRole("button", { name: "Edit role 1" }));
     await user.clear(screen.getByRole("textbox", { name: /^Employer 1$/ }));
     expect(onChange).toHaveBeenLastCalledWith({ employment: [expect.objectContaining({ company: "", title: "Engineer", startDate: "2022", endDate: "2024" })] });
+    await user.click(screen.getByRole("button", { name: "Edit education 1" }));
     expect(screen.getByTestId("imported-education-field-0")).toHaveValue("Computer Science");
     expect(screen.getByTestId("imported-portfolio")).toBeInTheDocument();
   });

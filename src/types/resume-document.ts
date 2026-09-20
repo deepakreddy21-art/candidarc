@@ -1,10 +1,11 @@
 /**
  * Canonical resume document model shared by browser preview, PDF, and DOCX renderers.
- * Template: CandidArc ATS v1 — ATS-safe single-column reading order.
+ * Template: CandidArc Classic v1 — ATS-safe single-column reading order.
  * Not an official MIT/Harvard/alumni template.
  */
-export const CANDIDARC_ATS_V1_TEMPLATE = "CandidArc ATS v1";
-export const CANDIDARC_ATS_V1_TEMPLATE_ID = "candidarc-ats-v1";
+import { RESUME_TEMPLATE } from "@/lib/resume-template";
+export const CANDIDARC_CLASSIC_V1_TEMPLATE = RESUME_TEMPLATE.name;
+export const CANDIDARC_CLASSIC_V1_TEMPLATE_ID = RESUME_TEMPLATE.id;
 
 export interface ResumeDocumentContact {
   name: string;
@@ -26,7 +27,7 @@ export interface ResumeDocumentEntry {
 }
 
 export interface ResumeDocumentSection {
-  type: "summary" | "skills" | "experience" | "projects" | "education" | "certifications" | "other";
+  type: "summary" | "skills" | "experience" | "projects" | "education" | "certifications" | "publications" | "other";
   title: string;
   /** Plain paragraph for summary/skills blocks */
   content?: string;

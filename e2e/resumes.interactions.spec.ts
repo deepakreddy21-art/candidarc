@@ -156,6 +156,30 @@ Requirements: 5+ years experience, strong ownership.`);
     await expect(comparison).toContainText("TypeScript");
   });
 
+  test("writing review exposes ten criteria and sends a flagged bullet to the editor", async ({ page }) => {
+    await seedOnboardedUser(page, "resume-writing-review");
+    const generated = await generateResumeViaApi(page);
+    await page.goto(`/app/resumes/${generated.workflowId}`);
+    await waitForResumeReady(page);
+    await page.locator("summary").filter({ hasText: /^Résumé quality review$/ }).click();
+    const review = page.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Résumé quality review$/ }) });
+    await expect(review.locator("details")).toHaveCount(10);
+    await expect(review).toContainText("not a VMock score");
+    const actionVerbs = review.locator("details").filter({ has: page.locator("summary").filter({ hasText: /^Action verbs/ }) });
+    await actionVerbs.locator("summary").click();
+    const finding = actionVerbs.locator("li").first();
+    const text = await finding.locator("blockquote").innerText();
+    await finding.getByRole("button", { name: "Review this text" }).click();
+    await expect(page.getByText("Improving selected text only:", { exact: false })).toContainText(text.slice(0, 180));
+    const editor = page.getByRole("textbox", { name: /what would you like to improve/i });
+    await expect(editor).toBeFocused();
+    await page.getByRole("button", { name: "Use more precise action verbs", exact: true }).click();
+    await expect(editor).toHaveValue("Use more precise action verbs");
+    await page.getByRole("button", { name: "Clear selection", exact: true }).click();
+    await expect(page.getByText("Improving selected text only:", { exact: false })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: /download pdf/i })).toBeVisible();
+  });
+
   test("a refinement with no safe change keeps the checked resume downloadable", async ({ page }) => {
     await seedOnboardedUser(page, "resume-no-change");
     const generated = await generateResumeViaApi(page);

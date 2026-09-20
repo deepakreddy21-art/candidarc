@@ -25,7 +25,7 @@ export default defineConfig({
     {
       name: "built-desktop",
       testMatch:
-        /approved-visuals\.spec\.ts|navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts|import\.interactions\.spec\.ts|resumes\.interactions\.spec\.ts|applications\.interactions\.spec\.ts|settings\.interactions\.spec\.ts/,
+        /candidate-form-polish\.spec\.ts|profile\.interactions\.spec\.ts|approved-visuals\.spec\.ts|navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts|import\.interactions\.spec\.ts|resumes\.interactions\.spec\.ts|applications\.interactions\.spec\.ts|settings\.interactions\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
@@ -50,7 +50,7 @@ export default defineConfig({
           },
         },
         {
-          command: "npx next start --port 3000",
+          command: "npx next start --hostname 127.0.0.1 --port 3000",
           url: "http://127.0.0.1:3000",
           reuseExistingServer: !process.env.CI,
           timeout: 180_000,

@@ -16,6 +16,8 @@ export type FinalQaCheckCode =
   | "ATS_FORMAT"
   | "LENGTH_REDUCE"
   | "UNSUPPORTED_CLAIM"
+  | "MEANING_PRESERVATION"
+  | "NATURAL_PHRASING"
   | "EVIDENCE_LINKED"
   | "TECHNOLOGY_CLAIMS"
   | "SCORE_RUBRIC_PRESENT"
@@ -40,6 +42,8 @@ export const FINAL_QA_CHECK_REGISTRY: Readonly<
   ATS_FORMAT: { blocking: true, repairable: true, required: false },
   LENGTH_REDUCE: { blocking: true, repairable: true, required: false },
   UNSUPPORTED_CLAIM: { blocking: true, repairable: true, required: false },
+  MEANING_PRESERVATION: { blocking: true, repairable: false, required: false },
+  NATURAL_PHRASING: { blocking: false, repairable: false, required: false },
   EVIDENCE_LINKED: { blocking: true, repairable: false, required: true },
   TECHNOLOGY_CLAIMS: { blocking: true, repairable: true, required: true },
   SCORE_RUBRIC_PRESENT: { blocking: true, repairable: false, required: true },

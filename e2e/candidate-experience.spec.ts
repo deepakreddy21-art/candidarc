@@ -203,7 +203,7 @@ Requirements: 5+ years experience, strong ownership.`;
       buffer: pdf,
     });
     await expect(page.getByText(/ready — review/i)).toBeVisible({ timeout: 90_000 });
-    await expect(page.locator(".focus-review-record > summary").filter({ hasText: "Harbor Systems" })).toBeVisible();
+    await expect(page.locator(".focus-review-record > div:first-child").filter({ hasText: "Harbor Systems" })).toBeVisible();
     const location = page.locator("#location");
     if (!(await location.inputValue()).trim()) {
       await location.fill("Seattle, WA, USA");

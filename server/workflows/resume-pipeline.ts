@@ -1,3 +1,4 @@
+import { CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
 import { selectCareerEvidence } from "../modules/profile/career-evidence";
 import { createHash } from "crypto";
 import {
@@ -1366,7 +1367,7 @@ export class ResumePipeline {
         applicationId: run.applicationId,
         applicationPublicId: run.applicationPublicId,
         title: `${run.applicationPublicId} resume`,
-        templateId: "candidarc-ats-v1",
+        templateId: CANDIDARC_CLASSIC_V1_TEMPLATE_ID,
         length: "one-page",
         currentVersionPublicId: null,
       });
@@ -2026,6 +2027,11 @@ export class ResumePipeline {
       nextAction: "Export resume",
       metadata: {
         ...(application?.metadata ?? {}),
+        languageReview: {
+          versionPublicId: latest.publicId,
+          checks: supplement.data.checks.filter((check) =>
+            check.code === "MEANING_PRESERVATION" || check.code === "NATURAL_PHRASING"),
+        },
         qualityReport: attachQualityProvenance(
           computeCandidArcQualityScore({
             sections: latest.sections as Array<Record<string, unknown>>,
@@ -2037,7 +2043,8 @@ export class ResumePipeline {
               ? (application.metadata.jobRequirements as unknown[]).filter((item): item is string => typeof item === "string")
               : [],
             knownTechnologies,
-            pageCount: result.estimatedPages,
+            // Page estimates are not measured export results. Refresh after rendering.
+            preferredLength: "two-page",
             aiRoleAlignment: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.jobAlignment ?? latest.score),
             aiAtsReadability: Number((latest.scoreBreakdown as Record<string, number> | undefined)?.atsCompatibility),
           }),

@@ -5,7 +5,7 @@ test.describe("assistant interactions", () => {
   test("open and close the copilot panel", async ({ page }) => {
     await seedOnboardedUser(page, "ask-open");
     await page.goto("/app/radar");
-    await page.getByTestId("job-row").first().getByRole("button").first().click();
+    await page.getByTestId("job-row").first().getByRole("link").first().click();
     await page.getByRole("button", { name: /ask about this job/i }).scrollIntoViewIfNeeded();
     await page.getByRole("button", { name: /ask about this job/i }).click();
     await expect(page.getByRole("complementary", { name: /career copilot/i })).toBeVisible();

@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label, Textarea } from "@/components/ui/input";
 
 const quickActions = [
+  "Use more precise action verbs",
   "Make it more technical",
   "Strengthen impact",
   "Improve role alignment",
@@ -20,9 +21,11 @@ const quickActions = [
 export function RefinePanel({
   workflowId,
   selectedText,
+  onClearSelection,
 }: {
   workflowId: string;
   selectedText?: string;
+  onClearSelection?: () => void;
 }) {
   const router = useRouter();
   const [instruction, setInstruction] = useState("");
@@ -62,6 +65,7 @@ export function RefinePanel({
         {selectedText ? (
           <p className="rounded-md border border-border bg-canvas p-2 text-xs text-foreground-secondary">
             Improving selected text only: “{selectedText.slice(0, 180)}{selectedText.length > 180 ? "…" : ""}”
+            {onClearSelection && <button type="button" className="mt-2 block text-accent underline" onClick={onClearSelection}>Clear selection</button>}
           </p>
         ) : (
           <p className="text-xs text-foreground-muted">Select text in the preview to improve a section instead of the whole resume.</p>

@@ -49,6 +49,8 @@ const BREADCRUMB_LABELS: Record<string, string> = {
   profile: "Profile",
   notifications: "Notifications",
   preferences: "Preferences",
+  "job-preferences": "Job preferences",
+  track: "Add application",
   integrations: "Integrations",
   privacy: "Privacy",
   billing: "Billing",

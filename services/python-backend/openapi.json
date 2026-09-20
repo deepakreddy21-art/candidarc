@@ -897,6 +897,8 @@
           "ATS_FORMAT",
           "LENGTH_REDUCE",
           "UNSUPPORTED_CLAIM",
+          "MEANING_PRESERVATION",
+          "NATURAL_PHRASING",
           "EVIDENCE_LINKED",
           "TECHNOLOGY_CLAIMS",
           "SCORE_RUBRIC_PRESENT",
@@ -3511,7 +3513,8 @@
               "experience",
               "projects",
               "education",
-              "certifications"
+              "certifications",
+              "publications"
             ],
             "title": "Type",
             "type": "string"
@@ -3589,7 +3592,8 @@
               "experience",
               "projects",
               "education",
-              "certifications"
+              "certifications",
+              "publications"
             ],
             "title": "Type",
             "type": "string"

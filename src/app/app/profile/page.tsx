@@ -4,8 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
-import { Input, Label, Textarea } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
 import { ErrorState, Skeleton } from "@/components/ui/feedback";
 import { StepCareerProfile } from "@/components/onboarding/step-career-profile";
 import { emptyOnboardingForm, formToPatch, type OnboardingFormState } from "@/components/onboarding/types";
@@ -21,7 +19,6 @@ export default function ProfilePage() {
   const [uploading, setUploading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [importErrorCode, setImportErrorCode] = useState<string | null>(null);
-  const [identitySnapshot, setIdentitySnapshot] = useState<CandidateProfile | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [importSectionError, setImportSectionError] = useState<string | null>(null);
   const versionRef = useRef<number | undefined>(undefined);
@@ -37,7 +34,7 @@ export default function ProfilePage() {
     getExpectedVersion: () => versionRef.current,
     setVersion: (version) => { versionRef.current = version; },
     onSavingChange: setSavingCareer,
-    onSaved: () => setCareerSaveStatus("Saved"),
+    onSaved: () => setCareerSaveStatus(formRef.current === baselineRef.current ? "Saved" : "Unsaved changes"),
     onSaveFailed: () => setCareerSaveStatus("Save failed — your edits remain here"),
     isStaleError: (error) => error instanceof ApiError && error.status === 409,
     onStale: async () => { conflictRef.current = true; setCareerSaveStatus("Profile changed elsewhere. Your unsaved edits remain here. Copy anything you want to keep, then reload the saved profile."); },
@@ -55,13 +52,13 @@ export default function ProfilePage() {
 
   const loadProfile = useCallback(async (signal?: AbortSignal) => {
     setProfileError(null);
+    setImportSectionError(null);
     try {
       const state = await api.getResumeImportStatus();
       if (signal?.aborted) return;
       versionRef.current = state.version;
       profileRef.current = state.profile;
       setProfile(state.profile);
-      setIdentitySnapshot(state.profile);
       const next = profileToForm(state.profile, state.extraction);
       baselineRef.current = next;
       formRef.current = next;
@@ -74,13 +71,16 @@ export default function ProfilePage() {
     } catch (err) {
       if (isCancelledError(err) || signal?.aborted) return;
       try {
-        // Identity remains usable when only the import service is unavailable.
+        // Retain the saved profile while the import service is unavailable.
         const saved = await api.getProfile();
         if (signal?.aborted) return;
         profileRef.current = saved;
         versionRef.current = saved.version;
         setProfile(saved);
-        setIdentitySnapshot(saved);
+        const next = profileToForm(saved, null);
+        baselineRef.current = next;
+        formRef.current = next;
+        setForm(next);
         setImportSectionError(err instanceof ApiError ? err.message : "Import status unavailable");
       } catch (fallbackError) {
         if (signal?.aborted || isCancelledError(fallbackError)) return;
@@ -102,14 +102,14 @@ export default function ProfilePage() {
         const next = profileToForm(importState.profile, importState.extraction);
         versionRef.current = importState.version;
         baselineRef.current = next;
-        formRef.current = next;
         // Prefer the user's in-page mode choice (e.g. switching Manual → Upload to re-import).
         // Extraction may still carry careerProfileMode: "manual" from an earlier draft.
         const mode =
           prev.careerProfileMode === "upload" || prev.careerProfileMode === "manual"
             ? prev.careerProfileMode
             : next.careerProfileMode || (importState.status ? "upload" : prev.careerProfileMode);
-        return { ...next, careerProfileMode: mode };
+        formRef.current = { ...next, careerProfileMode: mode };
+        return formRef.current;
       });
       if (importState.status === "failed") {
         setStatusMessage(importState.extraction?.error ?? "We couldn’t read that file.");
@@ -154,15 +154,15 @@ export default function ProfilePage() {
               const next = profileToForm(state.profile, state.extraction);
               versionRef.current = state.version;
               baselineRef.current = next;
-              formRef.current = next;
               const mode =
                 prev.careerProfileMode === "upload" || prev.careerProfileMode === "manual"
                   ? prev.careerProfileMode
                   : next.careerProfileMode || prev.careerProfileMode || "upload";
-              return {
+              formRef.current = {
                 ...next,
                 careerProfileMode: mode,
               };
+              return formRef.current;
             });
           }
           if (state.status === "ready_for_review") {
@@ -185,6 +185,7 @@ export default function ProfilePage() {
     const next = { ...formRef.current, ...patch };
     formRef.current = next;
     setForm(next);
+    setCareerSaveStatus("Unsaved changes");
     if (!conflictRef.current) void saveQueue.enqueue({ form: next }).catch(() => undefined);
   }
 
@@ -208,75 +209,9 @@ export default function ProfilePage() {
         title="Profile"
         description="Keep your experience up to date. Find your tailored documents in Resumes."
       />
-      <Card>
-        <CardContent className="grid gap-4 p-5 sm:grid-cols-2">
-          {(
-            [
-              ["fullName", "Full name"],
-              ["preferredName", "Preferred name"],
-              ["email", "Email"],
-              ["phone", "Phone"],
-              ["location", "Location"],
-              ["linkedIn", "LinkedIn"],
-              ["github", "GitHub"],
-              ["portfolio", "Portfolio"],
-              ["headline", "Headline"],
-            ] as const
-          ).map(([key, label]) => (
-            <div key={key} className="space-y-2">
-              <Label htmlFor={`identity-${key}`}>{label}</Label>
-              <Input
-                id={`identity-${key}`}
-                value={String(profile[key] ?? "")}
-                onChange={(e) => setProfile({ ...profile, [key]: e.target.value })}
-              />
-            </div>
-          ))}
-          <div className="space-y-2 sm:col-span-2">
-            <Label htmlFor="identity-summary">Summary</Label>
-            <Textarea
-              id="identity-summary"
-              value={profile.summary}
-              onChange={(e) => setProfile({ ...profile, summary: e.target.value })}
-            />
-          </div>
-          <div className="flex flex-wrap gap-2 sm:col-span-2">
-            <Button
-              type="button"
-              onClick={async () => {
-                try {
-                  await saveQueue.flush({ form: formRef.current });
-                  const fields = ["fullName", "preferredName", "email", "phone", "location", "linkedIn", "github", "portfolio", "headline", "summary"] as const;
-                  const changes = Object.fromEntries(fields.filter((key) => profile[key] !== identitySnapshot?.[key]).map((key) => [key, profile[key]]));
-                  const saved = await api.updateProfile({ ...changes, version: versionRef.current });
-                  profileRef.current = saved;
-                  setProfile(saved);
-                  setIdentitySnapshot(saved);
-                  await loadImport();
-                  toast.success("Identity saved");
-                } catch (err) {
-                  toast.error(err instanceof ApiError ? err.message : "Could not save profile");
-                }
-              }}
-            >
-              Save identity
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => {
-                if (identitySnapshot) setProfile(identitySnapshot);
-                toast.message("Identity edits discarded");
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
 
       <div className="rounded-xl border border-border bg-surface p-5">
-        <h2 className="font-serif text-xl">Experience and qualifications</h2>
+        <h2 className="text-xl font-semibold">Contact, experience and qualifications</h2>
         <p className="mt-1 text-sm text-foreground-secondary">
           Re-import a résumé or edit employment, projects, education, and skills. A failed replacement keeps the last valid profile.
         </p>
@@ -287,12 +222,17 @@ export default function ProfilePage() {
               description={importSectionError}
               onRetry={() => void loadImport()}
             />
+            <p className="mt-2 text-sm text-foreground-secondary">Your saved contact details are shown below. Retry to resume editing your profile.</p>
           </div>
         ) : null}
         <div className="mt-4">
           <p role="status" className="mb-3 text-sm text-foreground-secondary">{savingCareer ? "Saving…" : careerSaveStatus}</p>
+          {careerSaveStatus.startsWith("Save failed") && !conflictRef.current ? <Button type="button" variant="secondary" onClick={() => { void saveQueue.flush({ form: formRef.current }).catch(() => undefined); }}>Retry save</Button> : null}
           {conflictRef.current ? <Button type="button" variant="secondary" onClick={() => void loadProfile()}>Load saved profile</Button> : null}
           <StepCareerProfile
+            compactReview
+            contactInitiallyOpen
+            contactOnly={Boolean(importSectionError)}
             form={form}
             disabled={Boolean(importSectionError)}
             onChange={patchCareer}

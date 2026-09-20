@@ -3,15 +3,22 @@ import { DEFAULT_PASSWORD, seedOnboardedUser, uniqueEmail } from "./helpers/sess
 import { imageOnlyPdf, importResumeDocx, importResumePdf } from "./helpers/documents";
 import { LAYOUT_IMPORT_RESUME, textToSimplePdf } from "../src/test/fixtures/resume-samples";
 
+async function openCareerEditors(page: import("@playwright/test").Page) {
+  // Review cards expose one explicit Edit action per record.
+  await expect(page.getByTestId("import-review-sections")).toBeVisible();
+  const edits = page.getByRole("button", { name: /^Edit (role|education|project|certification|publication) \d+$/ });
+  while (await edits.count()) await edits.first().click();
+}
+
 async function completePreferences(page: import("@playwright/test").Page) {
   await page.locator("#target-roles").click();
   await page.locator("#target-roles").type("Platform Engineer", { delay: 15 });
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Senior", exact: true }).click();
   await page.getByRole("group", { name: /job types/i }).getByRole("button", { name: "Full-time" }).click();
-    await page.getByRole("group", { name: /workplace modes/i }).getByRole("button", { name: "Remote" }).click();
-    await page.getByRole("button", { name: /^continue$/i }).click();
-    await expect(page.getByTestId("onboarding-step")).toHaveText(/step 2 of 3/i, { timeout: 30_000 });
+  await page.getByRole("group", { name: /workplace modes/i }).getByRole("button", { name: "Remote" }).click();
+  await page.getByRole("button", { name: /^continue$/i }).click();
+  await expect(page.getByTestId("onboarding-step")).toHaveText(/step 2 of 3/i, { timeout: 30_000 });
 }
 
 test.describe("resume import interactions", () => {
@@ -52,7 +59,7 @@ test.describe("resume import interactions", () => {
     await expect(page.locator("#github")).toHaveValue(/github\.com\/jordanblake/i);
     const phone = await page.locator("#phone").inputValue();
     if (phone) expect(phone).toMatch(/555/);
-    await page.getByText("Edit role 1", { exact: true }).click();
+    await openCareerEditors(page);
     await expect(page.getByLabel(/job title 1/i)).toHaveValue(/Platform Engineer/i);
     await expect(page.getByLabel(/employer 1/i)).toHaveValue(/Harbor Systems/i);
     await expect(page.getByRole("textbox", { name: "Bullets 1", exact: true })).toHaveValue(
@@ -75,12 +82,10 @@ test.describe("resume import interactions", () => {
     await page.getByTestId("imported-email").fill("reviewed@example.com");
     await page.getByTestId("imported-portfolio").fill("");
     const education = page.locator(".focus-review-section").filter({ has: page.locator(":scope > summary", { hasText: "Education" }) });
-    await education.locator(":scope > summary").click();
-    await education.getByText("Edit education 1", { exact: true }).click();
+    await expect(education).toHaveAttribute("open", "");
     await page.getByTestId("imported-education-0").fill("Reviewed University");
     const certifications = page.locator(".focus-review-section").filter({ has: page.locator(":scope > summary", { hasText: "Certifications" }) });
-    await certifications.locator(":scope > summary").click();
-    await certifications.getByText("Edit certification 1", { exact: true }).click();
+    await expect(certifications).toHaveAttribute("open", "");
     await page.getByRole("button", { name: "Remove certification 1", exact: true }).click();
     await expect.poll(async () => page.evaluate(async () => {
       const state = await (await fetch("/api/v1/profile/resume/import", { credentials: "include" })).json();
@@ -91,6 +96,7 @@ test.describe("resume import interactions", () => {
     await expect(page.getByTestId("imported-full-name")).toHaveValue("Jordan B. Blake");
     await expect(page.getByTestId("imported-email")).toHaveValue("reviewed@example.com");
     await expect(page.getByTestId("imported-portfolio")).toHaveValue("");
+    await openCareerEditors(page);
     await expect(page.getByTestId("imported-education-0")).toHaveValue("Reviewed University");
     await expect(page.getByTestId("imported-cert-0")).toHaveCount(0);
   });
@@ -113,6 +119,7 @@ test.describe("resume import interactions", () => {
     });
     expect((await uploadResponse).ok()).toBeTruthy();
     await expect(page.getByText(/ready — review|resume ready/i)).toBeVisible({ timeout: 90_000 });
+    await openCareerEditors(page);
     await expect(page.getByLabel(/job title 1/i)).toHaveValue(/Platform Engineer/i);
     await expect(page.getByLabel(/employer 1/i)).toHaveValue(/Harbor Systems/i);
     await expect(page.getByRole("textbox", { name: "Bullets 1", exact: true })).toHaveValue(
@@ -121,10 +128,11 @@ test.describe("resume import interactions", () => {
     await page.getByRole("button", { name: /confirm import/i }).click();
     await expect(page.getByText(/imported career details confirmed/i)).toBeVisible();
     await page.reload();
+    await openCareerEditors(page);
     await expect(page.getByLabel(/employer 1/i)).toHaveValue(/Harbor Systems/i);
     await expect(page.getByLabel(/job title 1/i)).toHaveValue(/Platform Engineer/i);
     await expect(page.getByLabel(/job title 2/i)).toHaveCount(0);
-    await expect(page.locator("#identity-portfolio")).toHaveValue(/jordanblake\.dev/i);
+    await expect(page.locator("#portfolio")).toHaveValue(/jordanblake\.dev/i);
   });
 
   test("mixed layout import separates job and education fields and keeps them after confirmation", async ({ page }) => {
@@ -136,6 +144,7 @@ test.describe("resume import interactions", () => {
     });
     await expect(page.getByText(/ready — review|resume ready/i)).toBeVisible({ timeout: 90_000 });
     async function expectCareerFields() {
+      await openCareerEditors(page);
       await expect(page.getByLabel("Job title 1", { exact: true })).toHaveValue("Software Engineer");
       await expect(page.getByLabel("Employer 1", { exact: true })).toHaveValue("Harbor Mutual");
       await expect(page.getByLabel("Employment location 1", { exact: true })).toHaveValue("San Antonio, TX");

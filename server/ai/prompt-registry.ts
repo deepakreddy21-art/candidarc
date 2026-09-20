@@ -1,3 +1,5 @@
+import { RESUME_WRITING_POLICY } from "./resume-writing-policy";
+
 export type PromptDefinition = {
   id: string;
   version: string;
@@ -6,7 +8,7 @@ export type PromptDefinition = {
   description: string;
 };
 
-const prompts = {
+const basePrompts = {
   "job-extraction": {
     id: "job-extraction",
     version: "1.0.0",
@@ -101,7 +103,14 @@ Do not claim PDF visual checks passed unless they ran.`,
   },
 } as const satisfies Record<string, PromptDefinition>;
 
-export type PromptId = keyof typeof prompts;
+export type PromptId = keyof typeof basePrompts;
+
+const writingPrompts = new Set<PromptId>(["resume-generation", "hr-audit-1", "em-audit-1", "hr-audit-2", "em-audit-2", "final-qa"]);
+const prompts = Object.fromEntries(Object.entries(basePrompts).map(([id, prompt]) => [id,
+  writingPrompts.has(id as PromptId)
+    ? { ...prompt, version: "1.2.0", rubricVersion: "writing-r2", system: `${prompt.system}\n${RESUME_WRITING_POLICY}` }
+    : prompt,
+])) as Record<PromptId, PromptDefinition>;
 
 export function getPrompt(id: PromptId | string): PromptDefinition {
   const prompt = (prompts as Record<string, PromptDefinition>)[id];
@@ -126,4 +135,3 @@ export function renderPromptSystem(id: PromptId, vars?: Record<string, string>):
 }
 
 export const PROMPT_REGISTRY = prompts;
-

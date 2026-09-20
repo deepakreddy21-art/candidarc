@@ -68,7 +68,7 @@ test("approved onboarding review keeps real import fields editable on desktop an
   await contact.locator(":scope > summary").click();
   await expect(page.getByText("Add your phone number", { exact: true })).not.toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("onboarding-review-1536.png"), animations: "disabled" });
-  await page.getByText("Edit role 1", { exact: true }).click();
+  await page.getByRole("button", { name: "Edit role 1", exact: true }).click();
   await page.getByRole("textbox", { name: "Employer 1", exact: true }).fill("Reviewed Employer");
   await expect.poll(() => page.evaluate(async () => {
     const state = await (await fetch("/api/v1/profile/resume/import", { credentials: "include" })).json();

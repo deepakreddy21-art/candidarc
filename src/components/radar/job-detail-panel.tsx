@@ -103,7 +103,8 @@ export function JobDetailPanel({
             </div>
             <p className="mt-2 text-xs text-foreground-muted">
               {job.primarySource?.name ? `Source: ${job.primarySource.name}` : null}
-              {job.firstSeenAt ? ` · Posted/seen ${formatRelative(job.firstSeenAt)}` : null}
+              {job.originalPostedAt || job.sourcePostedAt ? ` · Posted ${formatRelative((job.originalPostedAt || job.sourcePostedAt)!)}` : " · Posted date unavailable"}
+              {job.firstSeenAt ? ` · Found ${formatRelative(job.firstSeenAt)}` : null}
               {job.lastVerifiedAt ? ` · Verified ${formatRelative(job.lastVerifiedAt)}` : null}
             </p>
           </div>
@@ -122,7 +123,7 @@ export function JobDetailPanel({
             ) : null}
             {onHide ? (
               <Button type="button" size="sm" variant="ghost" onClick={onHide} disabled={actionPending}>
-                Hide / report stale
+                Hide job
               </Button>
             ) : null}
             {applyUrl ? (

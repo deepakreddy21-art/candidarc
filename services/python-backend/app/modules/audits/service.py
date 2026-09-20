@@ -68,6 +68,10 @@ def adjudicate_findings(
     accepted: list[AuditFinding] = []
     rejected: list[AuditFinding] = []
     for finding in findings:
+        # A live contextual review rejection must survive deterministic adjudication.
+        if finding.status == "rejected":
+            rejected.append(finding)
+            continue
         ok, reason = adjudicate_finding(
             finding.suggested_text,
             evidence,

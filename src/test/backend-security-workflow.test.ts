@@ -264,6 +264,25 @@ describe("auth primitives", () => {
 });
 
 describe("applications service", () => {
+  it("tracks an external application without creating a workflow or queueing AI", async () => {
+    const store = createEmptyMemoryStore();
+    const { repos, tenantId, userId } = await ensureDemoUser(store);
+    const engine = new DbWorkflowEngine(repos.workflows, new InProcessQueueAdapter());
+    const start = vi.spyOn(engine, "start");
+    const apps = ApplicationsService.fromRepos(repos, engine);
+    const app = await apps.createTracked(authCtx(userId, tenantId, repos), {
+      company: "Acme", role: "Financial Analyst", candidateStatus: "Applied", appliedAt: "2026-09-18",
+    });
+    expect(app.status).toBe("draft");
+    expect(app.metadata).toMatchObject({ candidateStatus: "Applied", appliedAt: "2026-09-18", trackingOnly: true });
+    expect(app.metadata?.customerWorkflowPublicId).toBeUndefined();
+    expect(app.location).toBe("");
+    expect(start).not.toHaveBeenCalled();
+    expect((await apps.get(authCtx(userId, tenantId, repos), app.publicId)).metadata).toEqual(app.metadata);
+    const stranger = { ...authCtx(userId, tenantId, repos), memberships: [] };
+    await expect(apps.createTracked(stranger, { company: "Other", role: "Analyst" })).rejects.toThrow();
+  });
+
   it("creates application and queues research for tenant member", async () => {
     const store = createEmptyMemoryStore();
     const { repos, tenantId, userId } = await ensureDemoUser(store);

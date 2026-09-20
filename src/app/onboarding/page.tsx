@@ -4,10 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { OnboardingShell } from "@/components/onboarding/shell";
-import { StepCareerDirection } from "@/components/onboarding/step-career-direction";
+import { JobPreferencesFields } from "@/components/onboarding/job-preferences-fields";
 import { StepCareerProfile } from "@/components/onboarding/step-career-profile";
 import { StepReview } from "@/components/onboarding/step-review";
-import { StepWorkPreferences } from "@/components/onboarding/step-work-preferences";
 import { ErrorState } from "@/components/ui/feedback";
 import {
   emptyOnboardingForm,
@@ -124,15 +123,13 @@ export default function OnboardingPage() {
 
   function patchForm(patch: Partial<OnboardingFormState>) {
     setSaveStatus("Unsaved changes");
-    setForm((prev) => {
-      const next = { ...prev, ...patch };
-      formRef.current = next;
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        if (!conflictRef.current) void enqueueSave({ form: formRef.current });
-      }, 700);
-      return next;
-    });
+    const next = { ...formRef.current, ...patch };
+    formRef.current = next;
+    setForm(next);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      if (!conflictRef.current) void enqueueSave({ form: formRef.current });
+    }, 700);
     setErrors({});
   }
 
@@ -301,7 +298,19 @@ export default function OnboardingPage() {
       else if (step === 0 && !current.jobTypes.length) setErrors({ jobTypes: message });
       else if (step === 0) setErrors({ workplaceModes: message });
       else if (step === 1 && !current.fullName.trim()) setErrors({ fullName: message });
+      else if (step === 1 && (!current.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(current.email.trim()))) setErrors({ email: message });
+      else if (step === 1 && !current.phone.trim()) setErrors({ phone: message });
+      else if (step === 1 && !current.location.trim()) setErrors({ location: message });
       else setErrors({ career: message });
+      requestAnimationFrame(() => {
+        const input = document.querySelector<HTMLElement>('[aria-invalid="true"]');
+        if (input) {
+          let parent = input.parentElement;
+          while (parent) { if (parent instanceof HTMLDetailsElement) parent.open = true; parent = parent.parentElement; }
+          input.focus();
+          input.scrollIntoView({ block: "center", behavior: "instant" });
+        }
+      });
       toast.error(message);
       return;
     }
@@ -393,10 +402,7 @@ export default function OnboardingPage() {
         </div>
       ) : null}
       {step === 0 ? (
-        <div className="space-y-8">
-          <StepCareerDirection form={form} onChange={patchForm} errors={errors} />
-          <StepWorkPreferences form={form} onChange={patchForm} errors={errors} />
-        </div>
+        <JobPreferencesFields form={form} onChange={patchForm} errors={errors} />
       ) : null}
       {step === 1 ? (
         <StepCareerProfile

@@ -7,7 +7,7 @@ import {
   validateResumeLayout,
 } from "@/lib/resume-document";
 import { renderResumeDocumentBodyHtml } from "@/lib/resume-html";
-import { CANDIDARC_ATS_V1_TEMPLATE, CANDIDARC_ATS_V1_TEMPLATE_ID } from "@/types/resume-document";
+import { CANDIDARC_CLASSIC_V1_TEMPLATE, CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
 import {
   renderDocxFromDocument,
   renderPdfAndDocx,
@@ -68,7 +68,7 @@ const baseSections = [
   },
 ];
 
-describe("CandidArc ATS v1 canonical parity", () => {
+describe("CandidArc Classic v1 canonical parity", () => {
   it("stamps template metadata and never claims MIT/Harvard", () => {
     const doc = buildResumeDocument({
       sections: baseSections,
@@ -84,8 +84,8 @@ describe("CandidArc ATS v1 canonical parity", () => {
         portfolio: "alexexample.dev",
       },
     });
-    expect(doc.metadata.template).toBe(CANDIDARC_ATS_V1_TEMPLATE);
-    expect(doc.metadata.templateId).toBe(CANDIDARC_ATS_V1_TEMPLATE_ID);
+    expect(doc.metadata.template).toBe(CANDIDARC_CLASSIC_V1_TEMPLATE);
+    expect(doc.metadata.templateId).toBe(CANDIDARC_CLASSIC_V1_TEMPLATE_ID);
     const plain = resumeDocumentPlainText(doc);
     expect(plain).not.toMatch(/MIT|Harvard|alumni/i);
     expect(plain).not.toMatch(/Target company|Target role/i);
@@ -191,11 +191,11 @@ describe("CandidArc ATS v1 canonical parity", () => {
     expect(rendered.pdfError).toBeUndefined();
     expect(rendered.pdfBuffer).toBeNull();
     expect(rendered.docxBuffer?.length).toBeGreaterThan(100);
-    expect(rendered.document.metadata.template).toBe(CANDIDARC_ATS_V1_TEMPLATE);
+    expect(rendered.document.metadata.template).toBe(CANDIDARC_CLASSIC_V1_TEMPLATE);
   }, 30_000);
 });
 
-describe("CandidArc ATS v1 chromium PDF path", () => {
+describe("CandidArc Classic v1 chromium PDF path", () => {
   it.skipIf(!process.env.RUN_CHROMIUM_TESTS)("renders tagged PDF via chromium when enabled", async () => {
     const doc = buildResumeDocument({
       sections: baseSections,

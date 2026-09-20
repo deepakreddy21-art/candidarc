@@ -4,7 +4,8 @@ import type {
   ResumeDocumentSection,
   ResumeLayoutValidation,
 } from "@/types/resume-document";
-import { CANDIDARC_ATS_V1_TEMPLATE, CANDIDARC_ATS_V1_TEMPLATE_ID } from "@/types/resume-document";
+import { CANDIDARC_CLASSIC_V1_TEMPLATE, CANDIDARC_CLASSIC_V1_TEMPLATE_ID } from "@/types/resume-document";
+import { RESUME_TEMPLATE } from "./resume-template";
 import type { ResumeSection } from "@/types/domain";
 
 /** Soft pre-render heuristic only — never authoritative for shipped page count. */
@@ -28,7 +29,8 @@ function mapSectionType(type: unknown): ResumeDocumentSection["type"] {
     normalized === "experience" ||
     normalized === "projects" ||
     normalized === "education" ||
-    normalized === "certifications"
+    normalized === "certifications" ||
+    normalized === "publications"
   ) {
     return normalized;
   }
@@ -55,7 +57,7 @@ export function buildResumeDocument(input: {
 
   const mapped = (input.sections as ResumeSection[])
     .slice()
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .sort((a, b) => RESUME_TEMPLATE.sectionOrder.indexOf(mapSectionType(a.type)) - RESUME_TEMPLATE.sectionOrder.indexOf(mapSectionType(b.type)) || (a.order ?? 0) - (b.order ?? 0))
     .map((section): ResumeDocumentSection | null => {
       const title = section.title?.trim() || "Section";
       const type = mapSectionType(section.type);
@@ -63,14 +65,14 @@ export function buildResumeDocument(input: {
         .map((bullet) => bulletText(bullet))
         .filter((text): text is string => Boolean(text));
       const entries = (section.items ?? []).map((item) => ({
-        heading: item.heading?.trim() || "Role",
+        heading: item.heading?.trim() || "",
         subheading: item.subheading?.trim() || undefined,
         location: item.location?.trim() || undefined,
         dates: item.dates?.trim() || undefined,
         bullets: (item.bullets ?? [])
           .map((bullet) => bulletText(bullet))
           .filter((text): text is string => Boolean(text)),
-      }));
+      })).filter((entry) => entry.heading || entry.subheading || entry.location || entry.dates || entry.bullets.length);
       const content = section.content?.trim() || undefined;
 
       if (!content && bullets.length === 0 && entries.length === 0) return null;
@@ -86,8 +88,8 @@ export function buildResumeDocument(input: {
       role: input.role,
       company: input.company,
       generatedAt: new Date().toISOString(),
-      template: CANDIDARC_ATS_V1_TEMPLATE,
-      templateId: CANDIDARC_ATS_V1_TEMPLATE_ID,
+      template: CANDIDARC_CLASSIC_V1_TEMPLATE,
+      templateId: CANDIDARC_CLASSIC_V1_TEMPLATE_ID,
     },
   };
 }
@@ -213,25 +215,17 @@ export function validateResumeLayout(doc: ResumeDocument, measuredPageCount?: nu
 }
 
 function normalizeForPdfMatch(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[\u00b7\u2022\u2023\u25e6|]/g, " ")
-    .replace(/[\u2010-\u2015\u2212-]/g, "-")
-    .replace(/[^a-z0-9+#.]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // NFKC handles typographic ligatures while keeping non-Latin names intact.
+  return text.normalize("NFKC").toLowerCase()
+    .replace(/\u00ad/g, "")
+    .replace(/[^\p{L}\p{N}+#.]+/gu, " ")
+    .replace(/\s+/g, " ").trim();
 }
 
 function snippetPresentInPdf(haystack: string, snippet: string): boolean {
   const normalized = normalizeForPdfMatch(snippet);
-  if (normalized.length < 4) return true;
-  if (haystack.includes(normalized.slice(0, 80))) return true;
-  const tokens = normalized.split(" ").filter((token) => token.length >= 4);
-  if (tokens.length >= 3) {
-    const hits = tokens.filter((token) => haystack.includes(token)).length;
-    return hits >= Math.ceil(tokens.length * 0.75);
-  }
-  return haystack.includes(normalized);
+  // PDF readers may insert spaces into visually continuous URLs or long tokens.
+  return !normalized || haystack.replace(/\s/g, "").includes(normalized.replace(/\s/g, ""));
 }
 
 export async function measurePdfPageCount(pdf: Buffer): Promise<number> {
@@ -287,9 +281,10 @@ export async function analyzeRenderedPdf(pdf: Buffer, doc: ResumeDocument): Prom
       typeof parsed.text === "string"
         ? parsed.text
         : pages.map((p) => (p as { text?: string }).text ?? "").join("\n");
-    const haystack = normalizeForPdfMatch(`${pdf.toString("latin1")}\n${pdfText}`);
+    const haystack = normalizeForPdfMatch(pages.length ? pages.map((p) => p.text).join("\n") : pdfText);
     const required = [
       doc.contact.name,
+      doc.contact.headline,
       doc.contact.email,
       doc.contact.phone,
       doc.contact.location,
@@ -298,12 +293,12 @@ export async function analyzeRenderedPdf(pdf: Buffer, doc: ResumeDocument): Prom
       doc.contact.portfolio,
       ...doc.sections.flatMap((section) => [
         section.title,
-        ...(section.bullets ?? []).slice(0, 2),
-        ...(section.entries?.[0]?.bullets.slice(0, 1) ?? []),
-        section.entries?.[0]?.heading,
+        section.content,
+        ...(section.bullets ?? []),
+        ...(section.entries ?? []).flatMap((entry) => [entry.heading, entry.subheading, entry.location, entry.dates, ...entry.bullets]),
       ]),
     ]
-      .filter((value): value is string => typeof value === "string" && value.trim().length >= 4)
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .map((value) => value.trim());
 
     const unique = [...new Set(required)];
@@ -321,9 +316,9 @@ export async function analyzeRenderedPdf(pdf: Buffer, doc: ResumeDocument): Prom
     if (clippedText) warnings.push("Clipped or missing résumé text detected in PDF.");
     if (unnoticedThirdPage) warnings.push("PDF spans three or more pages.");
 
-    // Third page / blank pages are layout warnings; content missing/clipping fails the render.
+    // Long résumés are allowed; missing content or empty pages fail verification.
     return {
-      ok: missing.length === 0 && !clippedText,
+      ok: missing.length === 0 && !clippedText && blankPageIndexes.length === 0,
       pageCount,
       blankPageIndexes,
       clippedText,
@@ -341,5 +336,5 @@ export async function verifyPdfContainsCanonicalContent(
   doc: ResumeDocument,
 ): Promise<{ ok: boolean; missing: string[] }> {
   const analysis = await analyzeRenderedPdf(pdf, doc);
-  return { ok: analysis.missing.length === 0, missing: analysis.missing };
+  return { ok: analysis.ok, missing: analysis.missing };
 }

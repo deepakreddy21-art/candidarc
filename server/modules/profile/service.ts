@@ -224,6 +224,7 @@ export class ProfileService {
       patch.fullName = data.fullName;
       patch.avatarInitials = initialsFromName(data.fullName);
     }
+    if (typeof data.preferredName === "string") patch.preferredName = data.preferredName;
     if (data.email !== undefined) patch.email = data.email || null;
     if (data.phone !== undefined) patch.phone = data.phone;
     if (data.location !== undefined) {
