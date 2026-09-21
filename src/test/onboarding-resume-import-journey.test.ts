@@ -493,6 +493,51 @@ describe("onboarding resume import journey (real FastAPI)", () => {
     ]);
   }, 60_000);
 
+  it.each(["pdf", "docx"])("preserves the %s sidebar identity, two employers and one wrapped qualification after confirmation", async (format) => {
+    const fixture = spawnSync(venvPython, ["-c", "import sys; from tests.fixtures.sidebar_resume import sidebar_resume_bytes; sys.stdout.buffer.write(sidebar_resume_bytes(sys.argv[1]))", format], {
+      cwd: backendRoot, timeout: 10_000,
+    });
+    expect(fixture.status, fixture.stderr?.toString()).toBe(0);
+    const runtime = await (await import("../../server/bootstrap")).getRuntime();
+    const { cookie, csrf } = await seedAuthedUser(runtime);
+    const type = format === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const form = new FormData();
+    form.append("file", new File([Uint8Array.from(fixture.stdout)], `sidebar.${format}`, { type }));
+    const { POST: upload } = await import("../../src/app/api/v1/profile/resume/upload/route");
+    expect((await upload(new Request("http://localhost:3000/api/v1/profile/resume/upload", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf }, body: form,
+    }))).status).toBe(201);
+    const body = await waitImportReady(cookie);
+    expect(body.status).toBe("ready_for_review");
+    expect(body.extraction.contact).toMatchObject({ fullName: "Avery Ramos", email: "avery.ramos@example.com", phone: "+1 312 555 0199", location: "Chicago, IL" });
+    expect(body.extraction.professionalSummary).toContain("procurement, inventory planning");
+    expect(body.extraction.employment).toHaveLength(2);
+    expect(body.extraction.employment).toMatchObject([
+      { title: "Senior Supply Chain Analyst", company: "Cedar Freight", location: "Evanston, IL", startDate: "Apr 2024", endDate: "Present" },
+      { title: "Supply Chain Analyst", company: "Harbor Retail", location: "Chennai, India", startDate: "Jun 2020", endDate: "Nov 2022" },
+    ]);
+    expect(body.extraction.employment.map((job: { bullets: string[] }) => job.bullets.length)).toEqual([6, 5]);
+    expect(body.extraction.education).toHaveLength(1);
+    expect(body.extraction.education[0]).toMatchObject({ institution: "Cascadia Institute of Technology", degree: "Master's", field: "Industrial Engineering and Operations", location: "Chicago, IL", startDate: "Jan 2023", endDate: "Dec 2024" });
+    const { POST: confirm } = await import("../../src/app/api/v1/profile/resume/confirm/route");
+    expect((await confirm(new Request("http://localhost:3000/api/v1/profile/resume/confirm", {
+      method: "POST", headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" }, body: "{}",
+    }))).status).toBe(200);
+    const { GET: getImport } = await import("../../src/app/api/v1/profile/resume/import/route");
+    const saved = await (await getImport(new Request("http://localhost:3000/api/v1/profile/resume/import", { headers: { cookie } }))).json();
+    expect(saved.status).toBe("confirmed");
+    for (const field of ["contact", "professionalSummary", "employment", "education", "skills", "certificationEntries"] as const) {
+      expect(saved.extraction[field]).toEqual(body.extraction[field]);
+    }
+    const { GET: getProfile } = await import("../../src/app/api/v1/profile/route");
+    const profile = await (await getProfile(new Request("http://localhost:3000/api/v1/profile", { headers: { cookie } }))).json();
+    const reloaded = profileToForm(profile.profile, saved.extraction);
+    expect(reloaded).toMatchObject({ fullName: "Avery Ramos", location: "Chicago, IL", email: "avery.ramos@example.com" });
+    expect(reloaded.employment.map((job) => job.company)).toEqual(["Cedar Freight", "Harbor Retail"]);
+    expect(reloaded.education).toHaveLength(1);
+    expect(reloaded.education[0]).toMatchObject({ school: "Cascadia Institute of Technology", degree: "Master's", field: "Industrial Engineering and Operations", location: "Chicago, IL" });
+  }, 60_000);
+
   it("returns IMAGE_ONLY_PDF_OCR_REQUIRED for scanned PDFs", async () => {
     const runtime = await (await import("../../server/bootstrap")).getRuntime();
     const { cookie, csrf } = await seedAuthedUser(runtime);

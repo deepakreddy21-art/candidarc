@@ -25,7 +25,7 @@ from app.domain.schemas import (
 from app.modules.guardrails.service import INJECTION_MARKERS, KNOWN_TECH_HINTS
 from app.modules.parsing.fields import BULLET_RE
 from app.modules.parsing.links import linked_text, pdf_link_text
-from app.modules.parsing.structure import _normalize_header, structure_resume_text
+from app.modules.parsing.structure import EMAIL_RE, PHONE_RE, _normalize_header, structure_resume_text
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = 30
@@ -273,9 +273,74 @@ def _extract_pdf_page_text(page: Any) -> str:
     # Layout mode preserves spacing between employer/title/location/date cells.
     # Default stream order can concatenate these or place dates after all bullets.
     try:
-        return page.extract_text(extraction_mode="layout", layout_mode_space_vertically=False) or ""
+        text = page.extract_text(extraction_mode="layout", layout_mode_space_vertically=False) or ""
     except (TypeError, ValueError):
         return page.extract_text() or ""
+    return _separate_pdf_contact_header(page, text)
+
+
+def _separate_pdf_contact_header(page: Any, text: str) -> str:
+    """Keep a contact sidebar separate from an adjacent, unlabelled summary.
+
+    This is a page-local region, not a two-column document: job headers below it
+    must still be read across the page. Only split when positions, overlapping
+    vertical ranges, contact anchors and a substantial prose lane agree.
+    """
+    lines = text.splitlines()
+    boundary = next((i for i, line in enumerate(lines)
+                     if _normalize_header(line) not in (None, "summary")), None)
+    if boundary is None:
+        return text
+    fragments: list[tuple[float, float, str]] = []
+
+    def visitor(value: str, cm: Any, tm: Any, _font: Any, _size: Any) -> None:
+        from pypdf import mult
+
+        if value.strip():
+            position = mult(tm, cm)
+            fragments.append((float(position[4]), float(position[5]), value.strip()))
+
+    try:
+        page.extract_text(visitor_text=visitor)
+    except (TypeError, ValueError, IndexError):
+        return text
+    heading = _normalize_header(lines[boundary])
+    heading_ys = [y for _x, y, value in fragments if _normalize_header(value) == heading]
+    if not heading_ys:
+        return text
+    header = [part for part in fragments if part[1] > max(heading_ys) + 3]
+    if len(header) < 4 or any("\n" in value for _x, _y, value in header):
+        return text
+    xs = sorted({round(x / 10) * 10 for x, _y, _value in header})
+    if len(xs) < 2:
+        return text
+    gap, index = max((xs[i + 1] - xs[i], i) for i in range(len(xs) - 1))
+    if gap < 80:
+        return text
+    split = (xs[index] + xs[index + 1]) / 2
+    lanes = [[part for part in header if part[0] < split], [part for part in header if part[0] >= split]]
+    contact_lanes = [i for i, lane in enumerate(lanes)
+                     if any(EMAIL_RE.search(value) or PHONE_RE.search(value) for _x, _y, value in lane)]
+    if len(contact_lanes) != 1:
+        return text
+    contact, summary = lanes[contact_lanes[0]], lanes[1 - contact_lanes[0]]
+    if len(contact) < 2 or len(summary) < 2 or sum(len(value) for _x, _y, value in summary) < 120:
+        return text
+    if min(y for _x, y, _v in contact) > max(y for _x, y, _v in summary) or min(y for _x, y, _v in summary) > max(y for _x, y, _v in contact):
+        return text
+
+    def ordered(lane: list[tuple[float, float, str]]) -> str:
+        rows: list[str] = []
+        band_y: float | None = None
+        for _x, y, value in sorted(lane, key=lambda part: (-part[1], part[0])):
+            if band_y is not None and abs(y - band_y) <= 3:
+                rows[-1] += " " + value
+            else:
+                rows.append(value)
+                band_y = y
+        return "\n".join(rows)
+
+    return ordered(contact) + "\nProfessional Summary\n" + ordered(summary) + "\n" + "\n".join(lines[boundary:])
 
 
 def _parse_pdf(raw: bytes) -> ResumeParseResponse:
@@ -380,7 +445,19 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
                         seen_cells.add(cell._tc)
                         cells.append(blocks(cell))
                     independent_sections = any(_normalize_header(line) for cell in cells[1:] for line in cell)
-                    if independent_sections:
+                    contact_cells = [i for i, cell in enumerate(cells)
+                                     if any(EMAIL_RE.search(line) or PHONE_RE.search(line) for line in cell)]
+                    header_sidebar = (
+                        len(cells) == 2 and len(contact_cells) == 1
+                        and not any(_normalize_header(line) for cell in cells for line in cell)
+                        and sum(len(line) for line in cells[1 - contact_cells[0]]) >= 120
+                        and not any(_normalize_header(line) for line in lines)
+                    )
+                    if header_sidebar:
+                        lines.extend(cells[contact_cells[0]])
+                        lines.append("Professional Summary")
+                        lines.extend(cells[1 - contact_cells[0]])
+                    elif independent_sections:
                         lines.extend(line for cell in cells for line in cell)
                     else:
                         for i in range(max((len(cell) for cell in cells), default=0)):

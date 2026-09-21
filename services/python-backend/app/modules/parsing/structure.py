@@ -6,7 +6,15 @@ import re
 import unicodedata
 from typing import Any
 
-from app.modules.parsing.fields import DATE_RANGE_RE, TITLE_HINT_RE, is_location
+from app.modules.parsing.fields import (
+    DATE_RANGE_RE,
+    DEGREE_TOKEN_RE,
+    INSTITUTION_RE,
+    ORGANIZATION_RE,
+    TITLE_HINT_RE,
+    is_body,
+    is_location,
+)
 from app.modules.parsing.links import strip_link_targets
 from app.modules.parsing.records import (
     chunk_education as _chunk_education,
@@ -45,7 +53,9 @@ def _normalize_pdf_quirks(text: str) -> str:
 
 
 def _split_lines(text: str) -> list[str]:
-    return [ln.strip() for ln in _normalize_pdf_quirks(text).split("\n") if ln.strip()]
+    # Font metrics can turn a physical column gap into hundreds of spaces.
+    # Retain a cell boundary, but do not let padding trigger prose length limits.
+    return [re.sub(r"[ \t]{2,}", "  ", ln.strip()) for ln in _normalize_pdf_quirks(text).split("\n") if ln.strip()]
 
 
 SECTION_ALIASES: dict[str, tuple[str, ...]] = {
@@ -127,9 +137,13 @@ def _looks_like_person_name(text: str) -> bool:
         return False
     if any(re.search(r"\d|@", t) for t in tokens):
         return False
-    if TITLE_HINT_RE.search(text):
+    if (TITLE_HINT_RE.search(text) or INSTITUTION_RE.search(text) or ORGANIZATION_RE.search(text)
+            or DEGREE_TOKEN_RE.search(text) or is_body(text) or _normalize_header(text)
+            or re.search(r"\b(?:professional|experience|years|across|with|procurement|planning)\b", text, re.I)):
         return False
-    return all(re.match(r"^[A-Za-z][A-Za-z'’.\-]*$", t) for t in tokens)
+    # Unicode names and combining marks are valid; punctuation-heavy prose is not.
+    return all(t[0].isalpha() and all(c.isalpha() or unicodedata.category(c).startswith("M") or c in "'’.\u002d" for c in t)
+               for t in tokens)
 
 
 def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
@@ -149,7 +163,7 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
     full_name = None
     name_line = None
     headline: str | None = None
-    for line in lines[:4]:
+    for index, line in enumerate(lines[:12]):
         if EMAIL_RE.search(line) or PHONE_RE.search(line) or _normalize_header(line):
             continue
         if DATE_RANGE_RE.search(line):
@@ -163,18 +177,17 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
             elif _looks_like_person_name(left):
                 candidate = left
         if len(candidate) < 80 and _looks_like_person_name(candidate):
+            # Large names can wrap onto consecutive lines in the contact lane.
+            # Two complete names are ambiguous and must not be concatenated.
+            if len(candidate.split()) == 1 and index + 1 < len(lines):
+                following = lines[index + 1]
+                if _looks_like_person_name(following) and len(following.split()) <= 3:
+                    candidate += " " + following
             full_name = re.sub(r"\s+", " ", candidate).strip()
             # Preserve document casing for all-caps names via title-style normalization.
             if full_name.isupper():
                 full_name = full_name.title()
-            name_line = line
-            break
-        if len(candidate) < 80 and not DATE_RANGE_RE.search(candidate):
-            # Fallback: first short non-contact line, still strip headline after pipe.
-            full_name = re.sub(r"\s+", " ", candidate).strip()
-            if full_name.isupper():
-                full_name = full_name.title()
-            name_line = line
+            name_line = candidate
             break
     location = None
     for line in lines:
@@ -192,6 +205,9 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
             continue
     name_parts = _split_name(full_name)
     contact_warnings = ["headline_separated"] if headline else []
+    contact_warnings.extend(f"missing_{field}" for field, value in (
+        ("full_name", full_name), ("location", location), ("phone", phones),
+    ) if not value)
     if phones:
         digits = re.sub(r"\D", "", phones[0])
         if not 7 <= len(digits) <= 15 or (phones[0].startswith("+1") and len(digits) != 11):

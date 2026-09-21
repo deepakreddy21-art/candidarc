@@ -61,7 +61,7 @@ function importSummary(form: OnboardingFormState): string {
   ].filter(Boolean);
   const confidenceNote =
     form.lowConfidenceCount > 0
-      ? ` ${form.lowConfidenceCount} field${form.lowConfidenceCount === 1 ? "" : "s"} need review.`
+      ? ` ${form.lowConfidenceCount} ${form.lowConfidenceCount === 1 ? "field needs" : "fields need"} review.`
       : "";
   if (!parts.length) return `We imported your résumé — review and edit anything that looks off.${confidenceNote}`;
   return `We imported your résumé: ${parts.join(", ")}.${confidenceNote}`;

@@ -25,7 +25,7 @@ export default defineConfig({
     {
       name: "built-desktop",
       testMatch:
-        /candidate-form-polish\.spec\.ts|profile\.interactions\.spec\.ts|approved-visuals\.spec\.ts|navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts|import\.interactions\.spec\.ts|resumes\.interactions\.spec\.ts|applications\.interactions\.spec\.ts|settings\.interactions\.spec\.ts/,
+        /candidate-form-polish\.spec\.ts|profile\.interactions\.spec\.ts|approved-visuals\.spec\.ts|navigation\.performance\.spec\.ts|recovery\.interactions\.spec\.ts|auth\.interactions\.spec\.ts|jobs\.interactions\.spec\.ts|import(?:-sidebar)?\.interactions\.spec\.ts|resumes\.interactions\.spec\.ts|applications\.interactions\.spec\.ts|settings\.interactions\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
     {

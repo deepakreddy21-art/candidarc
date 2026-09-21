@@ -50,6 +50,29 @@ same records. These tests run in the existing `python-mode` CI job.
 
 ## Limits and local verification
 
+### Contact sidebar and padded PDF regression
+
+A mixed-layout resume exposed four linked errors: a summary alongside the name
+was interleaved into the contact block; arbitrary short text was accepted as a
+name; a comma-separated narrative was accepted as a location; and font-generated
+padding made an actual job header exceed the record parser's length limit.
+A wrapped degree major was also treated as another institution.
+
+The parser now separates the contact/summary region using PDF positions and
+contact anchors (or native Word table cells), while retaining row-major reading
+for the jobs below it. Whitespace padding preserves cell boundaries without
+inflating record lengths. Consecutive name fragments can join, Unicode names
+are accepted, and the arbitrary short-line name fallback is removed. Unresolved
+required contact fields appear in review warnings instead of receiving prose.
+Degree continuations beginning with `and` stay attached to their qualification.
+
+`tests/fixtures/sidebar_resume.py` is a fictional layout twin, not a copy of an
+uploaded document. Tests cover both contact-column orders in PDF/DOCX, exact
+job boundaries and bullets, wrapped education, Unicode names, mononyms,
+padding, and rejection of summary prose as identity. The real FastAPI import
+journey and `e2e/import-sidebar.interactions.spec.ts` verify confirmation and
+reloaded profile fields.
+
 This is deterministic document parsing, not a general language model. Unknown
 headings, missing text layers and genuinely ambiguous identity boundaries still
 require review. OCR for image-only PDFs is still unsupported and explicitly
