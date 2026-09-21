@@ -7,6 +7,7 @@ import unicodedata
 from typing import Any
 
 from app.modules.parsing.fields import (
+    BULLET_RE,
     DATE_RANGE_RE,
     DEGREE_TOKEN_RE,
     INSTITUTION_RE,
@@ -363,6 +364,7 @@ def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
         pending = ""
 
     for line in lines:
+        line = BULLET_RE.sub("", line)
         label = re.match(r"^([^:]{1,80}):\s*(.*)$", line)
         if label and label[1].casefold() not in {"http", "https"}:
             flush()
@@ -381,7 +383,9 @@ def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
             continue
         # Wrapped lists continue their category. Standalone lines remain separate
         # items, while a lowercase continuation preserves a wrapped phrase.
-        wraps = table_category or pending.endswith((",", ";", "|", "&")) or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
+        wraps = (table_category or pending.endswith((",", ";", "|", "&"))
+                 or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
+                 or bool(pending and line.startswith(("(", "["))))
         pending += (" " if wraps else "\n") + re.sub(r"^[-•*]\s+", "", line)
     flush()
     # Deduplicate only normalized exact equivalents

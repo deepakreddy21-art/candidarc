@@ -83,3 +83,15 @@ def test_visual_padding_does_not_swallow_second_job_or_split_wrapped_qualificati
     assert first["field"] == "Industrial Engineering and Operations"
     assert first["location"] == "Chicago, IL"
     assert second["institution"] == "Lakeside University"
+
+
+def test_wrapped_parenthetical_skill_detail_stays_attached_and_category_has_no_bullet():
+    result = structure_resume_text(
+        "Avery Ramos\nTechnical Skills\n- Systems & Analytics: SQL, advanced Excel\n"
+        "(Power Query, pivot tables, VLOOKUP), ERP integrations\n- Planning: Demand planning, forecasting"
+    )
+    assert result["skill_groups"] == [
+        {"category": "Systems & Analytics", "skills": ["SQL", "advanced Excel (Power Query, pivot tables, VLOOKUP)", "ERP integrations"]},
+        {"category": "Planning", "skills": ["Demand planning", "forecasting"]},
+    ]
+    assert len(result["skills"]) == 5

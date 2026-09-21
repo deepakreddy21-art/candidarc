@@ -65,6 +65,8 @@ inflating record lengths. Consecutive name fragments can join, Unicode names
 are accepted, and the arbitrary short-line name fallback is removed. Unresolved
 required contact fields appear in review warnings instead of receiving prose.
 Degree continuations beginning with `and` stay attached to their qualification.
+Wrapped parenthetical skill details stay attached to their skill; list bullets
+are removed from category labels rather than counted as part of the label.
 
 `tests/fixtures/sidebar_resume.py` is a fictional layout twin, not a copy of an
 uploaded document. Tests cover both contact-column orders in PDF/DOCX, exact
