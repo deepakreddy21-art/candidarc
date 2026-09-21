@@ -6,7 +6,16 @@ import re
 import unicodedata
 from typing import Any
 
-from app.modules.parsing.fields import DATE_RANGE_RE, TITLE_HINT_RE, is_location
+from app.modules.parsing.fields import (
+    BULLET_RE,
+    DATE_RANGE_RE,
+    DEGREE_TOKEN_RE,
+    INSTITUTION_RE,
+    ORGANIZATION_RE,
+    TITLE_HINT_RE,
+    is_body,
+    is_location,
+)
 from app.modules.parsing.links import strip_link_targets
 from app.modules.parsing.records import (
     chunk_education as _chunk_education,
@@ -45,7 +54,9 @@ def _normalize_pdf_quirks(text: str) -> str:
 
 
 def _split_lines(text: str) -> list[str]:
-    return [ln.strip() for ln in _normalize_pdf_quirks(text).split("\n") if ln.strip()]
+    # Font metrics can turn a physical column gap into hundreds of spaces.
+    # Retain a cell boundary, but do not let padding trigger prose length limits.
+    return [re.sub(r"[ \t]{2,}", "  ", ln.strip()) for ln in _normalize_pdf_quirks(text).split("\n") if ln.strip()]
 
 
 SECTION_ALIASES: dict[str, tuple[str, ...]] = {
@@ -122,14 +133,23 @@ def _is_current_end(end: str | None) -> bool | None:
 
 
 def _looks_like_person_name(text: str) -> bool:
+    if text.casefold().strip() in {
+        "contact", "contact information", "contact details", "personal details", "personal information",
+        "resume", "résumé", "curriculum vitae", "cv",
+    }:
+        return False
     tokens = [t for t in re.split(r"\s+", text.strip()) if t]
     if not tokens or len(tokens) > 5:
         return False
     if any(re.search(r"\d|@", t) for t in tokens):
         return False
-    if TITLE_HINT_RE.search(text):
+    if (TITLE_HINT_RE.search(text) or INSTITUTION_RE.search(text) or ORGANIZATION_RE.search(text)
+            or DEGREE_TOKEN_RE.search(text) or is_body(text) or _normalize_header(text)
+            or re.search(r"\b(?:professional|experience|years|across|with|procurement|planning)\b", text, re.I)):
         return False
-    return all(re.match(r"^[A-Za-z][A-Za-z'’.\-]*$", t) for t in tokens)
+    # Unicode names and combining marks are valid; punctuation-heavy prose is not.
+    return all(t[0].isalpha() and all(c.isalpha() or unicodedata.category(c).startswith("M") or c in "'’.\u002d" for c in t)
+               for t in tokens)
 
 
 def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
@@ -149,12 +169,12 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
     full_name = None
     name_line = None
     headline: str | None = None
-    for line in lines[:4]:
+    for index, line in enumerate(lines[:12]):
         if EMAIL_RE.search(line) or PHONE_RE.search(line) or _normalize_header(line):
             continue
         if DATE_RANGE_RE.search(line):
             continue
-        candidate = line
+        candidate = re.sub(r"^(?:full name|name)\s*:\s*", "", line, flags=re.I)
         if "|" in line:
             left, right = [p.strip() for p in line.split("|", 1)]
             if _looks_like_person_name(left) and right and not _looks_like_person_name(right):
@@ -163,18 +183,17 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
             elif _looks_like_person_name(left):
                 candidate = left
         if len(candidate) < 80 and _looks_like_person_name(candidate):
+            # Large names can wrap onto consecutive lines in the contact lane.
+            # Two complete names are ambiguous and must not be concatenated.
+            if len(candidate.split()) == 1 and index + 1 < len(lines):
+                following = lines[index + 1]
+                if _looks_like_person_name(following) and len(following.split()) <= 3:
+                    candidate += " " + following
             full_name = re.sub(r"\s+", " ", candidate).strip()
             # Preserve document casing for all-caps names via title-style normalization.
             if full_name.isupper():
                 full_name = full_name.title()
-            name_line = line
-            break
-        if len(candidate) < 80 and not DATE_RANGE_RE.search(candidate):
-            # Fallback: first short non-contact line, still strip headline after pipe.
-            full_name = re.sub(r"\s+", " ", candidate).strip()
-            if full_name.isupper():
-                full_name = full_name.title()
-            name_line = line
+            name_line = candidate
             break
     location = None
     for line in lines:
@@ -184,7 +203,7 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
         if "|" in line and TITLE_HINT_RE.search(line) and not EMAIL_RE.search(line):
             continue
         # Contact lines often mix email/phone/location — still accept a state-coded city.
-        cells = [re.sub(r"^location\s*:\s*", "", part.strip(), flags=re.I) for part in re.split(r"[|\t]|\s{2,}", line)]
+        cells = [re.sub(r"^(?:current )?location\s*:\s*", "", part.strip(), flags=re.I) for part in re.split(r"[|\t]|\s{2,}", line)]
         location = next((part for part in cells if is_location(part)), None)
         if location:
             break
@@ -192,6 +211,9 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
             continue
     name_parts = _split_name(full_name)
     contact_warnings = ["headline_separated"] if headline else []
+    contact_warnings.extend(f"missing_{field}" for field, value in (
+        ("full_name", full_name), ("location", location), ("phone", phones),
+    ) if not value)
     if phones:
         digits = re.sub(r"\D", "", phones[0])
         if not 7 <= len(digits) <= 15 or (phones[0].startswith("+1") and len(digits) != 11):
@@ -347,6 +369,7 @@ def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
         pending = ""
 
     for line in lines:
+        line = BULLET_RE.sub("", line)
         label = re.match(r"^([^:]{1,80}):\s*(.*)$", line)
         if label and label[1].casefold() not in {"http", "https"}:
             flush()
@@ -365,7 +388,9 @@ def _skill_groups(lines: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
             continue
         # Wrapped lists continue their category. Standalone lines remain separate
         # items, while a lowercase continuation preserves a wrapped phrase.
-        wraps = table_category or pending.endswith((",", ";", "|", "&")) or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
+        wraps = (table_category or pending.endswith((",", ";", "|", "&"))
+                 or pending.count("(") > pending.count(")") or bool(category and line[:1].islower())
+                 or bool(pending and line.startswith(("(", "["))))
         pending += (" " if wraps else "\n") + re.sub(r"^[-•*]\s+", "", line)
     flush()
     # Deduplicate only normalized exact equivalents

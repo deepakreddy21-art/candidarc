@@ -254,6 +254,9 @@ def _education_line(line: str) -> dict[str, Any]:
     if honors:
         row["honors"] = honors.group()
         text = _HONORS.sub("", text)
+    # A font change can place the degree and its 'in …' major in separate PDF
+    # text runs. That is a continuation, not an independent institution.
+    text = re.sub(r"(?<=\S)\s{2,}(?=in\s)", " ", text)
     cells = split_cells(text)
     unknown: list[str] = []
     for cell in cells:
@@ -336,6 +339,10 @@ def chunk_education(lines: list[str]) -> list[dict[str, Any]]:
             continue
         values = _education_line(line)
         unknown = values.pop("_unknown")
+        if (current.get("degree") and current.get("field") and len(unknown) == 1
+                and re.match(r"^(?:and|&)\s+", unknown[0], re.I)
+                and not values.get("degree") and not values.get("institution")):
+            current["field"] += " " + unknown.pop()
         if unknown and not is_body(line):
             # Context, not an institute allowlist: standalone "MIT" or "Stanford".
             candidate = unknown[0]

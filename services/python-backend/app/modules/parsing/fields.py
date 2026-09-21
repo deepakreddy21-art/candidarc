@@ -79,6 +79,12 @@ def is_location(value: str) -> bool:
         return False
     if ORGANIZATION_RE.search(value) or value.count(",") > 2:
         return False
+    # A comma is not sufficient evidence of a place. Reject narrative clauses
+    # and list-like prose while retaining international place names/diacritics.
+    if any(len(part.split()) > 5 for part in value.split(",")) or re.search(
+        r"\b(?:across|through|including|experience|years|responsibilities|procurement|planning|performance)\b", value, re.I,
+    ):
+        return False
     return bool(_LOCATION.fullmatch(value))
 
 
