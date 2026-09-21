@@ -14,10 +14,11 @@ from tests.fixtures.sidebar_resume import JOBS, SUMMARY, sidebar_resume_bytes
 
 @pytest.mark.parametrize("fmt", ["pdf", "docx"])
 @pytest.mark.parametrize("contact_on_right", [False, True])
-def test_sidebar_header_keeps_identity_summary_and_all_records(fmt: str, contact_on_right: bool):
+@pytest.mark.parametrize("labelled_summary", [False, True])
+def test_sidebar_header_keeps_identity_summary_and_all_records(fmt: str, contact_on_right: bool, labelled_summary: bool):
     result = parse_resume_bytes_sync(
         f"sidebar.{fmt}", "application/pdf" if fmt == "pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        base64.b64encode(sidebar_resume_bytes(fmt, contact_on_right=contact_on_right)).decode(),
+        base64.b64encode(sidebar_resume_bytes(fmt, contact_on_right=contact_on_right, labelled_summary=labelled_summary)).decode(),
     )
     assert result.contact.full_name == "Avery Ramos"
     assert result.contact.location == "Chicago, IL"
@@ -48,6 +49,15 @@ def test_unicode_and_mononym_contacts_are_not_replaced_by_prose(name: str):
     result = structure_resume_text(f"{name}\ncontact@example.com | +44 20 7946 0958\nZürich, Switzerland\nSKILLS\nSQL")
     assert result["contact"]["full_name"] == name
     assert result["contact"]["location"] == "Zürich, Switzerland"
+
+
+@pytest.mark.parametrize("heading", ["Contact", "Contact Information", "Résumé", "Curriculum Vitae"])
+def test_contact_labels_are_not_names_and_explicit_identity_labels_are_recognized(heading: str):
+    result = structure_resume_text(
+        f"{heading}\nFull name: Avery Ramos\ncontact@example.com | +44 20 7946 0958\nCurrent location: London, UK\nSKILLS\nSQL"
+    )
+    assert result["contact"]["full_name"] == "Avery Ramos"
+    assert result["contact"]["location"] == "London, UK"
 
 
 @pytest.mark.parametrize("sentence", [

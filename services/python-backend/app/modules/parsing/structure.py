@@ -133,6 +133,11 @@ def _is_current_end(end: str | None) -> bool | None:
 
 
 def _looks_like_person_name(text: str) -> bool:
+    if text.casefold().strip() in {
+        "contact", "contact information", "contact details", "personal details", "personal information",
+        "resume", "résumé", "curriculum vitae", "cv",
+    }:
+        return False
     tokens = [t for t in re.split(r"\s+", text.strip()) if t]
     if not tokens or len(tokens) > 5:
         return False
@@ -169,7 +174,7 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
             continue
         if DATE_RANGE_RE.search(line):
             continue
-        candidate = line
+        candidate = re.sub(r"^(?:full name|name)\s*:\s*", "", line, flags=re.I)
         if "|" in line:
             left, right = [p.strip() for p in line.split("|", 1)]
             if _looks_like_person_name(left) and right and not _looks_like_person_name(right):
@@ -198,7 +203,7 @@ def _contact_from_text(lines: list[str], joined: str) -> dict[str, Any]:
         if "|" in line and TITLE_HINT_RE.search(line) and not EMAIL_RE.search(line):
             continue
         # Contact lines often mix email/phone/location — still accept a state-coded city.
-        cells = [re.sub(r"^location\s*:\s*", "", part.strip(), flags=re.I) for part in re.split(r"[|\t]|\s{2,}", line)]
+        cells = [re.sub(r"^(?:current )?location\s*:\s*", "", part.strip(), flags=re.I) for part in re.split(r"[|\t]|\s{2,}", line)]
         location = next((part for part in cells if is_location(part)), None)
         if location:
             break

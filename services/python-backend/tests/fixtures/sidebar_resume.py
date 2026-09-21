@@ -21,7 +21,7 @@ JOBS = [
 ]
 
 
-def sidebar_resume_bytes(fmt: str, *, contact_on_right: bool = False) -> bytes:
+def sidebar_resume_bytes(fmt: str, *, contact_on_right: bool = False, labelled_summary: bool = False) -> bytes:
     buffer = io.BytesIO()
     education = [
         ["Master's in Industrial Engineering", "Cascadia Institute of Technology", "Jan 2023 - Dec 2024"],
@@ -34,7 +34,7 @@ def sidebar_resume_bytes(fmt: str, *, contact_on_right: bool = False) -> bytes:
         document = Document()
         cells = document.add_table(rows=1, cols=2).rows[0].cells
         cells[int(contact_on_right)].text = "\n".join(CONTACT)
-        cells[1 - int(contact_on_right)].text = "\n".join(SUMMARY)
+        cells[1 - int(contact_on_right)].text = "\n".join((["Professional Summary"] if labelled_summary else []) + SUMMARY)
         document.add_paragraph("Work Experience")
         for title, employer, dates, count in JOBS:
             cells = document.add_table(rows=1, cols=3).rows[0].cells
@@ -69,6 +69,8 @@ def sidebar_resume_bytes(fmt: str, *, contact_on_right: bool = False) -> bytes:
     contact_x, summary_x = (520, 40) if contact_on_right else (40, 290)
     for i, line in enumerate(CONTACT):
         draw(contact_x, 850 - i * 22, line, 20 if i < 2 else 9)
+    if labelled_summary:
+        draw(summary_x, 862, "Professional Summary")
     for i, line in enumerate(SUMMARY):
         draw(summary_x, 848 - i * 13, line)
     y = 670

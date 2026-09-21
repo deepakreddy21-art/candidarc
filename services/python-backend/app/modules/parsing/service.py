@@ -229,7 +229,9 @@ def _reconstruct_column_text(page: Any) -> str | None:
 
     # A right-aligned date/location column is part of each row, not a separate
     # reading column. Require independent section headings in the right lane.
-    if not any(_normalize_header(line) for _x, _y, text in right for line in text.splitlines()):
+    # A summary beside contact details is a header region, not evidence that
+    # full-width employment rows below it should be split into document columns.
+    if not any(_normalize_header(line) not in (None, "summary") for _x, _y, text in right for line in text.splitlines()):
         return None
 
     # Overlapping vertical ranges required for a genuine two-column layout.
@@ -449,7 +451,7 @@ def _parse_docx(raw: bytes) -> ResumeParseResponse:
                                      if any(EMAIL_RE.search(line) or PHONE_RE.search(line) for line in cell)]
                     header_sidebar = (
                         len(cells) == 2 and len(contact_cells) == 1
-                        and not any(_normalize_header(line) for cell in cells for line in cell)
+                        and not any(_normalize_header(line) not in (None, "summary") for cell in cells for line in cell)
                         and sum(len(line) for line in cells[1 - contact_cells[0]]) >= 120
                         and not any(_normalize_header(line) for line in lines)
                     )
